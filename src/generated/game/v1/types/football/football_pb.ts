@@ -2,16 +2,15 @@
 // @generated from file btl/game/v1/types/football/football.proto (package btl.game.v1.types.football, syntax proto3)
 /* eslint-disable */
 
-import type { GenEnum, GenFile, GenMessage } from '@bufbuild/protobuf/codegenv2';
-import { enumDesc, fileDesc, messageDesc } from '@bufbuild/protobuf/codegenv2';
-import type { Message } from '@bufbuild/protobuf';
+import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
+import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file btl/game/v1/types/football/football.proto.
  */
-export const file_btl_game_v1_types_football_football: GenFile /*@__PURE__*/ = fileDesc(
-  'CilidGwvZ2FtZS92MS90eXBlcy9mb290YmFsbC9mb290YmFsbC5wcm90bxIaYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwi9wIKE05vcm1hbGl6ZWRNYXRjaERhdGESEAoIbWF0Y2hfaWQYASABKAkSMwoJaG9tZV90ZWFtGAIgASgLMiAuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuVGVhbRIzCglhd2F5X3RlYW0YAyABKAsyIC5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5UZWFtEjYKBmV2ZW50cxgEIAMoCzImLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLk1hdGNoRXZlbnQSNgoGc291cmNlGAUgASgLMiYuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuRGF0YVNvdXJjZRJHCgRtZXRhGAYgAygLMjkuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuTm9ybWFsaXplZE1hdGNoRGF0YS5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiRwoKRGF0YVNvdXJjZRIQCghwcm92aWRlchgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBGxvZ28YAyABKAkSCwoDdXJsGAQgASgJIssBCgRUZWFtEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSEgoKc2hvcnRfbmFtZRgDIAEoCRIVCg1wcmltYXJ5X2NvbG9yGAQgASgJEhcKD3NlY29uZGFyeV9jb2xvchgFIAEoCRI4CgRtZXRhGAYgAygLMiouYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuVGVhbS5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEi4QEKBlBsYXllchIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhQKDHNoaXJ0X251bWJlchgDIAEoBRI+Cghwb3NpdGlvbhgEIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSOgoEbWV0YRgFIAMoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBsYXllci5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiKAoQUGl0Y2hDb29yZGluYXRlcxIJCgF4GAEgASgBEgkKAXkYAiABKAEivAUKCk1hdGNoRXZlbnQSCgoCaWQYASABKAkSMwoEdHlwZRgCIAEoDjIlLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLkV2ZW50VHlwZRIRCgl0aW1lc3RhbXAYAyABKAESMgoGcGxheWVyGAsgASgLMiIuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGxheWVyEi4KBHRlYW0YDCABKAsyIC5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5UZWFtEj4KCGxvY2F0aW9uGA0gASgLMiwuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGl0Y2hDb29yZGluYXRlcxI+CgRtZXRhGBUgAygLMjAuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuTWF0Y2hFdmVudC5NZXRhRW50cnkSOQoEc2hvdBgyIAEoCzIpLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlNob3RFdmVudERhdGFIABI5CgRwYXNzGDMgASgLMikuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGFzc0V2ZW50RGF0YUgAEj0KBnRhY2tsZRg0IAEoCzIrLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlRhY2tsZUV2ZW50RGF0YUgAEjsKBWNhcnJ5GDUgASgLMiouYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQ2FycnlFdmVudERhdGFIABJJCgxpbnRlcmNlcHRpb24YNiABKAsyMS5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5JbnRlcmNlcHRpb25FdmVudERhdGFIABorCglNZXRhRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4AUIMCgpldmVudF9kYXRhItIBCg1TaG90RXZlbnREYXRhEkIKDGVuZF9sb2NhdGlvbhgBIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSCgoCeGcYAiABKAESNwoJYm9keV9wYXJ0GAMgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQm9keVBhcnQSOAoHb3V0Y29tZRgEIAEoDjInLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlNob3RPdXRjb21lIrUCCg1QYXNzRXZlbnREYXRhEkIKDGVuZF9sb2NhdGlvbhgBIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSNQoJcmVjaXBpZW50GAIgASgLMiIuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGxheWVyEjYKBmhlaWdodBgDIAEoDjImLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBhc3NIZWlnaHQSNwoJYm9keV9wYXJ0GAQgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQm9keVBhcnQSOAoHb3V0Y29tZRgFIAEoDjInLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBhc3NPdXRjb21lIoYBCg9UYWNrbGVFdmVudERhdGESOgoHb3V0Y29tZRgBIAEoDjIpLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlRhY2tsZU91dGNvbWUSNwoJZHVlbF90eXBlGAIgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuRHVlbFR5cGUiVAoOQ2FycnlFdmVudERhdGESQgoMZW5kX2xvY2F0aW9uGAEgASgLMiwuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGl0Y2hDb29yZGluYXRlcyJZChVJbnRlcmNlcHRpb25FdmVudERhdGESQAoHb3V0Y29tZRgBIAEoDjIvLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLkludGVyY2VwdGlvbk91dGNvbWUqmwEKCUV2ZW50VHlwZRIaChZFVkVOVF9UWVBFX1VOU1BFQ0lGSUVEEAASEwoPRVZFTlRfVFlQRV9TSE9UEAESEwoPRVZFTlRfVFlQRV9QQVNTEAISFQoRRVZFTlRfVFlQRV9UQUNLTEUQAxIUChBFVkVOVF9UWVBFX0NBUlJZEAQSGwoXRVZFTlRfVFlQRV9JTlRFUkNFUFRJT04QBSqkAQoLU2hvdE91dGNvbWUSHAoYU0hPVF9PVVRDT01FX1VOU1BFQ0lGSUVEEAASFQoRU0hPVF9PVVRDT01FX0dPQUwQARIWChJTSE9UX09VVENPTUVfU0FWRUQQAhIXChNTSE9UX09VVENPTUVfTUlTU0VEEAMSGAoUU0hPVF9PVVRDT01FX0JMT0NLRUQQBBIVChFTSE9UX09VVENPTUVfUE9TVBAFKmwKClBhc3NIZWlnaHQSGwoXUEFTU19IRUlHSFRfVU5TUEVDSUZJRUQQABIWChJQQVNTX0hFSUdIVF9HUk9VTkQQARITCg9QQVNTX0hFSUdIVF9MT1cQAhIUChBQQVNTX0hFSUdIVF9ISUdIEAMqZwoLUGFzc091dGNvbWUSHAoYUEFTU19PVVRDT01FX1VOU1BFQ0lGSUVEEAASGwoXUEFTU19PVVRDT01FX1NVQ0NFU1NGVUwQARIdChlQQVNTX09VVENPTUVfVU5TVUNDRVNTRlVMEAIqYAoNVGFja2xlT3V0Y29tZRIeChpUQUNLTEVfT1VUQ09NRV9VTlNQRUNJRklFRBAAEhYKElRBQ0tMRV9PVVRDT01FX1dPThABEhcKE1RBQ0tMRV9PVVRDT01FX0xPU1QQAipRCghEdWVsVHlwZRIZChVEVUVMX1RZUEVfVU5TUEVDSUZJRUQQABIUChBEVUVMX1RZUEVfR1JPVU5EEAESFAoQRFVFTF9UWVBFX0FFUklBTBACKngKE0ludGVyY2VwdGlvbk91dGNvbWUSJAogSU5URVJDRVBUSU9OX09VVENPTUVfVU5TUEVDSUZJRUQQABIcChhJTlRFUkNFUFRJT05fT1VUQ09NRV9XT04QARIdChlJTlRFUkNFUFRJT05fT1VUQ09NRV9MT1NUEAIqgQEKCEJvZHlQYXJ0EhkKFUJPRFlfUEFSVF9VTlNQRUNJRklFRBAAEhgKFEJPRFlfUEFSVF9SSUdIVF9GT09UEAESFwoTQk9EWV9QQVJUX0xFRlRfRk9PVBACEhIKDkJPRFlfUEFSVF9IRUFEEAMSEwoPQk9EWV9QQVJUX09USEVSEARCgwIKHmNvbS5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbEINRm9vdGJhbGxQcm90b1ABWkRnaXRodWIuY29tL2JyZWFraW5ndGhlbGluZXMvcHJvdG9zL2dlbi9nby9idGwvZ2FtZS92MS90eXBlcy9mb290YmFsbKICBUJHVlRGqgIaQnRsLkdhbWUuVjEuVHlwZXMuRm9vdGJhbGzKAhpCdGxcR2FtZVxWMVxUeXBlc1xGb290YmFsbOICJkJ0bFxHYW1lXFYxXFR5cGVzXEZvb3RiYWxsXEdQQk1ldGFkYXRh6gIeQnRsOjpHYW1lOjpWMTo6VHlwZXM6OkZvb3RiYWxsYgZwcm90bzM'
-);
+export const file_btl_game_v1_types_football_football: GenFile = /*@__PURE__*/
+  fileDesc("CilidGwvZ2FtZS92MS90eXBlcy9mb290YmFsbC9mb290YmFsbC5wcm90bxIaYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwi9wIKE05vcm1hbGl6ZWRNYXRjaERhdGESEAoIbWF0Y2hfaWQYASABKAkSMwoJaG9tZV90ZWFtGAIgASgLMiAuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuVGVhbRIzCglhd2F5X3RlYW0YAyABKAsyIC5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5UZWFtEjYKBmV2ZW50cxgEIAMoCzImLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLk1hdGNoRXZlbnQSNgoGc291cmNlGAUgASgLMiYuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuRGF0YVNvdXJjZRJHCgRtZXRhGAYgAygLMjkuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuTm9ybWFsaXplZE1hdGNoRGF0YS5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiRwoKRGF0YVNvdXJjZRIQCghwcm92aWRlchgBIAEoCRIMCgRuYW1lGAIgASgJEgwKBGxvZ28YAyABKAkSCwoDdXJsGAQgASgJIssBCgRUZWFtEgoKAmlkGAEgASgJEgwKBG5hbWUYAiABKAkSEgoKc2hvcnRfbmFtZRgDIAEoCRIVCg1wcmltYXJ5X2NvbG9yGAQgASgJEhcKD3NlY29uZGFyeV9jb2xvchgFIAEoCRI4CgRtZXRhGAYgAygLMiouYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuVGVhbS5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEi4QEKBlBsYXllchIKCgJpZBgBIAEoCRIMCgRuYW1lGAIgASgJEhQKDHNoaXJ0X251bWJlchgDIAEoBRI+Cghwb3NpdGlvbhgEIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSOgoEbWV0YRgFIAMoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBsYXllci5NZXRhRW50cnkaKwoJTWV0YUVudHJ5EgsKA2tleRgBIAEoCRINCgV2YWx1ZRgCIAEoCToCOAEiKAoQUGl0Y2hDb29yZGluYXRlcxIJCgF4GAEgASgBEgkKAXkYAiABKAEivAUKCk1hdGNoRXZlbnQSCgoCaWQYASABKAkSMwoEdHlwZRgCIAEoDjIlLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLkV2ZW50VHlwZRIRCgl0aW1lc3RhbXAYAyABKAESMgoGcGxheWVyGAsgASgLMiIuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGxheWVyEi4KBHRlYW0YDCABKAsyIC5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5UZWFtEj4KCGxvY2F0aW9uGA0gASgLMiwuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGl0Y2hDb29yZGluYXRlcxI+CgRtZXRhGBUgAygLMjAuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuTWF0Y2hFdmVudC5NZXRhRW50cnkSOQoEc2hvdBgyIAEoCzIpLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlNob3RFdmVudERhdGFIABI5CgRwYXNzGDMgASgLMikuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGFzc0V2ZW50RGF0YUgAEj0KBnRhY2tsZRg0IAEoCzIrLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlRhY2tsZUV2ZW50RGF0YUgAEjsKBWNhcnJ5GDUgASgLMiouYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQ2FycnlFdmVudERhdGFIABJJCgxpbnRlcmNlcHRpb24YNiABKAsyMS5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbC5JbnRlcmNlcHRpb25FdmVudERhdGFIABorCglNZXRhRW50cnkSCwoDa2V5GAEgASgJEg0KBXZhbHVlGAIgASgJOgI4AUIMCgpldmVudF9kYXRhItIBCg1TaG90RXZlbnREYXRhEkIKDGVuZF9sb2NhdGlvbhgBIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSCgoCeGcYAiABKAESNwoJYm9keV9wYXJ0GAMgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQm9keVBhcnQSOAoHb3V0Y29tZRgEIAEoDjInLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlNob3RPdXRjb21lIrUCCg1QYXNzRXZlbnREYXRhEkIKDGVuZF9sb2NhdGlvbhgBIAEoCzIsLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBpdGNoQ29vcmRpbmF0ZXMSNQoJcmVjaXBpZW50GAIgASgLMiIuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGxheWVyEjYKBmhlaWdodBgDIAEoDjImLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBhc3NIZWlnaHQSNwoJYm9keV9wYXJ0GAQgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuQm9keVBhcnQSOAoHb3V0Y29tZRgFIAEoDjInLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlBhc3NPdXRjb21lIoYBCg9UYWNrbGVFdmVudERhdGESOgoHb3V0Y29tZRgBIAEoDjIpLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLlRhY2tsZU91dGNvbWUSNwoJZHVlbF90eXBlGAIgASgOMiQuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuRHVlbFR5cGUiVAoOQ2FycnlFdmVudERhdGESQgoMZW5kX2xvY2F0aW9uGAEgASgLMiwuYnRsLmdhbWUudjEudHlwZXMuZm9vdGJhbGwuUGl0Y2hDb29yZGluYXRlcyJZChVJbnRlcmNlcHRpb25FdmVudERhdGESQAoHb3V0Y29tZRgBIAEoDjIvLmJ0bC5nYW1lLnYxLnR5cGVzLmZvb3RiYWxsLkludGVyY2VwdGlvbk91dGNvbWUqmwEKCUV2ZW50VHlwZRIaChZFVkVOVF9UWVBFX1VOU1BFQ0lGSUVEEAASEwoPRVZFTlRfVFlQRV9TSE9UEAESEwoPRVZFTlRfVFlQRV9QQVNTEAISFQoRRVZFTlRfVFlQRV9UQUNLTEUQAxIUChBFVkVOVF9UWVBFX0NBUlJZEAQSGwoXRVZFTlRfVFlQRV9JTlRFUkNFUFRJT04QBSqkAQoLU2hvdE91dGNvbWUSHAoYU0hPVF9PVVRDT01FX1VOU1BFQ0lGSUVEEAASFQoRU0hPVF9PVVRDT01FX0dPQUwQARIWChJTSE9UX09VVENPTUVfU0FWRUQQAhIXChNTSE9UX09VVENPTUVfTUlTU0VEEAMSGAoUU0hPVF9PVVRDT01FX0JMT0NLRUQQBBIVChFTSE9UX09VVENPTUVfUE9TVBAFKmwKClBhc3NIZWlnaHQSGwoXUEFTU19IRUlHSFRfVU5TUEVDSUZJRUQQABIWChJQQVNTX0hFSUdIVF9HUk9VTkQQARITCg9QQVNTX0hFSUdIVF9MT1cQAhIUChBQQVNTX0hFSUdIVF9ISUdIEAMqZwoLUGFzc091dGNvbWUSHAoYUEFTU19PVVRDT01FX1VOU1BFQ0lGSUVEEAASGwoXUEFTU19PVVRDT01FX1NVQ0NFU1NGVUwQARIdChlQQVNTX09VVENPTUVfVU5TVUNDRVNTRlVMEAIqYAoNVGFja2xlT3V0Y29tZRIeChpUQUNLTEVfT1VUQ09NRV9VTlNQRUNJRklFRBAAEhYKElRBQ0tMRV9PVVRDT01FX1dPThABEhcKE1RBQ0tMRV9PVVRDT01FX0xPU1QQAipRCghEdWVsVHlwZRIZChVEVUVMX1RZUEVfVU5TUEVDSUZJRUQQABIUChBEVUVMX1RZUEVfR1JPVU5EEAESFAoQRFVFTF9UWVBFX0FFUklBTBACKngKE0ludGVyY2VwdGlvbk91dGNvbWUSJAogSU5URVJDRVBUSU9OX09VVENPTUVfVU5TUEVDSUZJRUQQABIcChhJTlRFUkNFUFRJT05fT1VUQ09NRV9XT04QARIdChlJTlRFUkNFUFRJT05fT1VUQ09NRV9MT1NUEAIqgQEKCEJvZHlQYXJ0EhkKFUJPRFlfUEFSVF9VTlNQRUNJRklFRBAAEhgKFEJPRFlfUEFSVF9SSUdIVF9GT09UEAESFwoTQk9EWV9QQVJUX0xFRlRfRk9PVBACEhIKDkJPRFlfUEFSVF9IRUFEEAMSEwoPQk9EWV9QQVJUX09USEVSEARCgwIKHmNvbS5idGwuZ2FtZS52MS50eXBlcy5mb290YmFsbEINRm9vdGJhbGxQcm90b1ABWkRnaXRodWIuY29tL2JyZWFraW5ndGhlbGluZXMvcHJvdG9zL2dlbi9nby9idGwvZ2FtZS92MS90eXBlcy9mb290YmFsbKICBUJHVlRGqgIaQnRsLkdhbWUuVjEuVHlwZXMuRm9vdGJhbGzKAhpCdGxcR2FtZVxWMVxUeXBlc1xGb290YmFsbOICJkJ0bFxHYW1lXFYxXFR5cGVzXEZvb3RiYWxsXEdQQk1ldGFkYXRh6gIeQnRsOjpHYW1lOjpWMTo6VHlwZXM6OkZvb3RiYWxsYgZwcm90bzM");
 
 /**
  * NormalizedMatchData is the canonical representation of football match events.
@@ -19,7 +18,7 @@ export const file_btl_game_v1_types_football_football: GenFile /*@__PURE__*/ = f
  *
  * @generated from message btl.game.v1.types.football.NormalizedMatchData
  */
-export type NormalizedMatchData = Message<'btl.game.v1.types.football.NormalizedMatchData'> & {
+export type NormalizedMatchData = Message<"btl.game.v1.types.football.NormalizedMatchData"> & {
   /**
    * @generated from field: string match_id = 1;
    */
@@ -57,17 +56,15 @@ export type NormalizedMatchData = Message<'btl.game.v1.types.football.Normalized
  * Describes the message btl.game.v1.types.football.NormalizedMatchData.
  * Use `create(NormalizedMatchDataSchema)` to create a new message.
  */
-export const NormalizedMatchDataSchema: GenMessage<NormalizedMatchData> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  0
-);
+export const NormalizedMatchDataSchema: GenMessage<NormalizedMatchData> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 0);
 
 /**
  * DataSource identifies where the data came from for attribution.
  *
  * @generated from message btl.game.v1.types.football.DataSource
  */
-export type DataSource = Message<'btl.game.v1.types.football.DataSource'> & {
+export type DataSource = Message<"btl.game.v1.types.football.DataSource"> & {
   /**
    * e.g., "statsbomb-open"
    *
@@ -101,17 +98,15 @@ export type DataSource = Message<'btl.game.v1.types.football.DataSource'> & {
  * Describes the message btl.game.v1.types.football.DataSource.
  * Use `create(DataSourceSchema)` to create a new message.
  */
-export const DataSourceSchema: GenMessage<DataSource> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  1
-);
+export const DataSourceSchema: GenMessage<DataSource> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 1);
 
 /**
  * Team represents a football team.
  *
  * @generated from message btl.game.v1.types.football.Team
  */
-export type Team = Message<'btl.game.v1.types.football.Team'> & {
+export type Team = Message<"btl.game.v1.types.football.Team"> & {
   /**
    * @generated from field: string id = 1;
    */
@@ -153,17 +148,15 @@ export type Team = Message<'btl.game.v1.types.football.Team'> & {
  * Describes the message btl.game.v1.types.football.Team.
  * Use `create(TeamSchema)` to create a new message.
  */
-export const TeamSchema: GenMessage<Team> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  2
-);
+export const TeamSchema: GenMessage<Team> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 2);
 
 /**
  * Player represents a football player.
  *
  * @generated from message btl.game.v1.types.football.Player
  */
-export type Player = Message<'btl.game.v1.types.football.Player'> & {
+export type Player = Message<"btl.game.v1.types.football.Player"> & {
   /**
    * @generated from field: string id = 1;
    */
@@ -198,10 +191,8 @@ export type Player = Message<'btl.game.v1.types.football.Player'> & {
  * Describes the message btl.game.v1.types.football.Player.
  * Use `create(PlayerSchema)` to create a new message.
  */
-export const PlayerSchema: GenMessage<Player> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  3
-);
+export const PlayerSchema: GenMessage<Player> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 3);
 
 /**
  * PitchCoordinates represents a normalised position on the pitch.
@@ -209,7 +200,7 @@ export const PlayerSchema: GenMessage<Player> /*@__PURE__*/ = messageDesc(
  *
  * @generated from message btl.game.v1.types.football.PitchCoordinates
  */
-export type PitchCoordinates = Message<'btl.game.v1.types.football.PitchCoordinates'> & {
+export type PitchCoordinates = Message<"btl.game.v1.types.football.PitchCoordinates"> & {
   /**
    * 0 = own goal line, 100 = opposition goal line
    *
@@ -229,10 +220,8 @@ export type PitchCoordinates = Message<'btl.game.v1.types.football.PitchCoordina
  * Describes the message btl.game.v1.types.football.PitchCoordinates.
  * Use `create(PitchCoordinatesSchema)` to create a new message.
  */
-export const PitchCoordinatesSchema: GenMessage<PitchCoordinates> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  4
-);
+export const PitchCoordinatesSchema: GenMessage<PitchCoordinates> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 4);
 
 /**
  * MatchEvent is a single event in a match.
@@ -240,7 +229,7 @@ export const PitchCoordinatesSchema: GenMessage<PitchCoordinates> /*@__PURE__*/ 
  *
  * @generated from message btl.game.v1.types.football.MatchEvent
  */
-export type MatchEvent = Message<'btl.game.v1.types.football.MatchEvent'> & {
+export type MatchEvent = Message<"btl.game.v1.types.football.MatchEvent"> & {
   /**
    * Core identity (1-10)
    *
@@ -289,60 +278,52 @@ export type MatchEvent = Message<'btl.game.v1.types.football.MatchEvent'> & {
    *
    * @generated from oneof btl.game.v1.types.football.MatchEvent.event_data
    */
-  eventData:
-    | {
-        /**
-         * @generated from field: btl.game.v1.types.football.ShotEventData shot = 50;
-         */
-        value: ShotEventData;
-        case: 'shot';
-      }
-    | {
-        /**
-         * @generated from field: btl.game.v1.types.football.PassEventData pass = 51;
-         */
-        value: PassEventData;
-        case: 'pass';
-      }
-    | {
-        /**
-         * @generated from field: btl.game.v1.types.football.TackleEventData tackle = 52;
-         */
-        value: TackleEventData;
-        case: 'tackle';
-      }
-    | {
-        /**
-         * @generated from field: btl.game.v1.types.football.CarryEventData carry = 53;
-         */
-        value: CarryEventData;
-        case: 'carry';
-      }
-    | {
-        /**
-         * @generated from field: btl.game.v1.types.football.InterceptionEventData interception = 54;
-         */
-        value: InterceptionEventData;
-        case: 'interception';
-      }
-    | { case: undefined; value?: undefined };
+  eventData: {
+    /**
+     * @generated from field: btl.game.v1.types.football.ShotEventData shot = 50;
+     */
+    value: ShotEventData;
+    case: "shot";
+  } | {
+    /**
+     * @generated from field: btl.game.v1.types.football.PassEventData pass = 51;
+     */
+    value: PassEventData;
+    case: "pass";
+  } | {
+    /**
+     * @generated from field: btl.game.v1.types.football.TackleEventData tackle = 52;
+     */
+    value: TackleEventData;
+    case: "tackle";
+  } | {
+    /**
+     * @generated from field: btl.game.v1.types.football.CarryEventData carry = 53;
+     */
+    value: CarryEventData;
+    case: "carry";
+  } | {
+    /**
+     * @generated from field: btl.game.v1.types.football.InterceptionEventData interception = 54;
+     */
+    value: InterceptionEventData;
+    case: "interception";
+  } | { case: undefined; value?: undefined };
 };
 
 /**
  * Describes the message btl.game.v1.types.football.MatchEvent.
  * Use `create(MatchEventSchema)` to create a new message.
  */
-export const MatchEventSchema: GenMessage<MatchEvent> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  5
-);
+export const MatchEventSchema: GenMessage<MatchEvent> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 5);
 
 /**
  * ShotEventData contains shot-specific fields.
  *
  * @generated from message btl.game.v1.types.football.ShotEventData
  */
-export type ShotEventData = Message<'btl.game.v1.types.football.ShotEventData'> & {
+export type ShotEventData = Message<"btl.game.v1.types.football.ShotEventData"> & {
   /**
    * @generated from field: btl.game.v1.types.football.PitchCoordinates end_location = 1;
    */
@@ -370,17 +351,15 @@ export type ShotEventData = Message<'btl.game.v1.types.football.ShotEventData'> 
  * Describes the message btl.game.v1.types.football.ShotEventData.
  * Use `create(ShotEventDataSchema)` to create a new message.
  */
-export const ShotEventDataSchema: GenMessage<ShotEventData> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  6
-);
+export const ShotEventDataSchema: GenMessage<ShotEventData> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 6);
 
 /**
  * PassEventData contains pass-specific fields.
  *
  * @generated from message btl.game.v1.types.football.PassEventData
  */
-export type PassEventData = Message<'btl.game.v1.types.football.PassEventData'> & {
+export type PassEventData = Message<"btl.game.v1.types.football.PassEventData"> & {
   /**
    * @generated from field: btl.game.v1.types.football.PitchCoordinates end_location = 1;
    */
@@ -411,17 +390,15 @@ export type PassEventData = Message<'btl.game.v1.types.football.PassEventData'> 
  * Describes the message btl.game.v1.types.football.PassEventData.
  * Use `create(PassEventDataSchema)` to create a new message.
  */
-export const PassEventDataSchema: GenMessage<PassEventData> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  7
-);
+export const PassEventDataSchema: GenMessage<PassEventData> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 7);
 
 /**
  * TackleEventData contains tackle-specific fields.
  *
  * @generated from message btl.game.v1.types.football.TackleEventData
  */
-export type TackleEventData = Message<'btl.game.v1.types.football.TackleEventData'> & {
+export type TackleEventData = Message<"btl.game.v1.types.football.TackleEventData"> & {
   /**
    * @generated from field: btl.game.v1.types.football.TackleOutcome outcome = 1;
    */
@@ -437,17 +414,15 @@ export type TackleEventData = Message<'btl.game.v1.types.football.TackleEventDat
  * Describes the message btl.game.v1.types.football.TackleEventData.
  * Use `create(TackleEventDataSchema)` to create a new message.
  */
-export const TackleEventDataSchema: GenMessage<TackleEventData> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  8
-);
+export const TackleEventDataSchema: GenMessage<TackleEventData> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 8);
 
 /**
  * CarryEventData contains carry-specific fields.
  *
  * @generated from message btl.game.v1.types.football.CarryEventData
  */
-export type CarryEventData = Message<'btl.game.v1.types.football.CarryEventData'> & {
+export type CarryEventData = Message<"btl.game.v1.types.football.CarryEventData"> & {
   /**
    * @generated from field: btl.game.v1.types.football.PitchCoordinates end_location = 1;
    */
@@ -458,17 +433,15 @@ export type CarryEventData = Message<'btl.game.v1.types.football.CarryEventData'
  * Describes the message btl.game.v1.types.football.CarryEventData.
  * Use `create(CarryEventDataSchema)` to create a new message.
  */
-export const CarryEventDataSchema: GenMessage<CarryEventData> /*@__PURE__*/ = messageDesc(
-  file_btl_game_v1_types_football_football,
-  9
-);
+export const CarryEventDataSchema: GenMessage<CarryEventData> = /*@__PURE__*/
+  messageDesc(file_btl_game_v1_types_football_football, 9);
 
 /**
  * InterceptionEventData contains interception-specific fields.
  *
  * @generated from message btl.game.v1.types.football.InterceptionEventData
  */
-export type InterceptionEventData = Message<'btl.game.v1.types.football.InterceptionEventData'> & {
+export type InterceptionEventData = Message<"btl.game.v1.types.football.InterceptionEventData"> & {
   /**
    * @generated from field: btl.game.v1.types.football.InterceptionOutcome outcome = 1;
    */
@@ -479,7 +452,7 @@ export type InterceptionEventData = Message<'btl.game.v1.types.football.Intercep
  * Describes the message btl.game.v1.types.football.InterceptionEventData.
  * Use `create(InterceptionEventDataSchema)` to create a new message.
  */
-export const InterceptionEventDataSchema: GenMessage<InterceptionEventData> /*@__PURE__*/ =
+export const InterceptionEventDataSchema: GenMessage<InterceptionEventData> = /*@__PURE__*/
   messageDesc(file_btl_game_v1_types_football_football, 10);
 
 /**
@@ -522,10 +495,8 @@ export enum EventType {
 /**
  * Describes the enum btl.game.v1.types.football.EventType.
  */
-export const EventTypeSchema: GenEnum<EventType> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  0
-);
+export const EventTypeSchema: GenEnum<EventType> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 0);
 
 /**
  * @generated from enum btl.game.v1.types.football.ShotOutcome
@@ -565,10 +536,8 @@ export enum ShotOutcome {
 /**
  * Describes the enum btl.game.v1.types.football.ShotOutcome.
  */
-export const ShotOutcomeSchema: GenEnum<ShotOutcome> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  1
-);
+export const ShotOutcomeSchema: GenEnum<ShotOutcome> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 1);
 
 /**
  * @generated from enum btl.game.v1.types.football.PassHeight
@@ -598,10 +567,8 @@ export enum PassHeight {
 /**
  * Describes the enum btl.game.v1.types.football.PassHeight.
  */
-export const PassHeightSchema: GenEnum<PassHeight> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  2
-);
+export const PassHeightSchema: GenEnum<PassHeight> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 2);
 
 /**
  * @generated from enum btl.game.v1.types.football.PassOutcome
@@ -626,10 +593,8 @@ export enum PassOutcome {
 /**
  * Describes the enum btl.game.v1.types.football.PassOutcome.
  */
-export const PassOutcomeSchema: GenEnum<PassOutcome> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  3
-);
+export const PassOutcomeSchema: GenEnum<PassOutcome> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 3);
 
 /**
  * @generated from enum btl.game.v1.types.football.TackleOutcome
@@ -654,10 +619,8 @@ export enum TackleOutcome {
 /**
  * Describes the enum btl.game.v1.types.football.TackleOutcome.
  */
-export const TackleOutcomeSchema: GenEnum<TackleOutcome> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  4
-);
+export const TackleOutcomeSchema: GenEnum<TackleOutcome> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 4);
 
 /**
  * @generated from enum btl.game.v1.types.football.DuelType
@@ -682,10 +645,8 @@ export enum DuelType {
 /**
  * Describes the enum btl.game.v1.types.football.DuelType.
  */
-export const DuelTypeSchema: GenEnum<DuelType> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  5
-);
+export const DuelTypeSchema: GenEnum<DuelType> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 5);
 
 /**
  * @generated from enum btl.game.v1.types.football.InterceptionOutcome
@@ -710,10 +671,8 @@ export enum InterceptionOutcome {
 /**
  * Describes the enum btl.game.v1.types.football.InterceptionOutcome.
  */
-export const InterceptionOutcomeSchema: GenEnum<InterceptionOutcome> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  6
-);
+export const InterceptionOutcomeSchema: GenEnum<InterceptionOutcome> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 6);
 
 /**
  * BodyPart identifies which body part was used.
@@ -750,7 +709,6 @@ export enum BodyPart {
 /**
  * Describes the enum btl.game.v1.types.football.BodyPart.
  */
-export const BodyPartSchema: GenEnum<BodyPart> /*@__PURE__*/ = enumDesc(
-  file_btl_game_v1_types_football_football,
-  7
-);
+export const BodyPartSchema: GenEnum<BodyPart> = /*@__PURE__*/
+  enumDesc(file_btl_game_v1_types_football_football, 7);
+
