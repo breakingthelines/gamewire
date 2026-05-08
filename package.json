@@ -27,6 +27,10 @@
     "./adapters/statsbomb-open": {
       "types": "./dist/adapters/statsbomb-open/index.d.ts",
       "import": "./dist/adapters/statsbomb-open/index.js"
+    },
+    "./worker": {
+      "types": "./dist/worker/index.d.ts",
+      "import": "./dist/worker/index.js"
     }
   },
   "publishConfig": {
@@ -34,11 +38,14 @@
     "registry": "https://npm.pkg.github.com"
   },
   "scripts": {
-    "build": "bunchee",
+    "build": "bunchee --external @breakingthelines/protos",
     "check": "tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "oxlint",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check .",
+    "start:worker": "bun run src/worker/server.ts",
+    "dev:worker": "bun --watch run src/worker/server.ts",
     "test": "vitest"
   },
   "dependencies": {

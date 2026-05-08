@@ -3,7 +3,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { fromStatsBombOpen } from './adapter.js';
 import type { StatsBombEvent } from './types.js';
 import { STATSBOMB_EVENT_TYPES } from './types.js';
-import { isShot, isPass, isCarry, EventType, PassOutcome } from '#/core/index.js';
+import { FootballActionType, PassOutcome, isCarry, isPass, isShot } from '#/core/index.js';
 
 // 2022 World Cup Final: Argentina vs France
 const FIXTURE_URL =
@@ -11,6 +11,7 @@ const FIXTURE_URL =
 
 describe('StatsBomb Open adapter', () => {
   let events: StatsBombEvent[];
+  const gameId = 'btl_football_game_argentina_france_2022';
 
   beforeAll(async () => {
     const response = await fetch(FIXTURE_URL);
@@ -19,97 +20,78 @@ describe('StatsBomb Open adapter', () => {
 
   describe('fromStatsBombOpen', () => {
     it('transforms events into normalised match data', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       expect(result).toMatchObject({
-        matchId: expect.any(String),
-        homeTeam: expect.objectContaining({ id: expect.any(String), name: expect.any(String) }),
-        awayTeam: expect.objectContaining({ id: expect.any(String), name: expect.any(String) }),
-        events: expect.any(Array),
-        source: {
+        gameId,
+        metadata: expect.objectContaining({
           provider: 'statsbomb-open',
-          name: 'StatsBomb Open Data',
-          logo: 'https://static.hudl.com/craft/productAssets/statsbomb_icon.svg',
-          url: expect.any(String),
-        },
+          replayId: expect.any(String),
+        }),
+        occurrences: expect.any(Array),
       });
     });
 
-    it('extracts teams from Starting XI events', () => {
-      const result = fromStatsBombOpen(events);
+    it('uses caller-supplied replay metadata', () => {
+      const result = fromStatsBombOpen(events, {
+        gameId,
+        replayId: 'replay-2022-final',
+        rawPayloadRef: 'r2://statsbomb/3869685.json',
+      });
 
-      // 2022 World Cup Final: Argentina vs France
-      expect(result.homeTeam?.name).toBe('Argentina');
-      expect(result.awayTeam?.name).toBe('France');
+      expect(result.metadata?.replayId).toBe('replay-2022-final');
+      expect(result.metadata?.rawPayloadRef).toBe('r2://statsbomb/3869685.json');
     });
 
     it('produces valid proto message structure', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // Verify proto message has required fields
-      expect(result.matchId).toBeDefined();
-      expect(result.homeTeam).toBeDefined();
-      expect(result.awayTeam).toBeDefined();
-      expect(result.events).toBeDefined();
-      expect(result.source).toBeDefined();
+      expect(result.gameId).toBe(gameId);
+      expect(result.metadata).toBeDefined();
+      expect(result.occurrences).toBeDefined();
 
       // Verify events have proper structure
-      expect(result.events.length).toBeGreaterThan(0);
-      const firstEvent = result.events[0];
+      expect(result.occurrences.length).toBeGreaterThan(0);
+      const firstEvent = result.occurrences[0];
       expect(firstEvent.id).toBeDefined();
-      expect(firstEvent.type).toBeDefined();
-    });
-
-    it('applies team overrides from options', () => {
-      const result = fromStatsBombOpen(events, {
-        homeTeam: { shortName: 'ARG', primaryColor: '#75AADB' },
-        awayTeam: { shortName: 'FRA', primaryColor: '#002654' },
-      });
-
-      expect(result.homeTeam?.shortName).toBe('ARG');
-      expect(result.homeTeam?.primaryColor).toBe('#75AADB');
-      expect(result.awayTeam?.shortName).toBe('FRA');
-      expect(result.awayTeam?.primaryColor).toBe('#002654');
-    });
-
-    it('includes custom meta', () => {
-      const result = fromStatsBombOpen(events, {
-        meta: { competition: 'World Cup 2022', round: 'Final' },
-      });
-
-      expect(result.meta).toEqual({
-        competition: 'World Cup 2022',
-        round: 'Final',
-      });
+      expect(firstEvent.kind).toBeDefined();
+      expect(firstEvent.payload.case).toBe('action');
     });
   });
 
   describe('coordinate normalisation', () => {
     it('transforms StatsBomb coordinates (120x80) to BTL (0-100)', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // Find a pass event with location
-      const passEvent = result.events.find((e) => e.type === EventType.PASS && e.location);
+      const passEvent = result.occurrences
+        .filter(isPass)
+        .find((e) => e.payload.value.action.value.location);
 
       expect(passEvent).toBeDefined();
-      expect(passEvent!.location!.x).toBeGreaterThanOrEqual(0);
-      expect(passEvent!.location!.x).toBeLessThanOrEqual(100);
-      expect(passEvent!.location!.y).toBeGreaterThanOrEqual(0);
-      expect(passEvent!.location!.y).toBeLessThanOrEqual(100);
+      const location = passEvent!.payload.value.action.value.location!;
+      expect(location.x).toBeGreaterThanOrEqual(0);
+      expect(location.x).toBeLessThanOrEqual(100);
+      expect(location.y).toBeGreaterThanOrEqual(0);
+      expect(location.y).toBeLessThanOrEqual(100);
     });
 
     it('normalises center of pitch correctly', () => {
       // StatsBomb center: (60, 40) -> BTL: (50, 50)
       // Find an event near center
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // Just verify all coordinates are in valid range
-      for (const event of result.events) {
-        if (event.location) {
-          expect(event.location.x).toBeGreaterThanOrEqual(0);
-          expect(event.location.x).toBeLessThanOrEqual(100);
-          expect(event.location.y).toBeGreaterThanOrEqual(0);
-          expect(event.location.y).toBeLessThanOrEqual(100);
+      for (const event of result.occurrences) {
+        if (event.payload.case === 'action' && event.payload.value.action.case === 'football') {
+          const { location } = event.payload.value.action.value;
+          if (location) {
+            expect(location.x).toBeGreaterThanOrEqual(0);
+            expect(location.x).toBeLessThanOrEqual(100);
+            expect(location.y).toBeGreaterThanOrEqual(0);
+            expect(location.y).toBeLessThanOrEqual(100);
+          }
         }
       }
     });
@@ -117,47 +99,47 @@ describe('StatsBomb Open adapter', () => {
 
   describe('event type mapping', () => {
     it('transforms shot events', () => {
-      const result = fromStatsBombOpen(events);
-      const shots = result.events.filter(isShot);
+      const result = fromStatsBombOpen(events, { gameId });
+      const shots = result.occurrences.filter(isShot);
 
       // The 2022 World Cup Final had many shots
       expect(shots.length).toBeGreaterThan(0);
 
       const shot = shots[0];
-      expect(shot.type).toBe(EventType.SHOT);
-      expect(shot.eventData.case).toBe('shot');
-      expect(shot.eventData.value.xg).toBeGreaterThanOrEqual(0);
-      expect(shot.eventData.value.xg).toBeLessThanOrEqual(1);
+      expect(shot.payload.value.action.value.type).toBe(FootballActionType.SHOT);
+      expect(shot.payload.value.action.value.actionData.case).toBe('shot');
+      expect(shot.payload.value.action.value.actionData.value.xg).toBeGreaterThanOrEqual(0);
+      expect(shot.payload.value.action.value.actionData.value.xg).toBeLessThanOrEqual(1);
     });
 
     it('transforms pass events', () => {
-      const result = fromStatsBombOpen(events);
-      const passes = result.events.filter(isPass);
+      const result = fromStatsBombOpen(events, { gameId });
+      const passes = result.occurrences.filter(isPass);
 
       expect(passes.length).toBeGreaterThan(0);
 
       const pass = passes[0];
-      expect(pass.type).toBe(EventType.PASS);
-      expect(pass.eventData.case).toBe('pass');
+      expect(pass.payload.value.action.value.type).toBe(FootballActionType.PASS);
+      expect(pass.payload.value.action.value.actionData.case).toBe('pass');
       expect([PassOutcome.SUCCESSFUL, PassOutcome.UNSUCCESSFUL]).toContain(
-        pass.eventData.value.outcome
+        pass.payload.value.action.value.actionData.value.outcome
       );
     });
 
     it('transforms carry events', () => {
-      const result = fromStatsBombOpen(events);
-      const carries = result.events.filter(isCarry);
+      const result = fromStatsBombOpen(events, { gameId });
+      const carries = result.occurrences.filter(isCarry);
 
       expect(carries.length).toBeGreaterThan(0);
 
       const carry = carries[0];
-      expect(carry.type).toBe(EventType.CARRY);
-      expect(carry.eventData.case).toBe('carry');
-      expect(carry.eventData.value.endLocation).toBeDefined();
+      expect(carry.payload.value.action.value.type).toBe(FootballActionType.CARRY);
+      expect(carry.payload.value.action.value.actionData.case).toBe('carry');
+      expect(carry.payload.value.action.value.actionData.value.endLocation).toBeDefined();
     });
 
     it('filters out unsupported event types', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // Count raw events of supported types
       const supportedTypeIds = [
@@ -176,38 +158,40 @@ describe('StatsBomb Open adapter', () => {
       ).length;
 
       // Total transformed should be <= supported raw + tackles
-      expect(result.events.length).toBeLessThanOrEqual(supportedRawCount + tackleCount);
+      expect(result.occurrences.length).toBeLessThanOrEqual(supportedRawCount + tackleCount);
     });
   });
 
   describe('data source attribution', () => {
     it('includes StatsBomb Open attribution', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
-      expect(result.source?.provider).toBe('statsbomb-open');
-      expect(result.source?.name).toBe('StatsBomb Open Data');
-      expect(result.source?.url).toContain('github.com/statsbomb');
+      expect(result.occurrences[0]?.source?.provider).toBe('statsbomb-open');
+      expect(result.occurrences[0]?.source?.name).toBe('StatsBomb Open Data');
+      expect(result.occurrences[0]?.source?.url).toContain('github.com/statsbomb');
     });
   });
 
   describe('timestamp calculation', () => {
     it('converts minute/second to decimal timestamp', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // Find an event in the first half
-      const event = result.events.find((e) => e.timestamp > 0 && e.timestamp < 45);
+      const event = result.occurrences.find(
+        (e) => e.clock && e.clock.elapsedSeconds > 0 && e.clock.elapsedSeconds < 45 * 60
+      );
 
       expect(event).toBeDefined();
-      expect(event!.timestamp).toBeGreaterThan(0);
+      expect(event!.clock!.elapsedSeconds).toBeGreaterThan(0);
     });
 
     it('includes period in event meta', () => {
-      const result = fromStatsBombOpen(events);
+      const result = fromStatsBombOpen(events, { gameId });
 
       // All events should have period in meta
-      for (const event of result.events.slice(0, 10)) {
-        expect(event.meta?.period).toBeDefined();
-        expect(['1', '2', '3', '4', '5']).toContain(event.meta?.period);
+      for (const event of result.occurrences.slice(0, 10)) {
+        expect(event.clock).toBeDefined();
+        expect([1, 2, 3, 4, 5]).toContain(event.clock?.period);
       }
     });
   });

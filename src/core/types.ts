@@ -1,43 +1,50 @@
-/**
- * Re-export proto types from generated folder.
- * These types are synced from the protos repo via GitHub Actions.
- */
+export {
+  type IngestGameOccurrencesRequest,
+  type IngestMetadata,
+  IngestGameOccurrencesRequestSchema,
+  IngestMetadataSchema,
+} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
 export {
-  // Message types
-  type NormalizedMatchData,
-  type DataSource,
-  type Team,
-  type Player,
+  type GameClock,
+  type GameOccurrence,
+  type ProviderAttribution,
+  type SportActionPayload,
+  GameClockSchema,
+  GameOccurrenceKind,
+  GameOccurrenceSchema,
+  OccurrenceRevisionState,
+  ProviderAttributionSchema,
+  ResolutionState,
+  SportActionPayloadSchema,
+} from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+
+export {
+  type FootballActionPayload,
   type PitchCoordinates,
-  type MatchEvent,
   type ShotEventData,
   type PassEventData,
   type TackleEventData,
   type CarryEventData,
   type InterceptionEventData,
-  // Enums
-  EventType,
-  ShotOutcome,
+  FootballActionPayloadSchema,
+  FootballActionType,
+  FootballClockPayloadSchema,
+  FootballPeriod,
+  PitchCoordinatesSchema,
   PassHeight,
   PassOutcome,
+  ShotEventDataSchema,
+  ShotOutcome,
+  PassEventDataSchema,
+  TackleEventDataSchema,
   TackleOutcome,
+  CarryEventDataSchema,
+  InterceptionEventDataSchema,
   DuelType,
   InterceptionOutcome,
   BodyPart,
-  // Schemas (for creating messages)
-  NormalizedMatchDataSchema,
-  DataSourceSchema,
-  TeamSchema,
-  PlayerSchema,
-  PitchCoordinatesSchema,
-  MatchEventSchema,
-  ShotEventDataSchema,
-  PassEventDataSchema,
-  TackleEventDataSchema,
-  CarryEventDataSchema,
-  InterceptionEventDataSchema,
-} from '#/generated/game/v1/types/football/football_pb.js';
+} from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 
 // Re-export create from protobuf for convenience
 export { create } from '@bufbuild/protobuf';

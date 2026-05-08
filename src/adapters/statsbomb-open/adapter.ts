@@ -7,23 +7,28 @@
 import { create } from '@bufbuild/protobuf';
 
 import {
-  type NormalizedMatchData,
-  type MatchEvent,
-  type Team,
-  type Player,
+  type IngestGameOccurrencesRequest,
+  type GameOccurrence,
   type PitchCoordinates,
-  NormalizedMatchDataSchema,
-  DataSourceSchema,
-  TeamSchema,
-  PlayerSchema,
+  IngestGameOccurrencesRequestSchema,
+  IngestMetadataSchema,
+  GameClockSchema,
+  GameOccurrenceKind,
+  GameOccurrenceSchema,
+  OccurrenceRevisionState,
+  ProviderAttributionSchema,
+  ResolutionState,
+  SportActionPayloadSchema,
+  FootballActionPayloadSchema,
+  FootballActionType,
+  FootballClockPayloadSchema,
+  FootballPeriod,
   PitchCoordinatesSchema,
-  MatchEventSchema,
   ShotEventDataSchema,
   PassEventDataSchema,
   CarryEventDataSchema,
   TackleEventDataSchema,
   InterceptionEventDataSchema,
-  EventType,
   ShotOutcome,
   PassHeight,
   PassOutcome,
@@ -31,12 +36,11 @@ import {
   InterceptionOutcome,
   BodyPart,
   DuelType,
-} from '#/generated/game/v1/types/football/football_pb.js';
+} from '#/core/index.js';
 
 import {
   type StatsBombEvent,
   type StatsBombLocation,
-  type StatsBombMatch,
   STATSBOMB_EVENT_TYPES,
   STATSBOMB_SHOT_OUTCOMES,
   STATSBOMB_PASS_HEIGHTS,
@@ -49,14 +53,16 @@ import {
 // =============================================================================
 
 export interface FromStatsBombOpenOptions {
-  /** Match metadata (from matches.json) */
-  match?: StatsBombMatch;
-  /** Override home team info */
-  homeTeam?: { shortName?: string; primaryColor?: string; secondaryColor?: string };
-  /** Override away team info */
-  awayTeam?: { shortName?: string; primaryColor?: string; secondaryColor?: string };
-  /** Additional metadata to include */
-  meta?: Record<string, string>;
+  /** Canonical BTL game ID minted by game-service. */
+  gameId: string;
+  /** Provider replay identifier used for idempotency and backfills. */
+  replayId?: string;
+  /** Optional pointer to the raw payload in object storage. */
+  rawPayloadRef?: string;
+  /** Optional batch ID when a caller coordinates multiple normalizers. */
+  normalizedBatchId?: string;
+  /** Optional idempotency key for the ingest request. */
+  idempotencyKey?: string;
 }
 
 // =============================================================================
@@ -158,75 +164,66 @@ function mapDuelType(duelTypeId: number | undefined): DuelType {
 }
 
 // =============================================================================
-// ENTITY TRANSFORMERS
-// =============================================================================
-
-function transformPlayer(
-  sbPlayer: { id: number; name: string } | undefined,
-  shirtNumber?: number
-): Player | undefined {
-  if (!sbPlayer) return undefined;
-  return create(PlayerSchema, {
-    id: String(sbPlayer.id),
-    name: sbPlayer.name,
-    shirtNumber: shirtNumber ?? 0,
-  });
-}
-
-function transformTeam(sbTeam: { id: number; name: string }): Team {
-  return create(TeamSchema, {
-    id: String(sbTeam.id),
-    name: sbTeam.name,
-  });
-}
-
-// =============================================================================
 // EVENT TRANSFORMERS
 // =============================================================================
 
-function getEventType(event: StatsBombEvent): EventType | null {
+function mapFootballPeriod(period: number): FootballPeriod {
+  switch (period) {
+    case 1:
+      return FootballPeriod.FIRST_HALF;
+    case 2:
+      return FootballPeriod.SECOND_HALF;
+    case 3:
+      return FootballPeriod.EXTRA_TIME_FIRST;
+    case 4:
+      return FootballPeriod.EXTRA_TIME_SECOND;
+    case 5:
+      return FootballPeriod.SHOOTOUT;
+    default:
+      return FootballPeriod.UNSPECIFIED;
+  }
+}
+
+function getActionType(event: StatsBombEvent): FootballActionType | null {
   switch (event.type.id) {
     case STATSBOMB_EVENT_TYPES.SHOT:
-      return EventType.SHOT;
+      return FootballActionType.SHOT;
     case STATSBOMB_EVENT_TYPES.PASS:
-      return EventType.PASS;
+      return FootballActionType.PASS;
     case STATSBOMB_EVENT_TYPES.CARRY:
-      return EventType.CARRY;
+      return FootballActionType.CARRY;
     case STATSBOMB_EVENT_TYPES.DUEL:
-      if (event.duel?.type?.id === 11) return EventType.TACKLE;
+      if (event.duel?.type?.id === 11) return FootballActionType.TACKLE;
       return null;
     case STATSBOMB_EVENT_TYPES.INTERCEPTION:
-      return EventType.INTERCEPTION;
+      return FootballActionType.INTERCEPTION;
     default:
       return null;
   }
 }
 
-function transformEvent(event: StatsBombEvent): MatchEvent | null {
-  const eventType = getEventType(event);
-  if (!eventType) return null;
+function transformEvent(event: StatsBombEvent, gameId: string): GameOccurrence | null {
+  const actionType = getActionType(event);
+  if (!actionType) return null;
 
-  const timestamp = event.minute + event.second / 60;
-
-  const matchEvent = create(MatchEventSchema, {
-    id: event.id,
-    type: eventType,
-    timestamp,
-    player: transformPlayer(event.player),
-    team: event.team ? transformTeam(event.team) : undefined,
+  const action = create(FootballActionPayloadSchema, {
+    type: actionType,
+    teamId: event.team ? String(event.team.id) : '',
+    playerId: event.player ? String(event.player.id) : '',
     location: event.location ? normalizeCoordinates(event.location) : undefined,
     meta: {
-      period: String(event.period),
+      provider_event_type: event.type.name,
+      provider_team: event.team.name,
       possession: String(event.possession),
-      ...(event.under_pressure && { underPressure: 'true' }),
+      ...(event.player && { provider_player: event.player.name }),
+      ...(event.under_pressure && { under_pressure: 'true' }),
     },
   });
 
-  // Add type-specific event data
-  switch (eventType) {
-    case EventType.SHOT:
+  switch (actionType) {
+    case FootballActionType.SHOT:
       if (event.shot) {
-        matchEvent.eventData = {
+        action.actionData = {
           case: 'shot',
           value: create(ShotEventDataSchema, {
             endLocation: event.shot.end_location
@@ -239,42 +236,33 @@ function transformEvent(event: StatsBombEvent): MatchEvent | null {
         };
       }
       break;
-
-    case EventType.PASS:
+    case FootballActionType.PASS:
       if (event.pass) {
-        matchEvent.eventData = {
+        action.actionData = {
           case: 'pass',
           value: create(PassEventDataSchema, {
-            endLocation: event.pass.end_location
-              ? normalizeCoordinates(event.pass.end_location)
-              : undefined,
-            recipient: event.pass.recipient ? transformPlayer(event.pass.recipient) : undefined,
-            height: event.pass.height
-              ? mapPassHeight(event.pass.height.id)
-              : PassHeight.UNSPECIFIED,
+            endLocation: event.pass.end_location ? normalizeCoordinates(event.pass.end_location) : undefined,
+            recipientPlayerId: event.pass.recipient ? String(event.pass.recipient.id) : '',
+            height: event.pass.height ? mapPassHeight(event.pass.height.id) : PassHeight.UNSPECIFIED,
             bodyPart: mapBodyPart(event.pass.body_part?.id),
             outcome: mapPassOutcome(event.pass.outcome),
           }),
         };
       }
       break;
-
-    case EventType.CARRY:
+    case FootballActionType.CARRY:
       if (event.carry) {
-        matchEvent.eventData = {
+        action.actionData = {
           case: 'carry',
           value: create(CarryEventDataSchema, {
-            endLocation: event.carry.end_location
-              ? normalizeCoordinates(event.carry.end_location)
-              : undefined,
+            endLocation: event.carry.end_location ? normalizeCoordinates(event.carry.end_location) : undefined,
           }),
         };
       }
       break;
-
-    case EventType.TACKLE:
+    case FootballActionType.TACKLE:
       if (event.duel) {
-        matchEvent.eventData = {
+        action.actionData = {
           case: 'tackle',
           value: create(TackleEventDataSchema, {
             outcome: mapTackleOutcome(event.duel.outcome),
@@ -283,10 +271,9 @@ function transformEvent(event: StatsBombEvent): MatchEvent | null {
         };
       }
       break;
-
-    case EventType.INTERCEPTION:
+    case FootballActionType.INTERCEPTION:
       if (event.interception) {
-        matchEvent.eventData = {
+        action.actionData = {
           case: 'interception',
           value: create(InterceptionEventDataSchema, {
             outcome: mapInterceptionOutcome(event.interception.outcome.id),
@@ -296,7 +283,47 @@ function transformEvent(event: StatsBombEvent): MatchEvent | null {
       break;
   }
 
-  return matchEvent;
+  return create(GameOccurrenceSchema, {
+    id: event.id,
+    gameId,
+    sequence: event.index,
+    clock: create(GameClockSchema, {
+      display: `${event.minute}:${String(event.second).padStart(2, '0')}`,
+      period: event.period,
+      elapsedSeconds: event.minute * 60 + event.second,
+      running: false,
+      sportClock: {
+        case: 'football',
+        value: create(FootballClockPayloadSchema, {
+          period: mapFootballPeriod(event.period),
+          minute: event.minute,
+          stoppageMinute: 0,
+        }),
+      },
+    }),
+    kind: GameOccurrenceKind.ACTION,
+    resolutionState: ResolutionState.UNRESOLVED_PROVIDER_REF,
+    version: 1,
+    revisionState: OccurrenceRevisionState.CURRENT,
+    relatedOccurrenceIds: event.related_events ?? [],
+    source: create(ProviderAttributionSchema, {
+      provider: 'statsbomb-open',
+      name: 'StatsBomb Open Data',
+      logo: 'https://static.hudl.com/craft/productAssets/statsbomb_icon.svg',
+      url: 'https://github.com/statsbomb/open-data',
+      license: 'StatsBomb Open Data',
+      attributionText: 'Data from StatsBomb Open Data',
+    }),
+    payload: {
+      case: 'action',
+      value: create(SportActionPayloadSchema, {
+        action: {
+          case: 'football',
+          value: action,
+        },
+      }),
+    },
+  });
 }
 
 // =============================================================================
@@ -308,85 +335,35 @@ function transformEvent(event: StatsBombEvent): MatchEvent | null {
  *
  * @param events - Array of StatsBomb events (from events JSON file)
  * @param options - Optional configuration
- * @returns NormalizedMatchData proto message
+ * @returns GameService ingest request containing normalised GameOccurrence messages
  *
  * @example
  * ```ts
  * import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
  *
- * const matchData = fromStatsBombOpen(eventsJson, {
- *   homeTeam: { shortName: 'ARG', primaryColor: '#75AADB' },
- *   awayTeam: { shortName: 'FRA', primaryColor: '#002654' },
+ * const request = fromStatsBombOpen(eventsJson, {
+ *   gameId: 'btl_football_game_argentina_france_2022',
  * });
  * ```
  */
 export function fromStatsBombOpen(
   events: StatsBombEvent[],
-  options: FromStatsBombOpenOptions = {}
-): NormalizedMatchData {
-  const teamsFromEvents = extractTeamsFromEvents(events);
+  options: FromStatsBombOpenOptions
+): IngestGameOccurrencesRequest {
+  const providerMatchId = events[0]?.id?.split('-')[0] || 'unknown';
+  const replayId = options.replayId ?? `statsbomb-open:${providerMatchId}`;
+  const gameId = options.gameId;
+  const occurrences = events.map((event) => transformEvent(event, gameId)).filter((e): e is GameOccurrence => e !== null);
 
-  const homeTeam = create(TeamSchema, {
-    id: teamsFromEvents.home.id,
-    name: teamsFromEvents.home.name,
-    shortName: options.homeTeam?.shortName ?? '',
-    primaryColor: options.homeTeam?.primaryColor ?? '',
-    secondaryColor: options.homeTeam?.secondaryColor ?? '',
-  });
-
-  const awayTeam = create(TeamSchema, {
-    id: teamsFromEvents.away.id,
-    name: teamsFromEvents.away.name,
-    shortName: options.awayTeam?.shortName ?? '',
-    primaryColor: options.awayTeam?.primaryColor ?? '',
-    secondaryColor: options.awayTeam?.secondaryColor ?? '',
-  });
-
-  const matchId = options.match?.match_id
-    ? String(options.match.match_id)
-    : events[0]?.id?.split('-')[0] || 'unknown';
-
-  const transformedEvents = events.map(transformEvent).filter((e): e is MatchEvent => e !== null);
-
-  return create(NormalizedMatchDataSchema, {
-    matchId,
-    homeTeam,
-    awayTeam,
-    events: transformedEvents,
-    source: create(DataSourceSchema, {
+  return create(IngestGameOccurrencesRequestSchema, {
+    gameId,
+    metadata: create(IngestMetadataSchema, {
       provider: 'statsbomb-open',
-      name: 'StatsBomb Open Data',
-      logo: 'https://static.hudl.com/craft/productAssets/statsbomb_icon.svg',
-      url: 'https://github.com/statsbomb/open-data',
+      replayId,
+      rawPayloadRef: options.rawPayloadRef ?? '',
+      normalizedBatchId: options.normalizedBatchId ?? `statsbomb-open:${gameId}:occurrences`,
+      idempotencyKey: options.idempotencyKey ?? `statsbomb-open:${gameId}:${replayId}:occurrences`,
     }),
-    meta: options.meta ?? {},
+    occurrences,
   });
-}
-
-function extractTeamsFromEvents(events: StatsBombEvent[]): {
-  home: { id: string; name: string };
-  away: { id: string; name: string };
-} {
-  const startingXIs = events.filter((e) => e.type.id === STATSBOMB_EVENT_TYPES.STARTING_XI);
-
-  if (startingXIs.length >= 2) {
-    return {
-      home: { id: String(startingXIs[0].team.id), name: startingXIs[0].team.name },
-      away: { id: String(startingXIs[1].team.id), name: startingXIs[1].team.name },
-    };
-  }
-
-  const teams = new Map<number, { id: number; name: string }>();
-  for (const event of events) {
-    if (event.team && !teams.has(event.team.id)) {
-      teams.set(event.team.id, event.team);
-    }
-    if (teams.size >= 2) break;
-  }
-
-  const teamArray = Array.from(teams.values());
-  return {
-    home: { id: String(teamArray[0]?.id ?? 0), name: teamArray[0]?.name ?? 'Unknown Home' },
-    away: { id: String(teamArray[1]?.id ?? 0), name: teamArray[1]?.name ?? 'Unknown Away' },
-  };
 }

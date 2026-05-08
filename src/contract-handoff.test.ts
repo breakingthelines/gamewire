@@ -1,7 +1,7 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 
-import { SubjectRefSchema, SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
+import { Sport, SubjectRefSchema, SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
   GameService,
   GetLeaderboardRequestSchema,
@@ -72,6 +72,7 @@ const teamSubject = (id: string, label: string) =>
   create(SubjectRefSchema, {
     id,
     type: SubjectType.TEAM,
+    sport: Sport.FOOTBALL,
     label,
   });
 
@@ -96,8 +97,8 @@ describe('published Track E proto handoff', () => {
       'btl.game.v1.ReportProviderHealthRequest'
     );
 
-    const homeTeam = teamSubject('btl_t_home', 'Home FC');
-    const awayTeam = teamSubject('btl_t_away', 'Away FC');
+    const homeTeam = teamSubject('btl_football_team_home', 'Home FC');
+    const awayTeam = teamSubject('btl_football_team_away', 'Away FC');
     const metadata = create(IngestMetadataSchema, {
       provider: provider.provider,
       replayId: 'fixture-sync-2026-05-06',
@@ -131,7 +132,7 @@ describe('published Track E proto handoff', () => {
           formation: '4-3-3',
           players: [
             create(FootballTeamSheetPlayerSchema, {
-              playerId: 'btl_p_home_10',
+              playerId: 'btl_football_player_home_10',
               playerName: 'Home Playmaker',
               shirtNumber: 10,
               positionCode: 'AM',
@@ -144,8 +145,8 @@ describe('published Track E proto handoff', () => {
       ],
     });
     const standings = create(FootballStandingsSchema, {
-      competitionId: 'btl_l_launch_league',
-      seasonId: 'btl_s_2026',
+      competitionId: 'btl_football_competition_launch_league',
+      seasonId: 'btl_football_season_2026',
       entries: [
         create(FootballStandingEntrySchema, {
           teamId: homeTeam.id,
@@ -244,7 +245,7 @@ describe('published Track E proto handoff', () => {
     expect(methods.stats.input.typeName).toBe('btl.identity.v1.StatsRequest');
 
     const lookup = create(LookupRequestSchema, {
-      id: 'btl_t_arsenal',
+      id: 'btl_football_team_arsenal',
       entityType: EntityType.TEAM,
     });
     const resolve = create(ResolveRequestSchema, {
@@ -280,6 +281,7 @@ describe('published Track E proto handoff', () => {
       subject: create(SubjectRefSchema, {
         id: 'btl_football_game_001',
         type: SubjectType.GAME,
+        sport: Sport.FOOTBALL,
       }),
     });
     const rating = create(SubmitRatingRequestSchema, {
@@ -299,7 +301,7 @@ describe('published Track E proto handoff', () => {
     const leaderboard = create(GetLeaderboardRequestSchema, {
       leagueInstanceId: 'cap_prediction_league_001',
       periodType: LeaderboardPeriodType.SEASON,
-      periodId: 'btl_s_2026',
+      periodId: 'btl_football_season_2026',
       limit: 20,
     });
 

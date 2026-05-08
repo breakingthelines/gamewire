@@ -9,7 +9,7 @@ import { describe, it, expect } from 'vitest';
 
 import { fromTemplate } from './adapter.js';
 import type { TemplateEvent } from './types.js';
-import { isShot, isPass, isCarry, EventType } from '#/core/index.js';
+import { FootballActionType, isCarry, isPass, isShot } from '#/core/index.js';
 
 // =============================================================================
 // TEST FIXTURES
@@ -37,13 +37,11 @@ describe('Template adapter', () => {
   describe('fromTemplate', () => {
     it.todo('transforms events into normalised match data', () => {
       const events: TemplateEvent[] = [createMockEvent()];
-      const result = fromTemplate(events);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
 
-      expect(result.matchId).toBeDefined();
-      expect(result.homeTeam).toBeDefined();
-      expect(result.awayTeam).toBeDefined();
-      expect(result.events.length).toBeGreaterThan(0);
-      expect(result.source).toBeDefined();
+      expect(result.gameId).toBeDefined();
+      expect(result.metadata).toBeDefined();
+      expect(result.occurrences.length).toBeGreaterThan(0);
     });
 
     it.todo('extracts teams correctly', () => {
@@ -52,22 +50,19 @@ describe('Template adapter', () => {
 
     it.todo('applies team overrides from options', () => {
       const events: TemplateEvent[] = [createMockEvent()];
-      const result = fromTemplate(events, {
-        homeTeam: { shortName: 'HME', primaryColor: '#FF0000' },
-        awayTeam: { shortName: 'AWY', primaryColor: '#0000FF' },
-      });
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
 
-      expect(result.homeTeam?.shortName).toBe('HME');
-      expect(result.homeTeam?.primaryColor).toBe('#FF0000');
+      expect(result.gameId).toBe('btl_football_game_template');
     });
 
     it.todo('includes custom meta', () => {
       const events: TemplateEvent[] = [createMockEvent()];
       const result = fromTemplate(events, {
-        meta: { competition: 'Test League' },
+        gameId: 'btl_football_game_template',
+        replayId: 'template-replay',
       });
 
-      expect(result.meta).toEqual({ competition: 'Test League' });
+      expect(result.metadata?.replayId).toBe('template-replay');
     });
   });
 
@@ -81,47 +76,47 @@ describe('Template adapter', () => {
   describe('event type mapping', () => {
     it.todo('transforms shot events', () => {
       const events: TemplateEvent[] = [createMockEvent({ type: { id: 1, name: 'Shot' } })];
-      const result = fromTemplate(events);
-      const shots = result.events.filter(isShot);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
+      const shots = result.occurrences.filter(isShot);
 
       expect(shots.length).toBe(1);
-      expect(shots[0].type).toBe(EventType.SHOT);
-      expect(shots[0].eventData.case).toBe('shot');
+      expect(shots[0].payload.value.action.value.type).toBe(FootballActionType.SHOT);
+      expect(shots[0].payload.value.action.value.actionData.case).toBe('shot');
     });
 
     it.todo('transforms pass events', () => {
       const events: TemplateEvent[] = [createMockEvent({ type: { id: 2, name: 'Pass' } })];
-      const result = fromTemplate(events);
-      const passes = result.events.filter(isPass);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
+      const passes = result.occurrences.filter(isPass);
 
       expect(passes.length).toBe(1);
-      expect(passes[0].type).toBe(EventType.PASS);
+      expect(passes[0].payload.value.action.value.type).toBe(FootballActionType.PASS);
     });
 
     it.todo('transforms carry events', () => {
       const events: TemplateEvent[] = [createMockEvent({ type: { id: 3, name: 'Carry' } })];
-      const result = fromTemplate(events);
-      const carries = result.events.filter(isCarry);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
+      const carries = result.occurrences.filter(isCarry);
 
       expect(carries.length).toBe(1);
-      expect(carries[0].type).toBe(EventType.CARRY);
+      expect(carries[0].payload.value.action.value.type).toBe(FootballActionType.CARRY);
     });
 
     it.todo('filters out unsupported event types', () => {
       const events: TemplateEvent[] = [createMockEvent({ type: { id: 999, name: 'Unknown' } })];
-      const result = fromTemplate(events);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
 
-      expect(result.events.length).toBe(0);
+      expect(result.occurrences.length).toBe(0);
     });
   });
 
   describe('data source attribution', () => {
     it.todo('includes provider attribution', () => {
       const events: TemplateEvent[] = [createMockEvent()];
-      const result = fromTemplate(events);
+      const result = fromTemplate(events, { gameId: 'btl_football_game_template' });
 
-      expect(result.source?.provider).toBe('template');
-      expect(result.source?.name).toBeDefined();
+      expect(result.occurrences[0]?.source?.provider).toBe('template');
+      expect(result.occurrences[0]?.source?.name).toBeDefined();
     });
   });
 

@@ -4,13 +4,14 @@
  */
 
 import {
-  type MatchEvent,
+  type FootballActionPayload,
+  type GameOccurrence,
   type ShotEventData,
   type PassEventData,
   type TackleEventData,
   type CarryEventData,
   type InterceptionEventData,
-  EventType,
+  FootballActionType,
   ShotOutcome,
   PassHeight,
   PassOutcome,
@@ -24,47 +25,94 @@ import {
 // TYPE GUARDS
 // =============================================================================
 
+type FootballActionOccurrence<TCase extends FootballActionPayload['actionData']['case'], TValue> =
+  GameOccurrence & {
+    payload: {
+      case: 'action';
+      value: {
+        action: {
+          case: 'football';
+          value: FootballActionPayload & {
+            actionData: {
+              case: TCase;
+              value: TValue;
+            };
+          };
+        };
+      };
+    };
+  };
+
 export function isShot(
-  event: MatchEvent
-): event is MatchEvent & { eventData: { case: 'shot'; value: ShotEventData } } {
-  return event.eventData.case === 'shot';
+  event: GameOccurrence
+): event is FootballActionOccurrence<'shot', ShotEventData> {
+  return (
+    event.payload.case === 'action' &&
+    event.payload.value.action.case === 'football' &&
+    event.payload.value.action.value.actionData.case === 'shot'
+  );
 }
 
 export function isPass(
-  event: MatchEvent
-): event is MatchEvent & { eventData: { case: 'pass'; value: PassEventData } } {
-  return event.eventData.case === 'pass';
+  event: GameOccurrence
+): event is FootballActionOccurrence<'pass', PassEventData> {
+  return (
+    event.payload.case === 'action' &&
+    event.payload.value.action.case === 'football' &&
+    event.payload.value.action.value.actionData.case === 'pass'
+  );
 }
 
 export function isTackle(
-  event: MatchEvent
-): event is MatchEvent & { eventData: { case: 'tackle'; value: TackleEventData } } {
-  return event.eventData.case === 'tackle';
+  event: GameOccurrence
+): event is FootballActionOccurrence<'tackle', TackleEventData> {
+  return (
+    event.payload.case === 'action' &&
+    event.payload.value.action.case === 'football' &&
+    event.payload.value.action.value.actionData.case === 'tackle'
+  );
 }
 
 export function isCarry(
-  event: MatchEvent
-): event is MatchEvent & { eventData: { case: 'carry'; value: CarryEventData } } {
-  return event.eventData.case === 'carry';
+  event: GameOccurrence
+): event is FootballActionOccurrence<'carry', CarryEventData> {
+  return (
+    event.payload.case === 'action' &&
+    event.payload.value.action.case === 'football' &&
+    event.payload.value.action.value.actionData.case === 'carry'
+  );
 }
 
 export function isInterception(
-  event: MatchEvent
-): event is MatchEvent & { eventData: { case: 'interception'; value: InterceptionEventData } } {
-  return event.eventData.case === 'interception';
+  event: GameOccurrence
+): event is FootballActionOccurrence<'interception', InterceptionEventData> {
+  return (
+    event.payload.case === 'action' &&
+    event.payload.value.action.case === 'football' &&
+    event.payload.value.action.value.actionData.case === 'interception'
+  );
 }
 
 // =============================================================================
 // ENUM TO STRING HELPERS
 // =============================================================================
 
-export const eventTypeName: Record<EventType, string> = {
-  [EventType.UNSPECIFIED]: 'unspecified',
-  [EventType.SHOT]: 'shot',
-  [EventType.PASS]: 'pass',
-  [EventType.TACKLE]: 'tackle',
-  [EventType.CARRY]: 'carry',
-  [EventType.INTERCEPTION]: 'interception',
+export const footballActionTypeName: Record<FootballActionType, string> = {
+  [FootballActionType.UNSPECIFIED]: 'unspecified',
+  [FootballActionType.SHOT]: 'shot',
+  [FootballActionType.PASS]: 'pass',
+  [FootballActionType.TACKLE]: 'tackle',
+  [FootballActionType.CARRY]: 'carry',
+  [FootballActionType.INTERCEPTION]: 'interception',
+  [FootballActionType.CARD]: 'card',
+  [FootballActionType.DUEL]: 'duel',
+  [FootballActionType.GOALKEEPER]: 'goalkeeper',
+  [FootballActionType.CLEARANCE]: 'clearance',
+  [FootballActionType.SUBSTITUTION]: 'substitution',
+  [FootballActionType.FOUL_COMMITTED]: 'foul_committed',
+  [FootballActionType.TAKE_ON]: 'take_on',
+  [FootballActionType.RECOVERY]: 'recovery',
+  [FootballActionType.PRESSURE]: 'pressure',
 };
 
 export const shotOutcomeName: Record<ShotOutcome, string> = {

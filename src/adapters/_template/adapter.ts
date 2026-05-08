@@ -8,24 +8,31 @@
 import { create } from '@bufbuild/protobuf';
 
 import {
-  type NormalizedMatchData,
-  type MatchEvent,
+  type IngestGameOccurrencesRequest,
+  type GameOccurrence,
   type PitchCoordinates,
-  NormalizedMatchDataSchema,
-  DataSourceSchema,
-  TeamSchema,
-  PlayerSchema,
+  IngestGameOccurrencesRequestSchema,
+  IngestMetadataSchema,
+  GameClockSchema,
+  GameOccurrenceKind,
+  GameOccurrenceSchema,
+  OccurrenceRevisionState,
+  ProviderAttributionSchema,
+  ResolutionState,
+  SportActionPayloadSchema,
+  FootballActionPayloadSchema,
+  FootballActionType,
+  FootballClockPayloadSchema,
+  FootballPeriod,
   PitchCoordinatesSchema,
-  MatchEventSchema,
   ShotEventDataSchema,
   PassEventDataSchema,
   CarryEventDataSchema,
-  EventType,
   ShotOutcome,
   PassHeight,
   PassOutcome,
   BodyPart,
-} from '#/generated/game/v1/types/football/football_pb.js';
+} from '#/core/index.js';
 
 import { type TemplateEvent, TEMPLATE_EVENT_TYPES, TEMPLATE_PITCH } from './types.js';
 
@@ -34,12 +41,10 @@ import { type TemplateEvent, TEMPLATE_EVENT_TYPES, TEMPLATE_PITCH } from './type
 // =============================================================================
 
 export interface FromTemplateOptions {
-  /** Override home team info */
-  homeTeam?: { shortName?: string; primaryColor?: string; secondaryColor?: string };
-  /** Override away team info */
-  awayTeam?: { shortName?: string; primaryColor?: string; secondaryColor?: string };
-  /** Additional metadata to include */
-  meta?: Record<string, string>;
+  /** Canonical BTL game ID minted by game-service. */
+  gameId: string;
+  /** Provider replay identifier used for idempotency and backfills. */
+  replayId?: string;
 }
 
 // =============================================================================
@@ -105,54 +110,47 @@ function mapPassOutcome(_outcome: unknown): PassOutcome {
  * Determine BTL event type from provider event.
  * Return null for unsupported event types (they will be filtered out).
  */
-function getEventType(event: TemplateEvent): EventType | null {
+function getActionType(event: TemplateEvent): FootballActionType | null {
   switch (event.type.id) {
     case TEMPLATE_EVENT_TYPES.SHOT:
-      return EventType.SHOT;
+      return FootballActionType.SHOT;
     case TEMPLATE_EVENT_TYPES.PASS:
-      return EventType.PASS;
+      return FootballActionType.PASS;
     case TEMPLATE_EVENT_TYPES.CARRY:
-      return EventType.CARRY;
+      return FootballActionType.CARRY;
     case TEMPLATE_EVENT_TYPES.TACKLE:
-      return EventType.TACKLE;
+      return FootballActionType.TACKLE;
     case TEMPLATE_EVENT_TYPES.INTERCEPTION:
-      return EventType.INTERCEPTION;
+      return FootballActionType.INTERCEPTION;
     default:
       return null;
   }
 }
 
 /**
- * Transform a single provider event to BTL MatchEvent.
+ * Transform a single provider event to BTL GameOccurrence.
  * Return null for unsupported events.
  */
-function transformEvent(event: TemplateEvent): MatchEvent | null {
-  const eventType = getEventType(event);
-  if (!eventType) return null;
+function transformEvent(event: TemplateEvent, gameId: string): GameOccurrence | null {
+  const actionType = getActionType(event);
+  if (!actionType) return null;
 
-  const matchEvent = create(MatchEventSchema, {
-    id: event.id,
-    type: eventType,
-    timestamp: event.timestamp,
-    player: event.player
-      ? create(PlayerSchema, {
-          id: String(event.player.id),
-          name: event.player.name,
-        })
-      : undefined,
-    team: event.team
-      ? create(TeamSchema, {
-          id: String(event.team.id),
-          name: event.team.name,
-        })
-      : undefined,
+  const action = create(FootballActionPayloadSchema, {
+    type: actionType,
+    teamId: event.team ? String(event.team.id) : '',
+    playerId: event.player ? String(event.player.id) : '',
     location: event.location ? normalizeCoordinates(event.location) : undefined,
+    meta: {
+      provider_event_type: event.type.name,
+      ...(event.player && { provider_player: event.player.name }),
+      ...(event.team && { provider_team: event.team.name }),
+    },
   });
 
   // Add type-specific event data
-  switch (eventType) {
-    case EventType.SHOT:
-      matchEvent.eventData = {
+  switch (actionType) {
+    case FootballActionType.SHOT:
+      action.actionData = {
         case: 'shot',
         value: create(ShotEventDataSchema, {
           // TODO: Map shot-specific fields
@@ -162,8 +160,8 @@ function transformEvent(event: TemplateEvent): MatchEvent | null {
       };
       break;
 
-    case EventType.PASS:
-      matchEvent.eventData = {
+    case FootballActionType.PASS:
+      action.actionData = {
         case: 'pass',
         value: create(PassEventDataSchema, {
           // TODO: Map pass-specific fields
@@ -174,8 +172,8 @@ function transformEvent(event: TemplateEvent): MatchEvent | null {
       };
       break;
 
-    case EventType.CARRY:
-      matchEvent.eventData = {
+    case FootballActionType.CARRY:
+      action.actionData = {
         case: 'carry',
         value: create(CarryEventDataSchema, {
           // TODO: Map carry-specific fields
@@ -186,7 +184,39 @@ function transformEvent(event: TemplateEvent): MatchEvent | null {
     // Add more event types as needed
   }
 
-  return matchEvent;
+  return create(GameOccurrenceSchema, {
+    id: event.id,
+    gameId,
+    sequence: Math.trunc(event.timestamp),
+    clock: create(GameClockSchema, {
+      display: String(event.timestamp),
+      elapsedSeconds: Math.trunc(event.timestamp * 60),
+      sportClock: {
+        case: 'football',
+        value: create(FootballClockPayloadSchema, {
+          period: FootballPeriod.UNSPECIFIED,
+          minute: Math.trunc(event.timestamp),
+        }),
+      },
+    }),
+    kind: GameOccurrenceKind.ACTION,
+    resolutionState: ResolutionState.UNRESOLVED_PROVIDER_REF,
+    version: 1,
+    revisionState: OccurrenceRevisionState.CURRENT,
+    source: create(ProviderAttributionSchema, {
+      provider: 'template',
+      name: 'Template Provider',
+    }),
+    payload: {
+      case: 'action',
+      value: create(SportActionPayloadSchema, {
+        action: {
+          case: 'football',
+          value: action,
+        },
+      }),
+    },
+  });
 }
 
 // =============================================================================
@@ -198,53 +228,34 @@ function transformEvent(event: TemplateEvent): MatchEvent | null {
  *
  * @param events - Array of raw events from provider
  * @param options - Optional configuration
- * @returns NormalizedMatchData proto message
+ * @returns GameService ingest request containing normalised GameOccurrence messages
  *
  * @example
  * ```ts
  * import { fromTemplate } from '@breakingthelines/gamewire/adapters/template';
  *
- * const matchData = fromTemplate(events, {
- *   homeTeam: { shortName: 'HME', primaryColor: '#FF0000' },
- *   awayTeam: { shortName: 'AWY', primaryColor: '#0000FF' },
+ * const request = fromTemplate(events, {
+ *   gameId: 'btl_football_game_example',
  * });
  * ```
  */
 export function fromTemplate(
   events: TemplateEvent[],
-  options: FromTemplateOptions = {}
-): NormalizedMatchData {
-  // TODO: Extract teams from events or options
-  const homeTeam = create(TeamSchema, {
-    id: '1',
-    name: 'Home Team',
-    shortName: options.homeTeam?.shortName ?? '',
-    primaryColor: options.homeTeam?.primaryColor ?? '',
-    secondaryColor: options.homeTeam?.secondaryColor ?? '',
-  });
+  options: FromTemplateOptions
+): IngestGameOccurrencesRequest {
+  const replayId = options.replayId ?? `template:${options.gameId}:occurrences`;
+  const occurrences = events
+    .map((event) => transformEvent(event, options.gameId))
+    .filter((e): e is GameOccurrence => e !== null);
 
-  const awayTeam = create(TeamSchema, {
-    id: '2',
-    name: 'Away Team',
-    shortName: options.awayTeam?.shortName ?? '',
-    primaryColor: options.awayTeam?.primaryColor ?? '',
-    secondaryColor: options.awayTeam?.secondaryColor ?? '',
-  });
-
-  const transformedEvents = events.map(transformEvent).filter((e): e is MatchEvent => e !== null);
-
-  return create(NormalizedMatchDataSchema, {
-    matchId: 'unknown',
-    homeTeam,
-    awayTeam,
-    events: transformedEvents,
-    source: create(DataSourceSchema, {
-      // TODO: Update with your provider's attribution
+  return create(IngestGameOccurrencesRequestSchema, {
+    gameId: options.gameId,
+    metadata: create(IngestMetadataSchema, {
       provider: 'template',
-      name: 'Template Provider',
-      logo: '',
-      url: '',
+      replayId,
+      normalizedBatchId: `template:${options.gameId}:occurrences`,
+      idempotencyKey: replayId,
     }),
-    meta: options.meta ?? {},
+    occurrences,
   });
 }

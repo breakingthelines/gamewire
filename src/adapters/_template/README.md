@@ -62,17 +62,18 @@ function normalizeCoordinates(x: number, y: number): PitchCoordinates {
 }
 ```
 
-### 3. Map Event Types
+### 3. Map Action Types
 
-Create a function to map your provider's event types to BTL's `EventType` enum:
+Create a function to map your provider's event types to BTL's
+`FootballActionType` enum:
 
 ```typescript
-function getEventType(event: YourProviderEvent): EventType | null {
+function getActionType(event: YourProviderEvent): FootballActionType | null {
   switch (event.eventType) {
     case YOUR_PROVIDER_EVENT_TYPES.SHOT:
-      return EventType.SHOT;
+      return FootballActionType.SHOT;
     case YOUR_PROVIDER_EVENT_TYPES.PASS:
-      return EventType.PASS;
+      return FootballActionType.PASS;
     // ... more mappings
     default:
       return null; // Unsupported events are filtered out
@@ -107,27 +108,24 @@ function mapShotOutcome(outcomeCode: string): ShotOutcome {
 
 ### 5. Transform Events
 
-Use `create()` from `@bufbuild/protobuf` to construct proto messages:
+Use `create()` from `@bufbuild/protobuf` to construct Game-first proto
+messages:
 
 ```typescript
-function transformEvent(event: YourProviderEvent): MatchEvent | null {
-  const eventType = getEventType(event);
-  if (!eventType) return null;
+function transformEvent(event: YourProviderEvent, gameId: string): GameOccurrence | null {
+  const actionType = getActionType(event);
+  if (!actionType) return null;
 
-  const matchEvent = create(MatchEventSchema, {
-    id: String(event.id),
-    type: eventType,
-    timestamp: event.minute + event.second / 60,
-    player: create(PlayerSchema, {
-      id: String(event.playerId),
-      name: event.playerName,
-    }),
+  const action = create(FootballActionPayloadSchema, {
+    type: actionType,
+    teamId: String(event.teamId),
+    playerId: String(event.playerId),
     location: normalizeCoordinates(event.x, event.y),
   });
 
   // Add type-specific data
-  if (eventType === EventType.SHOT) {
-    matchEvent.eventData = {
+  if (actionType === FootballActionType.SHOT) {
+    action.actionData = {
       case: 'shot',
       value: create(ShotEventDataSchema, {
         xg: event.expectedGoals,
@@ -137,16 +135,26 @@ function transformEvent(event: YourProviderEvent): MatchEvent | null {
     };
   }
 
-  return matchEvent;
+  return create(GameOccurrenceSchema, {
+    id: String(event.id),
+    gameId,
+    kind: GameOccurrenceKind.ACTION,
+    payload: {
+      case: 'action',
+      value: create(SportActionPayloadSchema, {
+        action: { case: 'football', value: action },
+      }),
+    },
+  });
 }
 ```
 
 ### 6. Add Data Source Attribution
 
-Include proper attribution for your provider:
+Include proper attribution on each `GameOccurrence`:
 
 ```typescript
-source: create(DataSourceSchema, {
+source: create(ProviderAttributionSchema, {
   provider: 'your-provider',
   name: 'Your Provider Name',
   logo: 'https://your-provider.com/logo.svg',
@@ -169,16 +177,19 @@ describe('YourProvider adapter', () => {
   });
 
   it('transforms events correctly', () => {
-    const result = fromYourProvider(events);
-    expect(result.events.length).toBeGreaterThan(0);
+    const result = fromYourProvider(events, { gameId: 'btl_football_game_example' });
+    expect(result.occurrences.length).toBeGreaterThan(0);
   });
 
   it('normalises coordinates to 0-100', () => {
-    const result = fromYourProvider(events);
-    for (const event of result.events) {
-      if (event.location) {
-        expect(event.location.x).toBeGreaterThanOrEqual(0);
-        expect(event.location.x).toBeLessThanOrEqual(100);
+    const result = fromYourProvider(events, { gameId: 'btl_football_game_example' });
+    for (const occurrence of result.occurrences) {
+      if (occurrence.payload.case === 'action') {
+        const action = occurrence.payload.value.action;
+        if (action.case === 'football' && action.value.location) {
+          expect(action.value.location.x).toBeGreaterThanOrEqual(0);
+          expect(action.value.location.x).toBeLessThanOrEqual(100);
+        }
       }
     }
   });
@@ -210,13 +221,13 @@ And add package exports to `package.json`:
 
 Currently supported event types:
 
-| Type         | Proto Enum               | Event Data Schema             |
-| ------------ | ------------------------ | ----------------------------- |
-| Shot         | `EventType.SHOT`         | `ShotEventDataSchema`         |
-| Pass         | `EventType.PASS`         | `PassEventDataSchema`         |
-| Carry        | `EventType.CARRY`        | `CarryEventDataSchema`        |
-| Tackle       | `EventType.TACKLE`       | `TackleEventDataSchema`       |
-| Interception | `EventType.INTERCEPTION` | `InterceptionEventDataSchema` |
+| Type | Proto enum | Event data schema |
+| --- | --- | --- |
+| Shot | `FootballActionType.SHOT` | `ShotEventDataSchema` |
+| Pass | `FootballActionType.PASS` | `PassEventDataSchema` |
+| Carry | `FootballActionType.CARRY` | `CarryEventDataSchema` |
+| Tackle | `FootballActionType.TACKLE` | `TackleEventDataSchema` |
+| Interception | `FootballActionType.INTERCEPTION` | `InterceptionEventDataSchema` |
 
 ## Checklist
 
