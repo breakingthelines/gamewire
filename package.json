@@ -45,7 +45,7 @@
     "@bufbuild/protobuf": "^2.0.0"
   },
   "devDependencies": {
-    "@breakingthelines/protos": "0.5.0",
+    "@breakingthelines/protos": "0.7.0",
     "@types/node": "^24.10.1",
     "@vitest/coverage-v8": "4.0.16",
     "bunchee": "^6.9.3",

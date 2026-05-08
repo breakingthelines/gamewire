@@ -1,21 +1,22 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 
+import { SubjectRefSchema, SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
   GameService,
   GetLeaderboardRequestSchema,
   IngestBatchResponseSchema,
-  IngestEventsRequestSchema,
-  IngestLineupsRequestSchema,
-  IngestMatchesRequestSchema,
+  IngestFootballLineupsRequestSchema,
+  IngestFootballStandingsRequestSchema,
+  IngestGameOccurrencesRequestSchema,
+  IngestGamesRequestSchema,
   IngestMetadataSchema,
-  IngestStandingsRequestSchema,
   ListProviderConfigsRequestSchema,
   ProviderConfigSchema,
   ProviderHealthSchema,
-  RateRequestSchema,
   ReportProviderHealthRequestSchema,
   SubmitPredictionRequestSchema,
+  SubmitRatingRequestSchema,
   SyncFixturesRequestSchema,
   UnmappedIdentityCandidateSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
@@ -35,18 +36,21 @@ import {
   SettlementState,
 } from '@breakingthelines/protos/btl/game/v1/types/engagement_pb';
 import {
-  DataSourceSchema,
-  EventType,
   FallbackReason,
-  MatchEventSchema,
-  MatchLineupsSchema,
-  MatchSchema,
-  MatchStatus,
-  StandingEntrySchema,
-  StandingsSchema,
-  TeamSchema,
-  TeamSheetPlayerSchema,
-  TeamSheetSchema,
+  GameOccurrenceKind,
+  GameOccurrenceSchema,
+  GameParticipantRole,
+  GameParticipantSchema,
+  GameSchema,
+  GameStatus,
+  ProviderAttributionSchema,
+} from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import {
+  FootballLineupsSchema,
+  FootballStandingEntrySchema,
+  FootballStandingsSchema,
+  FootballTeamSheetPlayerSchema,
+  FootballTeamSheetSchema,
 } from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
 import {
@@ -57,14 +61,34 @@ import {
   StatsRequestSchema,
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
+const provider = create(ProviderAttributionSchema, {
+  provider: 'sportmonks',
+  name: 'Sportmonks',
+  license: 'commercial',
+  attributionText: 'Data from Sportmonks',
+});
+
+const teamSubject = (id: string, label: string) =>
+  create(SubjectRefSchema, {
+    id,
+    type: SubjectType.TEAM,
+    label,
+  });
+
 describe('published Track E proto handoff', () => {
   it('exposes the gamewire-worker ingest and provider config surface from GameService', () => {
     const methods = GameService.method;
 
-    expect(methods.ingestMatches.input.typeName).toBe('btl.game.v1.IngestMatchesRequest');
-    expect(methods.ingestLineups.input.typeName).toBe('btl.game.v1.IngestLineupsRequest');
-    expect(methods.ingestStandings.input.typeName).toBe('btl.game.v1.IngestStandingsRequest');
-    expect(methods.ingestEvents.input.typeName).toBe('btl.game.v1.IngestEventsRequest');
+    expect(methods.ingestGames.input.typeName).toBe('btl.game.v1.IngestGamesRequest');
+    expect(methods.ingestFootballLineups.input.typeName).toBe(
+      'btl.game.v1.IngestFootballLineupsRequest'
+    );
+    expect(methods.ingestFootballStandings.input.typeName).toBe(
+      'btl.game.v1.IngestFootballStandingsRequest'
+    );
+    expect(methods.ingestGameOccurrences.input.typeName).toBe(
+      'btl.game.v1.IngestGameOccurrencesRequest'
+    );
     expect(methods.listProviderConfigs.input.typeName).toBe(
       'btl.game.v1.ListProviderConfigsRequest'
     );
@@ -72,75 +96,60 @@ describe('published Track E proto handoff', () => {
       'btl.game.v1.ReportProviderHealthRequest'
     );
 
-    const source = create(DataSourceSchema, {
-      provider: 'sportmonks',
-      name: 'Sportmonks',
-      license: 'commercial',
-      attributionText: 'Data from Sportmonks',
-    });
-    const homeTeam = create(TeamSchema, { id: 'btl_t_home', name: 'Home FC' });
-    const awayTeam = create(TeamSchema, { id: 'btl_t_away', name: 'Away FC' });
+    const homeTeam = teamSubject('btl_t_home', 'Home FC');
+    const awayTeam = teamSubject('btl_t_away', 'Away FC');
     const metadata = create(IngestMetadataSchema, {
-      provider: 'sportmonks',
+      provider: provider.provider,
       replayId: 'fixture-sync-2026-05-06',
       idempotencyKey: 'sportmonks:fixtures:2026-05-06',
     });
 
-    const match = create(MatchSchema, {
-      id: 'btl_m_matchday_001',
+    const game = create(GameSchema, {
+      id: 'btl_football_game_001',
       slug: 'home-fc-v-away-fc-2026-05-06',
-      homeTeam,
-      awayTeam,
-      status: MatchStatus.SCHEDULED,
+      participants: [
+        create(GameParticipantSchema, { subject: homeTeam, role: GameParticipantRole.HOME }),
+        create(GameParticipantSchema, { subject: awayTeam, role: GameParticipantRole.AWAY }),
+      ],
+      status: GameStatus.SCHEDULED,
       hasLineups: false,
-      hasEvents: false,
-      fallbackReasons: [FallbackReason.LINEUPS_MISSING, FallbackReason.EVENTS_MISSING],
+      hasTimeline: false,
+      fallbackReasons: [FallbackReason.LINEUPS_MISSING, FallbackReason.TIMELINE_MISSING],
+      provenance: [],
+      sportPayload: { case: 'football', value: { matchday: 1, stage: 'regular' } },
     });
 
-    const ingestMatches = create(IngestMatchesRequestSchema, {
+    const ingestGames = create(IngestGamesRequestSchema, {
       metadata,
-      matches: [match],
+      games: [game],
     });
-    const lineups = create(MatchLineupsSchema, {
-      matchId: match.id,
-      home: create(TeamSheetSchema, {
-        teamId: homeTeam.id,
-        formation: '4-3-3',
-        players: [
-          create(TeamSheetPlayerSchema, {
-            playerId: 'btl_p_home_10',
-            playerName: 'Home Playmaker',
-            shirtNumber: 10,
-            positionCode: 'AM',
-            formationSlot: 8,
-            isStarter: true,
-            isCaptain: true,
-          }),
-        ],
-      }),
-      away: create(TeamSheetSchema, {
-        teamId: awayTeam.id,
-        formation: '4-2-3-1',
-        players: [
-          create(TeamSheetPlayerSchema, {
-            playerId: 'btl_p_away_1',
-            playerName: 'Away Keeper',
-            shirtNumber: 1,
-            positionCode: 'GK',
-            formationSlot: 1,
-            isStarter: true,
-          }),
-        ],
-      }),
-      source,
+    const lineups = create(FootballLineupsSchema, {
+      gameId: game.id,
+      teamSheets: [
+        create(FootballTeamSheetSchema, {
+          teamId: homeTeam.id,
+          formation: '4-3-3',
+          players: [
+            create(FootballTeamSheetPlayerSchema, {
+              playerId: 'btl_p_home_10',
+              playerName: 'Home Playmaker',
+              shirtNumber: 10,
+              positionCode: 'AM',
+              formationSlot: 8,
+              isStarter: true,
+              isCaptain: true,
+            }),
+          ],
+        }),
+      ],
     });
-    const standings = create(StandingsSchema, {
+    const standings = create(FootballStandingsSchema, {
       competitionId: 'btl_l_launch_league',
       seasonId: 'btl_s_2026',
       entries: [
-        create(StandingEntrySchema, {
+        create(FootballStandingEntrySchema, {
           teamId: homeTeam.id,
-          teamName: homeTeam.name,
+          teamName: homeTeam.label,
           rank: 1,
           played: 10,
           won: 7,
@@ -152,39 +161,38 @@ describe('published Track E proto handoff', () => {
           points: 23,
         }),
       ],
-      source,
     });
-    const ingestLineups = create(IngestLineupsRequestSchema, {
+    const ingestLineups = create(IngestFootballLineupsRequestSchema, {
       metadata,
       lineups: [lineups],
     });
-    const ingestStandings = create(IngestStandingsRequestSchema, {
+    const ingestStandings = create(IngestFootballStandingsRequestSchema, {
       metadata,
       standings: [standings],
     });
-    const ingestEvents = create(IngestEventsRequestSchema, {
+    const occurrence = create(GameOccurrenceSchema, {
+      id: 'sportmonks:event:1',
+      gameId: game.id,
+      sequence: 1,
+      kind: GameOccurrenceKind.ACTION,
+      source: provider,
+    });
+    const ingestOccurrences = create(IngestGameOccurrencesRequestSchema, {
       metadata,
-      matchId: match.id,
-      events: [
-        create(MatchEventSchema, {
-          id: 'sportmonks:event:1',
-          type: EventType.SHOT,
-          team: homeTeam,
-        }),
-      ],
+      gameId: game.id,
+      occurrences: [occurrence],
     });
     const providerConfigRequest = create(ListProviderConfigsRequestSchema, {
       kind: 'fixture',
       includeDisabled: true,
     });
     const providerConfig = create(ProviderConfigSchema, {
-      id: 'sportmonks',
-      name: 'Sportmonks',
+      id: provider.provider,
+      name: provider.name,
       kind: 'fixture',
       enabled: true,
-      tierPriority: { match: 1, lineup: 1, standings: 1 },
-      rateLimitRpm: 120,
-      attribution: source,
+      tierPriority: { game: 1, lineup: 1, standings: 1 },
+      attribution: provider,
     });
     const providerHealth = create(ProviderHealthSchema, {
       providerId: providerConfig.id,
@@ -201,9 +209,9 @@ describe('published Track E proto handoff', () => {
     const unmappedIdentityCandidate = create(UnmappedIdentityCandidateSchema, {
       provider: providerConfig.id,
       providerId: 'sm_player_999',
-      entityType: 'player',
+      entityType: SubjectType.PLAYER,
       displayName: 'Unmapped Trialist',
-      raw: { team: homeTeam.name },
+      raw: { team: homeTeam.label },
     });
     const ingestResponse = create(IngestBatchResponseSchema, {
       acceptedCount: 3,
@@ -215,16 +223,16 @@ describe('published Track E proto handoff', () => {
       replayId: metadata.replayId,
     });
 
-    expect(ingestMatches.matches[0]?.id).toBe('btl_m_matchday_001');
-    expect(ingestLineups.lineups[0]?.home?.players[0]?.positionCode).toBe('AM');
+    expect(ingestGames.games[0]?.id).toBe('btl_football_game_001');
+    expect(ingestLineups.lineups[0]?.teamSheets[0]?.players[0]?.positionCode).toBe('AM');
     expect(ingestStandings.standings[0]?.entries[0]?.points).toBe(23);
-    expect(ingestEvents.events[0]?.type).toBe(EventType.SHOT);
-    expect(source.provider).toBe('sportmonks');
+    expect(ingestOccurrences.occurrences[0]?.kind).toBe(GameOccurrenceKind.ACTION);
+    expect(providerConfig.attribution?.provider).toBe('sportmonks');
     expect(providerConfigRequest.includeDisabled).toBe(true);
     expect(providerHealthReport.health?.providerId).toBe('sportmonks');
     expect(syncFixtures.replayId).toBe(metadata.replayId);
     expect(ingestResponse.conflictCount).toBe(1);
-    expect(ingestResponse.unmappedIdentityCandidates[0]?.displayName).toBe('Unmapped Trialist');
+    expect(ingestResponse.unmappedIdentityCandidates[0]?.entityType).toBe(SubjectType.PLAYER);
   });
 
   it('exposes identity lookup RPCs needed by gamewire-worker and browsers', () => {
@@ -261,29 +269,32 @@ describe('published Track E proto handoff', () => {
     expect(GameService.method.submitPrediction.input.typeName).toBe(
       'btl.game.v1.SubmitPredictionRequest'
     );
-    expect(GameService.method.rate.input.typeName).toBe('btl.game.v1.RateRequest');
+    expect(GameService.method.submitRating.input.typeName).toBe('btl.game.v1.SubmitRatingRequest');
     expect(GameService.method.getLeaderboard.input.typeName).toBe(
       'btl.game.v1.GetLeaderboardRequest'
     );
 
-    const matchSubject = create(RatingSubjectSchema, {
-      type: RatingSubjectType.MATCH,
-      id: 'btl_m_matchday_001',
-      matchId: 'btl_m_matchday_001',
+    const gameSubject = create(RatingSubjectSchema, {
+      type: RatingSubjectType.GAME,
+      gameId: 'btl_football_game_001',
+      subject: create(SubjectRefSchema, {
+        id: 'btl_football_game_001',
+        type: SubjectType.GAME,
+      }),
     });
-    const rating = create(RateRequestSchema, {
+    const rating = create(SubmitRatingRequestSchema, {
       userId: 'user_123',
-      subject: matchSubject,
+      subject: gameSubject,
       scopeType: RatingScopeType.GLOBAL,
       scale: RatingScale.ONE_TO_TEN,
       value: 8,
     });
     const prediction = create(SubmitPredictionRequestSchema, {
       userId: 'user_123',
-      matchId: 'btl_m_matchday_001',
+      gameId: 'btl_football_game_001',
       leagueInstanceId: 'cap_prediction_league_001',
       rubricId: 'rubric_standard',
-      idempotencyKey: 'user_123:btl_m_matchday_001:cap_prediction_league_001',
+      idempotencyKey: 'user_123:btl_football_game_001:cap_prediction_league_001',
     });
     const leaderboard = create(GetLeaderboardRequestSchema, {
       leagueInstanceId: 'cap_prediction_league_001',
@@ -314,7 +325,7 @@ describe('published Track E proto handoff', () => {
     });
     const prediction = create(PredictionSchema, {
       id: 'prediction_001',
-      matchId: 'btl_m_matchday_001',
+      gameId: 'btl_football_game_001',
       userId: 'user_123',
       leagueInstanceId: 'cap_prediction_league_001',
       rubricId: rubric.id,
@@ -325,12 +336,12 @@ describe('published Track E proto handoff', () => {
     });
     const settlement = create(PredictionSettlementSchema, {
       id: 'settlement_001',
-      matchId: prediction.matchId,
+      gameId: prediction.gameId,
       leagueInstanceId: prediction.leagueInstanceId,
       state: SettlementState.SETTLED,
       predictionsTotal: 1,
       predictionsSettled: 1,
-      idempotencyKey: 'settle:btl_m_matchday_001:cap_prediction_league_001',
+      idempotencyKey: 'settle:btl_football_game_001:cap_prediction_league_001',
     });
     const leaderboardEntry = create(LeaderboardEntrySchema, {
       id: 'leaderboard_entry_001',
