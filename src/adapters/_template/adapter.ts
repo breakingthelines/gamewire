@@ -202,7 +202,7 @@ function transformEvent(event: TemplateEvent): MatchEvent | null {
  *
  * @example
  * ```ts
- * import { fromTemplate } from '@breakingthelines/sports-data/adapters/template';
+ * import { fromTemplate } from '@breakingthelines/gamewire/adapters/template';
  *
  * const matchData = fromTemplate(events, {
  *   homeTeam: { shortName: 'HME', primaryColor: '#FF0000' },

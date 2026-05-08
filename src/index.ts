@@ -1,7 +1,7 @@
 /**
- * @breakingthelines/data-adapters
+ * @breakingthelines/gamewire
  *
- * Transform external sports data formats into BTL's proto schema.
+ * Transform external provider data into BTL's proto schema.
  */
 
 // Core - proto types and utilities

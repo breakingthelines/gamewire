@@ -3,11 +3,12 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@breakingthelines/data-adapters",
+      "name": "@breakingthelines/gamewire",
       "dependencies": {
         "@bufbuild/protobuf": "^2.0.0",
       },
       "devDependencies": {
+        "@breakingthelines/protos": "0.5.0",
         "@types/node": "^24.10.1",
         "@vitest/coverage-v8": "4.0.16",
         "bunchee": "^6.9.3",
@@ -31,7 +32,11 @@
 
     "@bcoe/v8-coverage": ["@bcoe/v8-coverage@1.0.2", "", {}, "sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA=="],
 
+    "@breakingthelines/protos": ["@breakingthelines/protos@0.5.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.5.0/7b56c6474858f43d89315d42b3134328a6589129", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-Wxx4dgKKUPUnbzjvS94MH01S4NrtBTrc5y+4YkRhdcN0Zt37GJLHwruHuhtI8GKZmVk/9raprO/6a+Kj7vn+EQ=="],
+
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.11.0", "", {}, "sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ=="],
+
+    "@connectrpc/connect": ["@connectrpc/connect@2.1.1", "", { "peerDependencies": { "@bufbuild/protobuf": "^2.7.0" } }, "sha512-JzhkaTvM73m2K1URT6tv53k2RwngSmCXLZJgK580qNQOXRzZRR/BCMfZw3h+90JpnG6XksP5bYT+cz0rpUzUWQ=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.27.2", "", { "os": "aix", "cpu": "ppc64" }, "sha512-GZMB+a0mOMZs4MpDbj8RJp4cw+w1WV5NYD6xzgvzUJ5Ek2jerwfO2eADyI6ExDSUED+1X8aMbegahsJi+8mgpw=="],
 

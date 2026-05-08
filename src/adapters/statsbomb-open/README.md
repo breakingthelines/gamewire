@@ -5,7 +5,7 @@ Transforms [StatsBomb Open Data](https://github.com/statsbomb/open-data) events 
 ## Quick Start
 
 ```typescript
-import { fromStatsBombOpen } from '@breakingthelines/sports-data/adapters/statsbomb-open';
+import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
 
 // 1. Fetch events from StatsBomb Open Data repo
 const response = await fetch(
@@ -57,7 +57,7 @@ interface FromStatsBombOpenOptions {
 ### Basic Usage
 
 ```typescript
-import { fromStatsBombOpen } from '@breakingthelines/sports-data/adapters/statsbomb-open';
+import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
 
 const matchData = fromStatsBombOpen(events);
 ```
@@ -86,8 +86,8 @@ const matchData = fromStatsBombOpen(events, {
 ### Using Type Guards
 
 ```typescript
-import { fromStatsBombOpen } from '@breakingthelines/sports-data/adapters/statsbomb-open';
-import { isShot, isPass, EventType } from '@breakingthelines/sports-data/core';
+import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
+import { isShot, isPass, EventType } from '@breakingthelines/gamewire/core';
 
 const matchData = fromStatsBombOpen(events);
 

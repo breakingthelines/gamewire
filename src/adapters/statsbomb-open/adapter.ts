@@ -312,7 +312,7 @@ function transformEvent(event: StatsBombEvent): MatchEvent | null {
  *
  * @example
  * ```ts
- * import { fromStatsBombOpen } from '@breakingthelines/data-adapters/adapters/statsbomb-open';
+ * import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
  *
  * const matchData = fromStatsBombOpen(eventsJson, {
  *   homeTeam: { shortName: 'ARG', primaryColor: '#75AADB' },

@@ -1,6 +1,6 @@
-# Contributing to @breakingthelines/sports-data
+# Contributing to @breakingthelines/gamewire
 
-Thank you for considering contributing to BTL Data Adapters! This project aims to make sports data accessible by normalising different provider formats into a single schema. We welcome contributions from developers and analytics enthusiasts alike.
+Thank you for considering contributing to Gamewire. This project makes provider data usable across BTL by normalising external formats into a single schema. We welcome contributions from developers and analytics enthusiasts alike.
 
 ## Table of Contents
 
@@ -28,8 +28,8 @@ This project and everyone participating in it is governed by our commitment to c
 
 ```bash
 # Fork and clone the repository
-git clone https://github.com/breakingthelines/sports-data.git
-cd sports-data
+git clone https://github.com/breakingthelines/gamewire.git
+cd gamewire
 
 # Install dependencies
 bun install
@@ -62,8 +62,8 @@ We welcome different types of contributions:
 
 ### Finding Issues
 
-- Look for issues labeled [`good-first-issue`](https://github.com/breakingthelines/sports-data/labels/good-first-issue)
-- Check [`help-wanted`](https://github.com/breakingthelines/sports-data/labels/help-wanted) for more complex tasks
+- Look for issues labeled [`good-first-issue`](https://github.com/breakingthelines/gamewire/labels/good-first-issue)
+- Check [`help-wanted`](https://github.com/breakingthelines/gamewire/labels/help-wanted) for more complex tasks
 - Browse planned adapters in the README
 
 ## Development Workflow
@@ -359,7 +359,7 @@ function mapEventType(typeId: number): EventType | null {
 
 ## Questions?
 
-- Open a [Discussion](https://github.com/breakingthelines/sports-data/discussions) for questions
+- Open a [Discussion](https://github.com/breakingthelines/gamewire/discussions) for questions
 - Check existing adapters for reference implementations
 
 ## Contributor License Agreement

@@ -1,6 +1,6 @@
-# @breakingthelines/sports-data
+# @breakingthelines/gamewire
 
-Transform external sports data formats into BTL's normalised proto schema.
+Provider adapter library and ingestion runtime for BTL game data.
 
 ## Why This Exists
 
@@ -16,13 +16,13 @@ Each adapter:
 ## Installation
 
 ```bash
-bun add @breakingthelines/sports-data
+bun add @breakingthelines/gamewire
 ```
 
 ## Quick Start
 
 ```typescript
-import { fromStatsBombOpen } from '@breakingthelines/sports-data/adapters/statsbomb-open';
+import { fromStatsBombOpen } from '@breakingthelines/gamewire/adapters/statsbomb-open';
 
 // Fetch the 2022 World Cup Final from StatsBomb's open-data repo
 const response = await fetch(
@@ -46,7 +46,7 @@ console.log(matchData.events.length);   // ~3000 events
 
 | Provider                                                        | Import                                                  | Docs                                              | Status  |
 | --------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------- | ------- |
-| [StatsBomb Open](https://github.com/statsbomb/open-data)        | `@breakingthelines/sports-data/adapters/statsbomb-open` | [README](./src/adapters/statsbomb-open/README.md) | Stable  |
+| [StatsBomb Open](https://github.com/statsbomb/open-data)        | `@breakingthelines/gamewire/adapters/statsbomb-open` | [README](./src/adapters/statsbomb-open/README.md) | Stable  |
 | [SkillCorner](https://github.com/SkillCorner/opendata)          | -                                                       | -                                                 | Planned |
 | [Metrica Sports](https://github.com/metrica-sports/sample-data) | -                                                       | -                                                 | Planned |
 | [Opta Analyst](https://theanalyst.com)                          | -                                                       | -                                                 | Planned |
@@ -60,7 +60,7 @@ Want to add support for another provider? See [Creating a New Adapter](#creating
 Filter events by type with full TypeScript inference:
 
 ```typescript
-import { isShot, isPass, isCarry } from '@breakingthelines/sports-data/core';
+import { isShot, isPass, isCarry } from '@breakingthelines/gamewire/core';
 
 const shots = matchData.events.filter(isShot);
 
@@ -77,7 +77,7 @@ for (const shot of shots) {
 Use enums for filtering and comparisons:
 
 ```typescript
-import { EventType, ShotOutcome } from '@breakingthelines/sports-data/core';
+import { EventType, ShotOutcome } from '@breakingthelines/gamewire/core';
 
 // Filter by event type
 const passes = matchData.events.filter(e => e.type === EventType.PASS);
@@ -91,7 +91,7 @@ const goals = shots.filter(s => s.eventData.value.outcome === ShotOutcome.GOAL);
 Convert enum values to display strings:
 
 ```typescript
-import { eventTypeName, shotOutcomeName } from '@breakingthelines/sports-data/core';
+import { eventTypeName, shotOutcomeName } from '@breakingthelines/gamewire/core';
 
 console.log(eventTypeName[EventType.SHOT]);           // "shot"
 console.log(shotOutcomeName[ShotOutcome.GOAL]);       // "goal"
@@ -153,7 +153,7 @@ The [StatsBomb Open adapter](./src/adapters/statsbomb-open/) is a complete refer
 
 ## Core Module Exports
 
-Everything you need from `@breakingthelines/sports-data/core`:
+Everything you need from `@breakingthelines/gamewire/core`:
 
 ```typescript
 import {
@@ -178,7 +178,7 @@ import {
 
   // Protobuf helper
   create,
-} from '@breakingthelines/sports-data/core';
+} from '@breakingthelines/gamewire/core';
 ```
 
 ## Development

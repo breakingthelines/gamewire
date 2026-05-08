@@ -14,7 +14,8 @@
     "rootDir": "src",
     "baseUrl": ".",
     "paths": {
-      "#/*": ["./src/*"]
+      "#/*": ["./src/*"],
+      "@breakingthelines/protos/*": ["./node_modules/@breakingthelines/protos/*.ts"]
     },
     "resolveJsonModule": true,
     "isolatedModules": true,

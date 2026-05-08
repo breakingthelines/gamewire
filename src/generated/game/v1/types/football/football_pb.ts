@@ -14,7 +14,7 @@ export const file_btl_game_v1_types_football_football: GenFile = /*@__PURE__*/
 
 /**
  * NormalizedMatchData is the canonical representation of football match events.
- * Used by viz components, data-adapters, and game-service.
+ * Used by viz components, gamewire, and game-service.
  *
  * @generated from message btl.game.v1.types.football.NormalizedMatchData
  */
