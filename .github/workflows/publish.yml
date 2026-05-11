@@ -23,6 +23,9 @@ jobs:
           app-id: ${{ secrets.BTL_GAFFER_APP_ID }}
           private-key: ${{ secrets.BTL_GAFFER_PRIVATE_KEY }}
           owner: breakingthelines
+          repositories: |
+            gamewire
+            protos
           permission-contents: read
           permission-packages: read
 
