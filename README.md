@@ -53,6 +53,57 @@ console.log(matchData.events.length);   // ~3000 events
 
 Want to add support for another provider? See [Creating a New Adapter](#creating-a-new-adapter).
 
+## Worker Import Harness
+
+The `./worker` export is the provider-facing runtime boundary for BTL game
+ingestion. It defaults to `GAMEWIRE_PROVIDER_ID=api-football`,
+`GAMEWIRE_PROVIDER_BASE_URL=https://v3.football.api-sports.io`, and
+`GAMEWIRE_PROVIDER_MODE=replay`, which means local and CI runs produce typed
+payloads without using provider credentials or making live HTTP calls.
+
+Current replay coverage:
+
+- `FetchFixtures` produces a non-empty `IngestGamesRequest`.
+- `FetchGame` produces a replayable single-game `IngestGamesRequest`.
+- `FetchLineup` produces a non-empty `IngestFootballLineupsRequest`.
+- `FetchStandings` produces a non-empty `IngestFootballStandingsRequest`.
+- `FetchOccurrences` produces a non-empty `IngestGameOccurrencesRequest`.
+- `PollLiveGame` exercises the latest-updated/live polling path without network
+  I/O.
+
+The default API-Football beta coverage plan is the top five European leagues
+plus the FIFA World Cup: Premier League (`39`), La Liga (`140`), Serie A
+(`135`), Bundesliga (`78`), Ligue 1 (`61`), and World Cup (`1`). Fixture and
+standing request plans expand to one league/season path per competition; live
+polling uses the global `/fixtures?live=all` feed instead of per-match polling.
+Provider-specific API-Football types, replay transforms, and request paths live
+in `src/adapters/api-football/`; the worker imports that adapter and only owns
+runtime orchestration, caching, quota, backoff, and secret handling.
+
+Every replay activity also emits a runtime report containing request shape,
+cache key, TTL, quota bucket/cost, redacted secret headers, and backoff policy.
+For API-Football, the live implementation must send the key as
+`x-apisports-key`; the runtime report redacts that header name explicitly. This
+is the call-efficiency contract for the later live provider implementation.
+
+`gamewire` does not depend on local `identity` artifacts. Runtime provider-key
+resolution must use a published `@breakingthelines/identity-data-football`
+version, or the deployed `identity-server`, once `identity` `0.1.0` is actually
+released.
+
+Call budget modelling is available from the worker export:
+
+```typescript
+import { estimateMatchdayCallBudget } from '@breakingthelines/gamewire/worker';
+
+const budget = estimateMatchdayCallBudget('api-football');
+console.log(budget.warnings);
+```
+
+API-Football is the only active Phase A provider harness. Hudl/StatsBomb Live
+belongs in a later rich event adapter, while the existing StatsBomb Open adapter
+remains the open-data replay path for rich action shape validation.
+
 ## Working with the Output
 
 ### Type Guards

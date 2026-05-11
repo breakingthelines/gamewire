@@ -1,4 +1,5 @@
 export type GamewireWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
+export type GamewireProviderMode = 'replay' | 'live';
 
 export interface GamewireWorkerConfig {
   port: number;
@@ -6,6 +7,8 @@ export interface GamewireWorkerConfig {
   identityServiceUrl: string;
   providerId: string;
   providerKind: string;
+  providerMode: GamewireProviderMode;
+  providerBaseUrl?: string;
   identityProviderId: string;
   webhookPath: string;
   logLevel: GamewireWorkerLogLevel;
@@ -41,12 +44,27 @@ const parseLogLevel = (value: string | undefined): GamewireWorkerLogLevel => {
   }
 };
 
+const parseProviderMode = (value: string | undefined): GamewireProviderMode => {
+  switch (value) {
+    case 'live':
+    case 'replay':
+      return value;
+    case undefined:
+    case '':
+      return 'replay';
+    default:
+      throw new Error(`Invalid gamewire provider mode: ${value}`);
+  }
+};
+
 export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorkerConfig => ({
   port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
   gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
   identityServiceUrl: env.IDENTITY_SERVICE_URL ?? 'http://identity:9090',
-  providerId: env.GAMEWIRE_PROVIDER_ID ?? 'identity-data-football',
+  providerId: env.GAMEWIRE_PROVIDER_ID ?? 'api-football',
   providerKind: env.GAMEWIRE_PROVIDER_KIND ?? 'football',
+  providerMode: parseProviderMode(env.GAMEWIRE_PROVIDER_MODE),
+  providerBaseUrl: env.GAMEWIRE_PROVIDER_BASE_URL ?? 'https://v3.football.api-sports.io',
   identityProviderId: env.IDENTITY_PROVIDER_ID ?? 'identity-data-football',
   webhookPath: env.GAMEWIRE_WEBHOOK_PATH ?? '/webhooks/gamewire',
   logLevel: parseLogLevel(env.LOG_LEVEL),

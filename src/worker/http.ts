@@ -46,8 +46,9 @@ export const handleWorkerRequest = (
     return jsonResponse(202, {
       status: 'accepted',
       service: 'gamewire-worker',
-      behavior: 'stubbed',
+      behavior: cfg.providerMode === 'replay' ? 'replay-safe' : 'live-provider-boundary',
       provider: cfg.providerId,
+      providerMode: cfg.providerMode,
       activities: [...activityNames],
     });
   }

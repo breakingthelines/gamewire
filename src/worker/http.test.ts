@@ -7,8 +7,9 @@ const config: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
   identityServiceUrl: 'http://identity:9090',
-  providerId: 'identity-data-football',
+  providerId: 'api-football',
   providerKind: 'football',
+  providerMode: 'replay',
   identityProviderId: 'identity-data-football',
   webhookPath: '/webhooks/gamewire',
   logLevel: 'info',
@@ -22,11 +23,11 @@ describe('gamewire-worker HTTP handler', () => {
     expect(response.body).toMatchObject({
       status: 'ok',
       service: 'gamewire-worker',
-      provider: 'identity-data-football',
+      provider: 'api-football',
     });
   });
 
-  it('accepts webhook requests as scaffolded work only', () => {
+  it('accepts webhook requests as replay-safe work only', () => {
     const response = handleWorkerRequest(
       { method: 'POST', pathname: '/webhooks/gamewire', body: { fixture: 'stub' } },
       config
@@ -35,7 +36,7 @@ describe('gamewire-worker HTTP handler', () => {
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
       status: 'accepted',
-      behavior: 'stubbed',
+      behavior: 'replay-safe',
       activities: [...activityNames],
     });
   });

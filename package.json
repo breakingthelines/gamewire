@@ -28,6 +28,10 @@
       "types": "./dist/adapters/statsbomb-open/index.d.ts",
       "import": "./dist/adapters/statsbomb-open/index.js"
     },
+    "./adapters/api-football": {
+      "types": "./dist/adapters/api-football/index.d.ts",
+      "import": "./dist/adapters/api-football/index.js"
+    },
     "./worker": {
       "types": "./dist/worker/index.d.ts",
       "import": "./dist/worker/index.js"

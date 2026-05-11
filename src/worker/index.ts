@@ -6,7 +6,7 @@ export {
   FetchStandings,
   PollLiveGame,
   listProviderConfigRequestFor,
-  type ActivityStubResult,
+  type ActivityResult,
   type FetchFixturesInput,
   type FetchGameInput,
   type FetchLineupInput,
@@ -16,13 +16,31 @@ export {
   type GamewireActivityName,
   type PollLiveGameInput,
 } from './activities.js';
+export { estimateMatchdayCallBudget, type CallBudgetEstimate, type CallBudgetLine } from './call-budget.js';
+export {
+  API_FOOTBALL_BETA_COMPETITIONS,
+  apiFootballCompetitionKey,
+  apiFootballEventPath,
+  apiFootballFixturePath,
+  apiFootballFixtureSyncPaths,
+  apiFootballLineupPath,
+  apiFootballLivePath,
+  apiFootballStandingSyncPaths,
+  type ApiFootballCompetitionPlan,
+} from '../adapters/api-football/index.js';
 export {
   config,
   loadConfig,
   type GamewireWorkerConfig,
   type GamewireWorkerEnv,
   type GamewireWorkerLogLevel,
+  type GamewireProviderMode,
 } from './config.js';
+export {
+  createProviderRuntimeReport,
+  type ProviderRequestPlan,
+  type ProviderRuntimeReport,
+} from './runtime.js';
 export {
   createGameServiceIngestClientBoundary,
   type GameServiceIngestClient,

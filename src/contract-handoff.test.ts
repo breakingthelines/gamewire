@@ -62,10 +62,10 @@ import {
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
 const provider = create(ProviderAttributionSchema, {
-  provider: 'sportmonks',
-  name: 'Sportmonks',
+  provider: 'api-football',
+  name: 'API-Football',
   license: 'commercial',
-  attributionText: 'Data from Sportmonks',
+  attributionText: 'Data from API-Football',
 });
 
 const teamSubject = (id: string, label: string) =>
@@ -102,7 +102,7 @@ describe('published Track E proto handoff', () => {
     const metadata = create(IngestMetadataSchema, {
       provider: provider.provider,
       replayId: 'fixture-sync-2026-05-06',
-      idempotencyKey: 'sportmonks:fixtures:2026-05-06',
+      idempotencyKey: 'api-football:fixtures:2026-05-06',
     });
 
     const game = create(GameSchema, {
@@ -172,7 +172,7 @@ describe('published Track E proto handoff', () => {
       standings: [standings],
     });
     const occurrence = create(GameOccurrenceSchema, {
-      id: 'sportmonks:event:1',
+      id: 'api-football:event:1',
       gameId: game.id,
       sequence: 1,
       kind: GameOccurrenceKind.ACTION,
@@ -209,7 +209,7 @@ describe('published Track E proto handoff', () => {
     });
     const unmappedIdentityCandidate = create(UnmappedIdentityCandidateSchema, {
       provider: providerConfig.id,
-      providerId: 'sm_player_999',
+      providerId: 'api_player_999',
       entityType: SubjectType.PLAYER,
       displayName: 'Unmapped Trialist',
       raw: { team: homeTeam.label },
@@ -228,9 +228,9 @@ describe('published Track E proto handoff', () => {
     expect(ingestLineups.lineups[0]?.teamSheets[0]?.players[0]?.positionCode).toBe('AM');
     expect(ingestStandings.standings[0]?.entries[0]?.points).toBe(23);
     expect(ingestOccurrences.occurrences[0]?.kind).toBe(GameOccurrenceKind.ACTION);
-    expect(providerConfig.attribution?.provider).toBe('sportmonks');
+    expect(providerConfig.attribution?.provider).toBe('api-football');
     expect(providerConfigRequest.includeDisabled).toBe(true);
-    expect(providerHealthReport.health?.providerId).toBe('sportmonks');
+    expect(providerHealthReport.health?.providerId).toBe('api-football');
     expect(syncFixtures.replayId).toBe(metadata.replayId);
     expect(ingestResponse.conflictCount).toBe(1);
     expect(ingestResponse.unmappedIdentityCandidates[0]?.entityType).toBe(SubjectType.PLAYER);
@@ -250,7 +250,7 @@ describe('published Track E proto handoff', () => {
     });
     const resolve = create(ResolveRequestSchema, {
       entityType: EntityType.PLAYER,
-      provider: 'sportmonks',
+      provider: 'api-football',
       providerId: '12345',
     });
     const search = create(SearchRequestSchema, {
@@ -261,7 +261,7 @@ describe('published Track E proto handoff', () => {
     const stats = create(StatsRequestSchema, { sport: 'football' });
 
     expect(lookup.entityType).toBe(EntityType.TEAM);
-    expect(resolve.provider).toBe('sportmonks');
+    expect(resolve.provider).toBe('api-football');
     expect(search.limit).toBe(5);
     expect(stats.sport).toBe('football');
   });
