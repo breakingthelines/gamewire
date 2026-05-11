@@ -91,6 +91,10 @@ export function apiFootballLivePath(): string {
   return '/fixtures?live=all';
 }
 
+export function apiFootballStatusPath(): string {
+  return '/status';
+}
+
 export function apiFootballFixturePath(fixtureId: string): string {
   return `/fixtures?id=${encodeURIComponent(fixtureId)}`;
 }
@@ -109,7 +113,12 @@ export function apiFootballReplayFixturesRequest(options: {
   readonly filter?: GameFilter;
 }): IngestGamesRequest {
   return create(IngestGamesRequestSchema, {
-    metadata: metadata(options.provider ?? API_FOOTBALL_PROVIDER_ID, options.replayId, 'fixtures', 'league-39-season-2025'),
+    metadata: metadata(
+      options.provider ?? API_FOOTBALL_PROVIDER_ID,
+      options.replayId,
+      'fixtures',
+      'league-39-season-2025'
+    ),
     games: [game()],
   });
 }
@@ -121,7 +130,12 @@ export function apiFootballReplayGameRequest(options: {
 }): IngestGamesRequest {
   const replayGame = game();
   return create(IngestGamesRequestSchema, {
-    metadata: metadata(options.provider ?? API_FOOTBALL_PROVIDER_ID, options.replayId, 'game', options.gameId),
+    metadata: metadata(
+      options.provider ?? API_FOOTBALL_PROVIDER_ID,
+      options.replayId,
+      'game',
+      options.gameId
+    ),
     games: replayGame.id === options.gameId ? [replayGame] : [],
   });
 }
@@ -132,7 +146,12 @@ export function apiFootballReplayLineupsRequest(options: {
   readonly gameId: string;
 }): IngestFootballLineupsRequest {
   return create(IngestFootballLineupsRequestSchema, {
-    metadata: metadata(options.provider ?? API_FOOTBALL_PROVIDER_ID, options.replayId, 'lineups', options.gameId),
+    metadata: metadata(
+      options.provider ?? API_FOOTBALL_PROVIDER_ID,
+      options.replayId,
+      'lineups',
+      options.gameId
+    ),
     lineups: [
       create(FootballLineupsSchema, {
         gameId: options.gameId,
@@ -145,7 +164,9 @@ export function apiFootballReplayLineupsRequest(options: {
           create(FootballTeamSheetSchema, {
             teamId: API_FOOTBALL_REPLAY_AWAY_TEAM_ID,
             formation: '4-2-3-1',
-            players: [player('btl_football_player_p2804f5db', 'Cole Palmer', 20, 'AM', 8, true, true)],
+            players: [
+              player('btl_football_player_p2804f5db', 'Cole Palmer', 20, 'AM', 8, true, true),
+            ],
           }),
         ],
       }),
@@ -159,7 +180,12 @@ export function apiFootballReplayOccurrencesRequest(options: {
   readonly gameId: string;
 }): IngestGameOccurrencesRequest {
   return create(IngestGameOccurrencesRequestSchema, {
-    metadata: metadata(options.provider ?? API_FOOTBALL_PROVIDER_ID, options.replayId, 'events', options.gameId),
+    metadata: metadata(
+      options.provider ?? API_FOOTBALL_PROVIDER_ID,
+      options.replayId,
+      'events',
+      options.gameId
+    ),
     gameId: options.gameId,
     occurrences: [
       create(GameOccurrenceSchema, {
@@ -224,7 +250,12 @@ export function apiFootballReplayStandingsRequest(options: {
   const competitionId = options.competitionId ?? API_FOOTBALL_REPLAY_COMPETITION_ID;
   const seasonId = options.seasonId ?? API_FOOTBALL_REPLAY_SEASON_ID;
   return create(IngestFootballStandingsRequestSchema, {
-    metadata: metadata(options.provider ?? API_FOOTBALL_PROVIDER_ID, options.replayId, 'standings', 'league-39-season-2025'),
+    metadata: metadata(
+      options.provider ?? API_FOOTBALL_PROVIDER_ID,
+      options.replayId,
+      'standings',
+      'league-39-season-2025'
+    ),
     standings: [
       create(FootballStandingsSchema, {
         competitionId,
@@ -243,7 +274,12 @@ function game() {
     id: API_FOOTBALL_REPLAY_GAME_ID,
     slug: 'arsenal-v-chelsea-2026-05-11',
     sport: Sport.FOOTBALL,
-    competition: subject(API_FOOTBALL_REPLAY_COMPETITION_ID, SubjectType.COMPETITION, 'Premier League', 'premier-league'),
+    competition: subject(
+      API_FOOTBALL_REPLAY_COMPETITION_ID,
+      SubjectType.COMPETITION,
+      'Premier League',
+      'premier-league'
+    ),
     season: subject(
       API_FOOTBALL_REPLAY_SEASON_ID,
       SubjectType.SEASON,
@@ -252,12 +288,22 @@ function game() {
     ),
     participants: [
       create(GameParticipantSchema, {
-        subject: subject(API_FOOTBALL_REPLAY_HOME_TEAM_ID, SubjectType.TEAM, 'Arsenal F.C.', 'arsenal'),
+        subject: subject(
+          API_FOOTBALL_REPLAY_HOME_TEAM_ID,
+          SubjectType.TEAM,
+          'Arsenal F.C.',
+          'arsenal'
+        ),
         role: GameParticipantRole.HOME,
         sortOrder: 1,
       }),
       create(GameParticipantSchema, {
-        subject: subject(API_FOOTBALL_REPLAY_AWAY_TEAM_ID, SubjectType.TEAM, 'Chelsea F.C.', 'chelsea'),
+        subject: subject(
+          API_FOOTBALL_REPLAY_AWAY_TEAM_ID,
+          SubjectType.TEAM,
+          'Chelsea F.C.',
+          'chelsea'
+        ),
         role: GameParticipantRole.AWAY,
         sortOrder: 2,
       }),

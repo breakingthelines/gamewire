@@ -24,6 +24,7 @@ describe('gamewire-worker config', () => {
       GAMEWIRE_PROVIDER_KIND: 'fixture',
       GAMEWIRE_PROVIDER_MODE: 'live',
       GAMEWIRE_PROVIDER_BASE_URL: 'https://provider.example.test',
+      API_FOOTBALL_KEY: 'test-provider-key',
       IDENTITY_PROVIDER_ID: 'identity-data-football',
       GAMEWIRE_WEBHOOK_PATH: '/provider/webhook',
       LOG_LEVEL: 'debug',
@@ -37,6 +38,7 @@ describe('gamewire-worker config', () => {
       providerKind: 'fixture',
       providerMode: 'live',
       providerBaseUrl: 'https://provider.example.test',
+      providerApiKey: 'test-provider-key',
       identityProviderId: 'identity-data-football',
       webhookPath: '/provider/webhook',
       logLevel: 'debug',
@@ -44,9 +46,7 @@ describe('gamewire-worker config', () => {
   });
 
   it('rejects invalid ports', () => {
-    expect(() => loadConfig({ GAMEWIRE_WORKER_PORT: '0' })).toThrow(
-      'Invalid gamewire-worker port'
-    );
+    expect(() => loadConfig({ GAMEWIRE_WORKER_PORT: '0' })).toThrow('Invalid gamewire-worker port');
   });
 
   it('rejects invalid provider modes', () => {

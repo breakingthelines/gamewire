@@ -1,7 +1,11 @@
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 
-import { Sport, SubjectRefSchema, SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
+import {
+  Sport,
+  SubjectRefSchema,
+  SubjectType,
+} from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
   GameService,
   GetLeaderboardRequestSchema,

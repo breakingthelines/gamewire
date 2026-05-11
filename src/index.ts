@@ -29,5 +29,7 @@ export {
   apiFootballReplayOccurrencesRequest,
   apiFootballReplayStandingsRequest,
   apiFootballStandingSyncPaths,
+  apiFootballStatusPath,
   type ApiFootballCompetitionPlan,
+  type ApiFootballEnvelope,
 } from './adapters/api-football/index.js';

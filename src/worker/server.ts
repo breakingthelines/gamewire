@@ -29,10 +29,11 @@ const readBody = async (request: IncomingMessage): Promise<unknown> => {
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
-  const workerResponse = handleWorkerRequest(
+  const workerResponse = await handleWorkerRequest(
     {
       method: request.method ?? 'GET',
       pathname: url.pathname,
+      query: Object.fromEntries(url.searchParams.entries()),
       body: await readBody(request),
     },
     config

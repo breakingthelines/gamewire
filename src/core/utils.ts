@@ -25,23 +25,25 @@ import {
 // TYPE GUARDS
 // =============================================================================
 
-type FootballActionOccurrence<TCase extends FootballActionPayload['actionData']['case'], TValue> =
-  GameOccurrence & {
-    payload: {
-      case: 'action';
-      value: {
-        action: {
-          case: 'football';
-          value: FootballActionPayload & {
-            actionData: {
-              case: TCase;
-              value: TValue;
-            };
+type FootballActionOccurrence<
+  TCase extends FootballActionPayload['actionData']['case'],
+  TValue,
+> = GameOccurrence & {
+  payload: {
+    case: 'action';
+    value: {
+      action: {
+        case: 'football';
+        value: FootballActionPayload & {
+          actionData: {
+            case: TCase;
+            value: TValue;
           };
         };
       };
     };
   };
+};
 
 export function isShot(
   event: GameOccurrence

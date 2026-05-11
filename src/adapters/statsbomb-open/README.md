@@ -32,10 +32,10 @@ console.log(ingest.metadata?.provider); // "statsbomb-open"
 
 Transforms raw StatsBomb events into a `btl.game.v1.IngestGameOccurrencesRequest`.
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `events` | `StatsBombEvent[]` | Raw events from StatsBomb JSON |
-| `options` | `FromStatsBombOpenOptions` | Game ID and replay metadata |
+| Name      | Type                       | Description                    |
+| --------- | -------------------------- | ------------------------------ |
+| `events`  | `StatsBombEvent[]`         | Raw events from StatsBomb JSON |
+| `options` | `FromStatsBombOpenOptions` | Game ID and replay metadata    |
 
 ```typescript
 interface FromStatsBombOpenOptions {
@@ -84,20 +84,20 @@ occurrence.payload = {
 StatsBomb uses a 120x80 coordinate system. BTL `PitchCoordinates` are normalized
 to 0-100 for both axes:
 
-| Axis | StatsBomb | BTL | Description |
-| --- | --- | --- | --- |
-| X | 0-120 | 0-100 | Own goal line to opposition goal line |
-| Y | 0-80 | 0-100 | Left touchline to right touchline |
+| Axis | StatsBomb | BTL   | Description                           |
+| ---- | --------- | ----- | ------------------------------------- |
+| X    | 0-120     | 0-100 | Own goal line to opposition goal line |
+| Y    | 0-80      | 0-100 | Left touchline to right touchline     |
 
 ## Supported Actions
 
-| StatsBomb type | BTL action type | Notes |
-| --- | --- | --- |
-| Shot (16) | `FootballActionType.SHOT` | Includes xG, outcome, body part |
-| Pass (30) | `FootballActionType.PASS` | Includes height, recipient, outcome |
-| Carry (43) | `FootballActionType.CARRY` | Ball progression events |
-| Duel (4) | `FootballActionType.TACKLE` | Only tackle duels (`type.id = 11`) |
-| Interception (10) | `FootballActionType.INTERCEPTION` | Won/lost outcome |
+| StatsBomb type    | BTL action type                   | Notes                               |
+| ----------------- | --------------------------------- | ----------------------------------- |
+| Shot (16)         | `FootballActionType.SHOT`         | Includes xG, outcome, body part     |
+| Pass (30)         | `FootballActionType.PASS`         | Includes height, recipient, outcome |
+| Carry (43)        | `FootballActionType.CARRY`        | Ball progression events             |
+| Duel (4)          | `FootballActionType.TACKLE`       | Only tackle duels (`type.id = 11`)  |
+| Interception (10) | `FootballActionType.INTERCEPTION` | Won/lost outcome                    |
 
 Other StatsBomb event types are filtered out until mapped into
 `FootballActionPayload`.

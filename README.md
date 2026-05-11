@@ -44,12 +44,12 @@ console.log(matchData.events.length);   // ~3000 events
 
 ## Supported Providers
 
-| Provider                                                        | Import                                                  | Docs                                              | Status  |
-| --------------------------------------------------------------- | ------------------------------------------------------- | ------------------------------------------------- | ------- |
+| Provider                                                        | Import                                               | Docs                                              | Status  |
+| --------------------------------------------------------------- | ---------------------------------------------------- | ------------------------------------------------- | ------- |
 | [StatsBomb Open](https://github.com/statsbomb/open-data)        | `@breakingthelines/gamewire/adapters/statsbomb-open` | [README](./src/adapters/statsbomb-open/README.md) | Stable  |
-| [SkillCorner](https://github.com/SkillCorner/opendata)          | -                                                       | -                                                 | Planned |
-| [Metrica Sports](https://github.com/metrica-sports/sample-data) | -                                                       | -                                                 | Planned |
-| [Opta Analyst](https://theanalyst.com)                          | -                                                       | -                                                 | Planned |
+| [SkillCorner](https://github.com/SkillCorner/opendata)          | -                                                    | -                                                 | Planned |
+| [Metrica Sports](https://github.com/metrica-sports/sample-data) | -                                                    | -                                                 | Planned |
+| [Opta Analyst](https://theanalyst.com)                          | -                                                    | -                                                 | Planned |
 
 Want to add support for another provider? See [Creating a New Adapter](#creating-a-new-adapter).
 

@@ -92,5 +92,4 @@ describe('gamewire-worker activities', () => {
     expect(result.request.games).toHaveLength(0);
     expect(result.runtime.request.redactedHeaders).toContain('api-token');
   });
-
 });

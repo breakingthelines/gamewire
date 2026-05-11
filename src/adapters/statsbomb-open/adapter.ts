@@ -241,9 +241,13 @@ function transformEvent(event: StatsBombEvent, gameId: string): GameOccurrence |
         action.actionData = {
           case: 'pass',
           value: create(PassEventDataSchema, {
-            endLocation: event.pass.end_location ? normalizeCoordinates(event.pass.end_location) : undefined,
+            endLocation: event.pass.end_location
+              ? normalizeCoordinates(event.pass.end_location)
+              : undefined,
             recipientPlayerId: event.pass.recipient ? String(event.pass.recipient.id) : '',
-            height: event.pass.height ? mapPassHeight(event.pass.height.id) : PassHeight.UNSPECIFIED,
+            height: event.pass.height
+              ? mapPassHeight(event.pass.height.id)
+              : PassHeight.UNSPECIFIED,
             bodyPart: mapBodyPart(event.pass.body_part?.id),
             outcome: mapPassOutcome(event.pass.outcome),
           }),
@@ -255,7 +259,9 @@ function transformEvent(event: StatsBombEvent, gameId: string): GameOccurrence |
         action.actionData = {
           case: 'carry',
           value: create(CarryEventDataSchema, {
-            endLocation: event.carry.end_location ? normalizeCoordinates(event.carry.end_location) : undefined,
+            endLocation: event.carry.end_location
+              ? normalizeCoordinates(event.carry.end_location)
+              : undefined,
           }),
         };
       }
@@ -353,7 +359,9 @@ export function fromStatsBombOpen(
   const providerMatchId = events[0]?.id?.split('-')[0] || 'unknown';
   const replayId = options.replayId ?? `statsbomb-open:${providerMatchId}`;
   const gameId = options.gameId;
-  const occurrences = events.map((event) => transformEvent(event, gameId)).filter((e): e is GameOccurrence => e !== null);
+  const occurrences = events
+    .map((event) => transformEvent(event, gameId))
+    .filter((e): e is GameOccurrence => e !== null);
 
   return create(IngestGameOccurrencesRequestSchema, {
     gameId,

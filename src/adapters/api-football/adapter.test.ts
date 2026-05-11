@@ -8,6 +8,7 @@ import {
   apiFootballReplayFixturesRequest,
   apiFootballReplayOccurrencesRequest,
   apiFootballStandingSyncPaths,
+  apiFootballStatusPath,
 } from './index.js';
 
 describe('API-Football adapter', () => {
@@ -23,6 +24,7 @@ describe('API-Football adapter', () => {
     expect(apiFootballFixtureSyncPaths()).toHaveLength(6);
     expect(apiFootballStandingSyncPaths()).toHaveLength(6);
     expect(apiFootballLivePath()).toBe('/fixtures?live=all');
+    expect(apiFootballStatusPath()).toBe('/status');
   });
 
   it('builds canonical replay ingest requests from provider-shaped data', () => {

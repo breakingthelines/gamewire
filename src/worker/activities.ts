@@ -79,10 +79,8 @@ export interface ActivityResult<TRequest, TResponse = IngestBatchResponse> {
 const resolveConfig = (context?: GamewireActivityContext): GamewireWorkerConfig =>
   context?.config ?? defaultConfig;
 
-const resolveProvider = (
-  input: ProviderActivityInput,
-  context?: GamewireActivityContext
-): string => input.provider ?? resolveConfig(context).providerId;
+const resolveProvider = (input: ProviderActivityInput, context?: GamewireActivityContext): string =>
+  input.provider ?? resolveConfig(context).providerId;
 
 const replayIdFor = (activity: GamewireActivityName, input: ProviderActivityInput): string =>
   input.replayId ??
@@ -296,7 +294,13 @@ export async function PollLiveGame(
     gameIds: [input.gameId],
   });
   const replayReady = replaySupportsProvider(provider);
-  const runtime = runtimeFor('PollLiveGame', provider, replayIdFor('PollLiveGame', { ...input, provider }), input.gameId, context);
+  const runtime = runtimeFor(
+    'PollLiveGame',
+    provider,
+    replayIdFor('PollLiveGame', { ...input, provider }),
+    input.gameId,
+    context
+  );
   const response = message<PollLiveGamesResponse>('btl.game.v1.PollLiveGamesResponse', {
     liveCount: replayReady ? 1 : 0,
     changedCount: replayReady ? 1 : 0,
@@ -361,19 +365,35 @@ function replayGameIdForProvider(_providerId: string): string {
   return API_FOOTBALL_REPLAY_GAME_ID;
 }
 
-function replayFixturesRequestFor(provider: string, replayId: string, filter?: GameFilter): IngestGamesRequest {
+function replayFixturesRequestFor(
+  provider: string,
+  replayId: string,
+  filter?: GameFilter
+): IngestGamesRequest {
   return apiFootballReplayFixturesRequest({ provider, replayId, filter });
 }
 
-function replayGameRequestFor(provider: string, replayId: string, gameId: string): IngestGamesRequest {
+function replayGameRequestFor(
+  provider: string,
+  replayId: string,
+  gameId: string
+): IngestGamesRequest {
   return apiFootballReplayGameRequest({ provider, replayId, gameId });
 }
 
-function replayLineupsRequestFor(provider: string, replayId: string, gameId: string): IngestFootballLineupsRequest {
+function replayLineupsRequestFor(
+  provider: string,
+  replayId: string,
+  gameId: string
+): IngestFootballLineupsRequest {
   return apiFootballReplayLineupsRequest({ provider, replayId, gameId });
 }
 
-function replayOccurrencesRequestFor(provider: string, replayId: string, gameId: string): IngestGameOccurrencesRequest {
+function replayOccurrencesRequestFor(
+  provider: string,
+  replayId: string,
+  gameId: string
+): IngestGameOccurrencesRequest {
   return apiFootballReplayOccurrencesRequest({ provider, replayId, gameId });
 }
 

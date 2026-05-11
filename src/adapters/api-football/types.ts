@@ -12,6 +12,18 @@ export interface ApiFootballCompetitionPlan {
   readonly tier: 'domestic-top-five' | 'international';
 }
 
+export interface ApiFootballEnvelope<TResponse = unknown> {
+  readonly get?: string;
+  readonly parameters?: Record<string, unknown> | readonly unknown[];
+  readonly errors?: Record<string, unknown> | readonly unknown[];
+  readonly results?: number;
+  readonly paging?: {
+    readonly current?: number;
+    readonly total?: number;
+  };
+  readonly response: TResponse;
+}
+
 export interface ApiFootballFixtureRef {
   readonly id: number;
   readonly date: string;
@@ -101,10 +113,22 @@ export interface ApiFootballStandingEntry {
 export const API_FOOTBALL_PROVIDER_ID = 'api-football';
 
 export const API_FOOTBALL_BETA_COMPETITIONS: readonly ApiFootballCompetitionPlan[] = [
-  { label: 'Premier League', country: 'England', leagueId: 39, season: 2025, tier: 'domestic-top-five' },
+  {
+    label: 'Premier League',
+    country: 'England',
+    leagueId: 39,
+    season: 2025,
+    tier: 'domestic-top-five',
+  },
   { label: 'La Liga', country: 'Spain', leagueId: 140, season: 2025, tier: 'domestic-top-five' },
   { label: 'Serie A', country: 'Italy', leagueId: 135, season: 2025, tier: 'domestic-top-five' },
-  { label: 'Bundesliga', country: 'Germany', leagueId: 78, season: 2025, tier: 'domestic-top-five' },
+  {
+    label: 'Bundesliga',
+    country: 'Germany',
+    leagueId: 78,
+    season: 2025,
+    tier: 'domestic-top-five',
+  },
   { label: 'Ligue 1', country: 'France', leagueId: 61, season: 2025, tier: 'domestic-top-five' },
   { label: 'FIFA World Cup', country: 'World', leagueId: 1, season: 2026, tier: 'international' },
 ];

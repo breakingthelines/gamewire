@@ -6,6 +6,7 @@ import {
   apiFootballLineupPath,
   apiFootballLivePath,
   apiFootballStandingSyncPaths,
+  apiFootballStatusPath,
 } from '../adapters/api-football/index.js';
 
 export type ProviderRuntimeMode = 'replay' | 'live';
@@ -54,6 +55,8 @@ export interface ProviderWorkloadPlanOptions {
   readonly workload: string;
   readonly resourceId: string;
   readonly replayId: string;
+  readonly path?: string;
+  readonly relatedPaths?: readonly string[];
 }
 
 const cacheTtlByWorkload: Record<string, number> = {
@@ -63,9 +66,12 @@ const cacheTtlByWorkload: Record<string, number> = {
   occurrences: 60 * 60,
   standings: 6 * 60 * 60,
   live: 15,
+  status: 60,
 };
 
-export function createProviderRuntimeReport(options: ProviderWorkloadPlanOptions): ProviderRuntimeReport {
+export function createProviderRuntimeReport(
+  options: ProviderWorkloadPlanOptions
+): ProviderRuntimeReport {
   const request = createProviderRequestPlan(options);
   return {
     request,
@@ -87,15 +93,18 @@ export function createProviderRuntimeReport(options: ProviderWorkloadPlanOptions
   };
 }
 
-export function createProviderRequestPlan(options: ProviderWorkloadPlanOptions): ProviderRequestPlan {
+export function createProviderRequestPlan(
+  options: ProviderWorkloadPlanOptions
+): ProviderRequestPlan {
   const workload = normaliseWorkload(options.workload);
   return {
     provider: options.provider,
     mode: options.mode,
     workload,
     method: 'GET',
-    path: providerPathFor(options.provider, workload, options.resourceId),
-    relatedPaths: relatedPathsFor(options.provider, workload, options.resourceId),
+    path: options.path ?? providerPathFor(options.provider, workload, options.resourceId),
+    relatedPaths:
+      options.relatedPaths ?? relatedPathsFor(options.provider, workload, options.resourceId),
     cacheKey: `${options.provider}:${workload}:${options.resourceId}:${options.replayId}`,
     cacheTtlSeconds: cacheTtlByWorkload[workload] ?? 15 * 60,
     quotaCost: 1,
@@ -129,12 +138,18 @@ function apiFootballPathFor(workload: string, resourceId: string): string {
       return apiFootballStandingSyncPaths()[0] ?? '/standings';
     case 'live':
       return apiFootballLivePath();
+    case 'status':
+      return apiFootballStatusPath();
     default:
       return `/${workload}?id=${encodeURIComponent(resourceId)}`;
   }
 }
 
-function relatedPathsFor(provider: string, workload: string, resourceId: string): readonly string[] {
+function relatedPathsFor(
+  provider: string,
+  workload: string,
+  resourceId: string
+): readonly string[] {
   if (normaliseProvider(provider) !== 'api-football') {
     return [];
   }
@@ -149,6 +164,8 @@ function relatedPathsFor(provider: string, workload: string, resourceId: string)
       return [apiFootballEventPath(resourceId)];
     case 'live':
       return [apiFootballLivePath()];
+    case 'status':
+      return [apiFootballStatusPath()];
     default:
       return [];
   }
@@ -163,7 +180,10 @@ function genericProviderPathFor(workload: string, resourceId: string): string {
 }
 
 function normaliseWorkload(workload: string): string {
-  return workload.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  return workload
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-');
 }
 
 function normaliseProvider(provider: string): string {

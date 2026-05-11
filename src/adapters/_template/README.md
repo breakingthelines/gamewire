@@ -221,12 +221,12 @@ And add package exports to `package.json`:
 
 Currently supported event types:
 
-| Type | Proto enum | Event data schema |
-| --- | --- | --- |
-| Shot | `FootballActionType.SHOT` | `ShotEventDataSchema` |
-| Pass | `FootballActionType.PASS` | `PassEventDataSchema` |
-| Carry | `FootballActionType.CARRY` | `CarryEventDataSchema` |
-| Tackle | `FootballActionType.TACKLE` | `TackleEventDataSchema` |
+| Type         | Proto enum                        | Event data schema             |
+| ------------ | --------------------------------- | ----------------------------- |
+| Shot         | `FootballActionType.SHOT`         | `ShotEventDataSchema`         |
+| Pass         | `FootballActionType.PASS`         | `PassEventDataSchema`         |
+| Carry        | `FootballActionType.CARRY`        | `CarryEventDataSchema`        |
+| Tackle       | `FootballActionType.TACKLE`       | `TackleEventDataSchema`       |
 | Interception | `FootballActionType.INTERCEPTION` | `InterceptionEventDataSchema` |
 
 ## Checklist

@@ -16,7 +16,11 @@ export {
   type GamewireActivityName,
   type PollLiveGameInput,
 } from './activities.js';
-export { estimateMatchdayCallBudget, type CallBudgetEstimate, type CallBudgetLine } from './call-budget.js';
+export {
+  estimateMatchdayCallBudget,
+  type CallBudgetEstimate,
+  type CallBudgetLine,
+} from './call-budget.js';
 export {
   API_FOOTBALL_BETA_COMPETITIONS,
   apiFootballCompetitionKey,
@@ -26,7 +30,9 @@ export {
   apiFootballLineupPath,
   apiFootballLivePath,
   apiFootballStandingSyncPaths,
+  apiFootballStatusPath,
   type ApiFootballCompetitionPlan,
+  type ApiFootballEnvelope,
 } from '../adapters/api-football/index.js';
 export {
   config,
@@ -42,6 +48,17 @@ export {
   type ProviderRuntimeReport,
 } from './runtime.js';
 export {
+  fetchApiFootballJson,
+  summarizeProviderJson,
+  type ProviderFetch,
+  type ProviderFetchResponse,
+  type ProviderJsonFetchOptions,
+  type ProviderJsonFetchResult,
+  type ProviderJsonFetchSkipReason,
+  type ProviderJsonFetchStatus,
+  type ProviderJsonSummary,
+} from './provider-http.js';
+export {
   createGameServiceIngestClientBoundary,
   type GameServiceIngestClient,
   type GameServiceIngestClientOptions,
@@ -51,4 +68,9 @@ export {
   type FootballIdentityLookupClient,
   type FootballIdentityLookupClientOptions,
 } from './clients/identity.js';
-export { activityNames, handleWorkerRequest, type WorkerHttpRequest, type WorkerHttpResponse } from './http.js';
+export {
+  activityNames,
+  handleWorkerRequest,
+  type WorkerHttpRequest,
+  type WorkerHttpResponse,
+} from './http.js';

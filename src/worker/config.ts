@@ -9,6 +9,7 @@ export interface GamewireWorkerConfig {
   providerKind: string;
   providerMode: GamewireProviderMode;
   providerBaseUrl?: string;
+  providerApiKey?: string;
   identityProviderId: string;
   webhookPath: string;
   logLevel: GamewireWorkerLogLevel;
@@ -57,6 +58,9 @@ const parseProviderMode = (value: string | undefined): GamewireProviderMode => {
   }
 };
 
+const resolveProviderApiKey = (env: GamewireWorkerEnv): string | undefined =>
+  env.API_FOOTBALL_KEY ?? env.APISPORTS_KEY ?? env.API_SPORTS_KEY ?? env.GAMEWIRE_PROVIDER_API_KEY;
+
 export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorkerConfig => ({
   port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
   gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
@@ -65,6 +69,7 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
   providerKind: env.GAMEWIRE_PROVIDER_KIND ?? 'football',
   providerMode: parseProviderMode(env.GAMEWIRE_PROVIDER_MODE),
   providerBaseUrl: env.GAMEWIRE_PROVIDER_BASE_URL ?? 'https://v3.football.api-sports.io',
+  providerApiKey: resolveProviderApiKey(env),
   identityProviderId: env.IDENTITY_PROVIDER_ID ?? 'identity-data-football',
   webhookPath: env.GAMEWIRE_WEBHOOK_PATH ?? '/webhooks/gamewire',
   logLevel: parseLogLevel(env.LOG_LEVEL),
