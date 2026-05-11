@@ -12,8 +12,10 @@ jobs:
       contents: read
       packages: write
     env:
-      GH_PKG_TOKEN: ${{ github.token }}
-      GITHUB_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ secrets.GH_PKG_TOKEN || github.token }}
+      GH_PKG_TOKEN: ${{ secrets.GH_PKG_TOKEN || github.token }}
+      NPM_CONFIG_TOKEN: ${{ secrets.GH_PKG_TOKEN || github.token }}
+      NODE_AUTH_TOKEN: ${{ secrets.GH_PKG_TOKEN || github.token }}
 
     steps:
       - name: Checkout
