@@ -8,7 +8,7 @@
         "@bufbuild/protobuf": "^2.0.0",
       },
       "devDependencies": {
-        "@breakingthelines/protos": "0.7.0",
+        "@breakingthelines/protos": "0.7.1",
         "@types/node": "^24.10.1",
         "@vitest/coverage-v8": "4.0.16",
         "bunchee": "^6.9.3",
@@ -32,7 +32,7 @@
 
     "@bcoe/v8-coverage": ["@bcoe/v8-coverage@1.0.2", "", {}, "sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA=="],
 
-    "@breakingthelines/protos": ["@breakingthelines/protos@0.7.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.7.0/a26c9261fe9a86d72684d48a1c10b668a0c5cca0", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-gOb1iW6yv8KuIk9wadYZWzxlC7RKGl7U0cqb4Srh2rRlPW86DW29uo6dSyhMsJFGYxr6kfy07R32CHwCl82lRA=="],
+    "@breakingthelines/protos": ["@breakingthelines/protos@0.7.1", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.7.1/89963e114f298c627a826f5815c308177170ab09", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-E3aQEEM+Ox2/lklskQ3KW8RFfVSWiIIZd/d7gdNcCEuTyW7Aat1S4jtxnD9GBSKnWkUr4iHbVS6xM5xoA3PZ+w=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.11.0", "", {}, "sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ=="],
 
