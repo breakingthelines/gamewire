@@ -5,10 +5,11 @@
     "": {
       "name": "@breakingthelines/gamewire",
       "dependencies": {
+        "@breakingthelines/protos": "0.7.1",
         "@bufbuild/protobuf": "^2.0.0",
+        "@connectrpc/connect": "^2.1.1",
       },
       "devDependencies": {
-        "@breakingthelines/protos": "0.7.1",
         "@types/node": "^24.10.1",
         "@vitest/coverage-v8": "4.0.16",
         "bunchee": "^6.9.3",
