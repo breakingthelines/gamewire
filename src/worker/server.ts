@@ -8,6 +8,11 @@ import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop } from './ingestion.js';
 import {
+  MATCH_CONCLUDED_STREAM_NAME,
+  MatchConcludedPublisher,
+  createBunMatchConcludedStreamClient,
+} from './match-concluded-publisher.js';
+import {
   RATING_SUBMITTED_FACT_TYPE,
   RatingConsumer,
 } from './rating-consumer.js';
@@ -96,6 +101,13 @@ const recordRatingNotImplemented: GameServiceRecordRatingClient = {
 };
 
 let stopFactConsumer: (() => void) | undefined;
+// The match-concluded publisher is constructed once and held at module
+// scope so the ingestion bridge (future task: extract fixture status +
+// resolve identity inside ingestion.ts) can call `.observe(fixture)`
+// without re-creating the Redis client per fixture. We expose it via
+// the `matchConcludedPublisher` export below. When Redis is unavailable
+// the value stays undefined; callers must null-check.
+let matchConcludedPublisher: MatchConcludedPublisher | undefined;
 if (config.redisUrl) {
   try {
     // Bun exposes a global `Bun.redis` connected to BUN_REDIS_URL or the
@@ -144,6 +156,24 @@ if (config.redisUrl) {
         '[gamewire-worker] fact bus consumer started ' +
           `(consumer=${streamConsumer.consumerName} stream=btl:facts:${RATING_SUBMITTED_FACT_TYPE} group=gamewire-rating)`
       );
+
+      // Match-concluded publisher boot. Shares the same Bun.redis client
+      // as the consumer; the stream-publish boundary issues a single
+      // `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
+      // event_id ... fact_type ...` call per terminal fixture. The
+      // ingestion side wires `observe()` once it has a normalised
+      // fixture envelope (status + BTL game_id + provider id +
+      // concluded_at). Until that bridge lands the publisher is a hot
+      // module-level singleton with zero callers — kept here so the
+      // boot path is exercised in production and the metrics surface
+      // is wired up at the same time as the consumer.
+      matchConcludedPublisher = new MatchConcludedPublisher({
+        stream: createBunMatchConcludedStreamClient(bunRedis),
+      });
+      console.log(
+        '[gamewire-worker] match-concluded publisher ready ' +
+          `(stream=${MATCH_CONCLUDED_STREAM_NAME})`
+      );
     }
   } catch (err) {
     console.log(
@@ -157,6 +187,13 @@ if (config.redisUrl) {
     '[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled'
   );
 }
+
+/**
+ * Module-level handle for the ingestion bridge to call
+ * `matchConcludedPublisher?.observe(fixture)` once it has a normalised
+ * fixture envelope. Undefined when Redis is not configured.
+ */
+export { matchConcludedPublisher };
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
