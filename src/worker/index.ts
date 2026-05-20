@@ -60,9 +60,35 @@ export {
 } from './provider-http.js';
 export {
   createGameServiceIngestClientBoundary,
+  createGameServiceRecordRatingClientBoundary,
   type GameServiceIngestClient,
   type GameServiceIngestClientOptions,
+  type GameServiceRecordRatingClient,
+  type GameServiceRecordRatingClientOptions,
 } from './clients/game-service.js';
+export {
+  DEFAULT_RATING_BACKOFF_MS,
+  InMemoryRatingDeadLetterSink,
+  InMemoryRatingDedupeStore,
+  RATING_SUBMITTED_FACT_TYPE,
+  RatingConsumer,
+  RatingConsumerMetrics,
+  buildRecordRatingRequest,
+  defaultRatingConsumerClock,
+  parseRatingSubmittedFact,
+  type RatingConsumerClock,
+  type RatingConsumerLogEntry,
+  type RatingConsumerLogger,
+  type RatingConsumerMetricsSnapshot,
+  type RatingConsumerOptions,
+  type RatingConsumerOutcome,
+  type RatingConsumerResult,
+  type RatingDeadLetterEntry,
+  type RatingDeadLetterSink,
+  type RatingDedupeStore,
+  type RatingSubmittedParseResult,
+  type RatingSubmittedPayload,
+} from './rating-consumer.js';
 export {
   createFootballIdentityLookupBoundary,
   type FootballIdentityLookupClient,
