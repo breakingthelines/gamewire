@@ -14,6 +14,10 @@ const baseConfig: GamewireWorkerConfig = {
   identityProviderId: 'identity-data-football',
   webhookPath: '/webhooks/gamewire',
   logLevel: 'info',
+  redisNamespace: 'gamewire',
+  providerHardCap: 70_000,
+  providerSoftCap: 60_000,
+  ingestionEnabled: false,
 };
 
 describe('API-Football provider HTTP boundary', () => {

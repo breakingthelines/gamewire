@@ -71,6 +71,42 @@ export {
 export {
   activityNames,
   handleWorkerRequest,
+  type WorkerHttpHandlerOptions,
   type WorkerHttpRequest,
   type WorkerHttpResponse,
 } from './http.js';
+export {
+  InMemoryProviderCache,
+  RedisProviderCache,
+  type ProviderCache,
+  type RedisLikeClient,
+  type RedisProviderCacheOptions,
+} from './cache.js';
+export { Singleflight } from './singleflight.js';
+export {
+  DEFAULT_PROVIDER_HARD_CAP,
+  DEFAULT_PROVIDER_PLAN_CEILING,
+  DEFAULT_PROVIDER_SOFT_CAP,
+  InMemoryQuotaStore,
+  ProviderQuotaTracker,
+  RedisQuotaStore,
+  type ProviderQuotaCheckResult,
+  type ProviderQuotaPosture,
+  type ProviderQuotaSnapshot,
+  type ProviderQuotaStore,
+  type ProviderQuotaTrackerOptions,
+  type RedisQuotaClient,
+  type RedisQuotaStoreOptions,
+} from './quota.js';
+export { IngestionMetrics, type CallOutcome, type MetricsSnapshot } from './metrics.js';
+export {
+  ApiFootballIngestionLoop,
+  INGESTION_TICK_INTERVAL_MS,
+  INGESTION_TTL_SECONDS,
+  PROVIDER_ID,
+  type IngestionFetchOptions,
+  type IngestionFetchResult,
+  type IngestionLoopOptions,
+  type IngestionLoopStartOptions,
+  type IngestionWorkload,
+} from './ingestion.js';
