@@ -3,10 +3,15 @@ import type { IncomingMessage } from 'node:http';
 
 import type { RecordRatingRequest, RecordRatingResponse } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
+import {
+  createFetchFootballIdentityLookupClient,
+  type FootballIdentityLookupClient,
+} from './clients/identity.js';
 import type { GameServiceRecordRatingClient } from './clients/game-service.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
-import { ApiFootballIngestionLoop } from './ingestion.js';
+import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
+import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
   MATCH_CONCLUDED_STREAM_NAME,
   MatchConcludedPublisher,
@@ -61,21 +66,6 @@ if (config.redisUrl) {
       'using in-memory cache backend until Redis adapter is wired'
   );
 }
-const ingestion = new ApiFootballIngestionLoop({ config });
-
-let stopIngestion: (() => void) | undefined;
-if (config.ingestionEnabled) {
-  stopIngestion = ingestion.start();
-  console.log(
-    `[gamewire-worker] ingestion loop started provider=${config.providerId} ` +
-      `hardCap=${config.providerHardCap} softCap=${config.providerSoftCap}`
-  );
-} else {
-  console.log(
-    `[gamewire-worker] ingestion loop disabled (providerMode=${config.providerMode}). ` +
-      'Set GAMEWIRE_INGESTION_ENABLED=true to override.'
-  );
-}
 
 // Redis Streams consumer for PlatformFact envelopes from game-service.
 // Wired only when GAMEWIRE_REDIS_URL is set; in the unset case we log a
@@ -102,10 +92,9 @@ const recordRatingNotImplemented: GameServiceRecordRatingClient = {
 
 let stopFactConsumer: (() => void) | undefined;
 // The match-concluded publisher is constructed once and held at module
-// scope so the ingestion bridge (future task: extract fixture status +
-// resolve identity inside ingestion.ts) can call `.observe(fixture)`
-// without re-creating the Redis client per fixture. We expose it via
-// the `matchConcludedPublisher` export below. When Redis is unavailable
+// scope so the ingestion bridge can call `.observe(fixture)` without
+// re-creating the Redis client per fixture. We expose it via the
+// `matchConcludedPublisher` export below. When Redis is unavailable
 // the value stays undefined; callers must null-check.
 let matchConcludedPublisher: MatchConcludedPublisher | undefined;
 if (config.redisUrl) {
@@ -161,12 +150,8 @@ if (config.redisUrl) {
       // as the consumer; the stream-publish boundary issues a single
       // `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
       // event_id ... fact_type ...` call per terminal fixture. The
-      // ingestion side wires `observe()` once it has a normalised
-      // fixture envelope (status + BTL game_id + provider id +
-      // concluded_at). Until that bridge lands the publisher is a hot
-      // module-level singleton with zero callers — kept here so the
-      // boot path is exercised in production and the metrics surface
-      // is wired up at the same time as the consumer.
+      // bridge below pipes fixture-detail ingestion results into
+      // `observe()` so terminal fixtures emit one fact each.
       matchConcludedPublisher = new MatchConcludedPublisher({
         stream: createBunMatchConcludedStreamClient(bunRedis),
       });
@@ -185,6 +170,61 @@ if (config.redisUrl) {
 } else {
   console.log(
     '[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled'
+  );
+}
+
+/**
+ * Identity-server client used by the match-concluded bridge to resolve
+ * API-Football fixture ids into BTL canonical game ids. Wired only when
+ * `config.identityServiceUrl` is set (default in every deployment) and
+ * the publisher is available; the bridge itself is a no-op when either
+ * dependency is missing.
+ */
+const identityClient: FootballIdentityLookupClient | undefined =
+  config.identityServiceUrl
+    ? createFetchFootballIdentityLookupClient({ baseUrl: config.identityServiceUrl })
+    : undefined;
+
+/**
+ * Bridge callback handed to the ingestion loop. Reads the fixture detail
+ * envelope, resolves identity, calls `publisher.observe()`. No-op when
+ * either the publisher or the identity client is unavailable.
+ */
+const onFixtureFetched: OnFixtureFetchedCallback | undefined =
+  matchConcludedPublisher && identityClient
+    ? createMatchConcludedBridge({
+        publisher: matchConcludedPublisher,
+        identity: identityClient,
+        providerId: config.providerId,
+      })
+    : undefined;
+
+if (onFixtureFetched) {
+  console.log(
+    '[gamewire-worker] match-concluded bridge active ' +
+      `(identity=${config.identityServiceUrl} provider=${config.providerId})`
+  );
+} else if (config.redisUrl) {
+  console.log(
+    '[gamewire-worker] match-concluded bridge inactive ' +
+      `(publisher=${matchConcludedPublisher ? 'ready' : 'missing'} ` +
+      `identity=${identityClient ? 'ready' : 'missing'})`
+  );
+}
+
+const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
+
+let stopIngestion: (() => void) | undefined;
+if (config.ingestionEnabled) {
+  stopIngestion = ingestion.start();
+  console.log(
+    `[gamewire-worker] ingestion loop started provider=${config.providerId} ` +
+      `hardCap=${config.providerHardCap} softCap=${config.providerSoftCap}`
+  );
+} else {
+  console.log(
+    `[gamewire-worker] ingestion loop disabled (providerMode=${config.providerMode}). ` +
+      'Set GAMEWIRE_INGESTION_ENABLED=true to override.'
   );
 }
 
