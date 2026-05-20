@@ -34,9 +34,7 @@ describe('Singleflight', () => {
 
   it('treats distinct keys independently', async () => {
     const sf = new Singleflight();
-    const loader = vi
-      .fn()
-      .mockImplementation(async (key: string) => `value:${key}`);
+    const loader = vi.fn().mockImplementation(async (key: string) => `value:${key}`);
 
     const [a, b] = await Promise.all([
       sf.do('alpha', () => loader('alpha')),

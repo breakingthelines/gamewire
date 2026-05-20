@@ -38,13 +38,14 @@ const replayConfig: GamewireWorkerConfig = {
   providerApiKey: undefined,
 };
 
-const buildFetchMock = (payload: unknown): ProviderFetch & { mock: ReturnType<typeof vi.fn>['mock'] } =>
+const buildFetchMock = (
+  payload: unknown
+): ProviderFetch & { mock: ReturnType<typeof vi.fn>['mock'] } =>
   vi.fn().mockResolvedValue({
     ok: true,
     status: 200,
     headers: {
-      get: (name: string) =>
-        name.toLowerCase() === 'content-type' ? 'application/json' : null,
+      get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
     },
     json: async () => payload,
   }) as unknown as ProviderFetch & { mock: ReturnType<typeof vi.fn>['mock'] };

@@ -135,10 +135,7 @@ describe('RedisQuotaStore', () => {
     expect(total).toBe(3);
     expect(client.counters.get('gamewire:quota:2026-05-20')).toBe(3);
     expect(client.expireMock).toHaveBeenCalledTimes(1);
-    expect(client.expireMock).toHaveBeenCalledWith(
-      'gamewire:quota:2026-05-20',
-      36 * 60 * 60
-    );
+    expect(client.expireMock).toHaveBeenCalledWith('gamewire:quota:2026-05-20', 36 * 60 * 60);
   });
 
   it('skips TTL refresh on refunds (non-positive increments)', async () => {

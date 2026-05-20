@@ -71,11 +71,7 @@ const parseProviderMode = (value: string | undefined): GamewireProviderMode => {
 const resolveProviderApiKey = (env: GamewireWorkerEnv): string | undefined =>
   env.API_FOOTBALL_KEY ?? env.APISPORTS_KEY ?? env.API_SPORTS_KEY ?? env.GAMEWIRE_PROVIDER_API_KEY;
 
-const parsePositiveInt = (
-  value: string | undefined,
-  fallback: number,
-  label: string
-): number => {
+const parsePositiveInt = (value: string | undefined, fallback: number, label: string): number => {
   if (value === undefined || value === '') {
     return fallback;
   }
@@ -86,11 +82,7 @@ const parsePositiveInt = (
   return parsed;
 };
 
-const parseBoolean = (
-  value: string | undefined,
-  fallback: boolean,
-  label: string
-): boolean => {
+const parseBoolean = (value: string | undefined, fallback: boolean, label: string): boolean => {
   if (value === undefined || value === '') {
     return fallback;
   }
