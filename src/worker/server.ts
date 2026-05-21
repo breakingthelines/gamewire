@@ -20,6 +20,7 @@ import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
+  InMemoryMatchConcludedStreamClient,
   MATCH_CONCLUDED_STREAM_NAME,
   MatchConcludedPublisher,
   createBunMatchConcludedStreamClient,
@@ -153,8 +154,9 @@ if (config.redisUrl) {
       // as the consumer; the stream-publish boundary issues a single
       // `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
       // event_id ... fact_type ...` call per terminal fixture. The
-      // bridge below pipes fixture-detail ingestion results into
-      // `observe()` so terminal fixtures emit one fact each.
+      // bridge below pipes fixture-detail ingestion results into `observe()`
+      // so terminal fixtures emit one fact each; event and lineup payloads
+      // use the same bridge to call game-service ingest RPCs.
       //
       // The emit-once gate is backed by Redis (`SET NX EX 30d` under
       // `btl:fact:emitted:`) so a worker restart between two terminal
@@ -182,15 +184,18 @@ if (config.redisUrl) {
   }
 } else {
   console.log('[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled');
+  matchConcludedPublisher = new MatchConcludedPublisher({
+    stream: new InMemoryMatchConcludedStreamClient(),
+  });
+  console.log('[gamewire-worker] match-concluded publisher ready (stream=memory)');
 }
 
 /**
- * Identity-server client. Retained for future PLAYER / TEAM crosswalk
- * paths (player metadata sync, etc.); the GAME path on the
- * match-concluded bridge no longer routes through identity-server
- * because its read-only SQLite snapshot does not carry fixture-level
- * mappings. The client is wired here so the boundary stays in scope
- * for downstream callers — do not remove it.
+ * Identity-server client. Used by the API-Football bridge to resolve
+ * provider teams, players, competitions, and seasons when the snapshot
+ * has a match. The GAME path still resolves through game-service
+ * because identity's read-only SQLite snapshot does not carry the live
+ * provider fixture mapping.
  */
 const identityClient: FootballIdentityLookupClient | undefined = config.identityServiceUrl
   ? createFetchFootballIdentityLookupClient({ baseUrl: config.identityServiceUrl })
@@ -216,11 +221,11 @@ if (!config.gameServiceUrl) {
 }
 
 /**
- * Bridge callback handed to the ingestion loop. Reads the fixture detail
- * envelope, resolves the canonical game id via game-service, calls
- * `publisher.observe()`. No-op when the publisher, the game-service
- * client, or the identity client is unavailable. (Identity client is
- * carried through for downstream PLAYER / TEAM paths.)
+ * Bridge callback handed to the ingestion loop. Reads fixture-scoped provider
+ * envelopes, resolves canonical entities through identity/game-service, ingests
+ * games/events/lineups, and calls `publisher.observe()` for terminal fixture
+ * details. No-op when the publisher, the game-service client, or the identity
+ * client is unavailable.
  */
 const onFixtureFetched: OnFixtureFetchedCallback | undefined =
   matchConcludedPublisher && gameServiceLookupClient && identityClient
@@ -271,7 +276,8 @@ if (config.ingestionEnabled) {
 /**
  * Module-level handle for the ingestion bridge to call
  * `matchConcludedPublisher?.observe(fixture)` once it has a normalised
- * fixture envelope. Undefined when Redis is not configured.
+ * fixture envelope. Redis-backed in production when configured; in-memory
+ * otherwise so game/event/lineup ingest can still run in local/staging smoke.
  */
 export { matchConcludedPublisher };
 

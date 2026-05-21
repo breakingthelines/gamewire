@@ -68,6 +68,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'fixture-detail-preKO': 60 * 60,
       'fixture-detail-live': 30,
       'fixture-detail-fullTime': 6 * 60 * 60,
+      'events-post-final': 6 * 60 * 60,
       'lineups-post-confirm': 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
@@ -303,6 +304,7 @@ describe('ApiFootballIngestionLoop.start', () => {
         'fixture-detail-preKO': 1_000,
         'fixture-detail-live': 1_000,
         'fixture-detail-fullTime': 1_000,
+        'events-post-final': 1_000,
         'lineups-post-confirm': 1_000,
         'team-metadata': 1_000,
         'player-metadata': 1_000,
@@ -311,10 +313,10 @@ describe('ApiFootballIngestionLoop.start', () => {
       cancel,
     });
 
-    // 1 fixtures-next-7d + 4 dynamic fixture workloads + 1 team + 1 player = 7
-    expect(schedule).toHaveBeenCalledTimes(7);
+    // 1 fixtures-next-7d + 5 dynamic fixture workloads + 1 team + 1 player = 8
+    expect(schedule).toHaveBeenCalledTimes(8);
     stop();
-    expect(cancel).toHaveBeenCalledTimes(7);
+    expect(cancel).toHaveBeenCalledTimes(8);
     expect(cancel.mock.calls.map((args) => args[0])).toEqual(handles);
   });
 
@@ -333,6 +335,7 @@ describe('ApiFootballIngestionLoop.start', () => {
         'fixture-detail-preKO': 0,
         'fixture-detail-live': 0,
         'fixture-detail-fullTime': 0,
+        'events-post-final': 0,
         'lineups-post-confirm': 0,
       },
       schedule,
@@ -359,18 +362,20 @@ describe('ApiFootballIngestionLoop.start', () => {
         'fixture-detail-preKO': 1_000,
         'fixture-detail-live': 1_000,
         'fixture-detail-fullTime': 1_000,
+        'events-post-final': 1_000,
         'lineups-post-confirm': 1_000,
       },
       schedule,
       cancel,
     });
 
-    for (let i = 0; i < 5 && fetchFn.mock.calls.length < 4; i += 1) {
+    for (let i = 0; i < 5 && fetchFn.mock.calls.length < 5; i += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
-    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(5);
     const urls = fetchFn.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes('/fixtures?id=1917'))).toBe(true);
+    expect(urls.some((url) => url.includes('/fixtures/events?fixture=1917'))).toBe(true);
     stop();
   });
 

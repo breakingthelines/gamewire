@@ -11,3 +11,10 @@ Ligue 1 (`61`), and World Cup (`1`).
 The worker imports this adapter for replay-safe payloads and request planning;
 live HTTP, caching, quota, backoff, and secret handling remain worker
 responsibilities.
+
+Live fixture transforms treat API-Football ids as provider refs. They only
+populate BTL team, player, competition, or season ids when the worker supplies
+identity resolutions; misses stay unresolved instead of becoming synthetic
+`btl_football_*_api_football_*` ids. Event payloads normalize to
+`GameOccurrence` timeline rows, while empty lineup responses intentionally
+produce no `IngestFootballLineups` rows.

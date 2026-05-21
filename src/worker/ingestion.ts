@@ -17,6 +17,7 @@
 
 import {
   API_FOOTBALL_PROVIDER_ID,
+  apiFootballEventPath,
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
@@ -43,6 +44,7 @@ export type IngestionWorkload =
   | 'fixture-detail-preKO'
   | 'fixture-detail-live'
   | 'fixture-detail-fullTime'
+  | 'events-post-final'
   | 'lineups-post-confirm'
   | 'team-metadata'
   | 'player-metadata';
@@ -57,6 +59,7 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'fixture-detail-preKO': 60 * 60,
   'fixture-detail-live': 30,
   'fixture-detail-fullTime': 6 * 60 * 60,
+  'events-post-final': 6 * 60 * 60,
   'lineups-post-confirm': 60 * 60,
   'team-metadata': 24 * 60 * 60,
   'player-metadata': 24 * 60 * 60,
@@ -72,6 +75,7 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'fixture-detail-preKO': 10 * 60 * 1000, // every 10 min for upcoming kickoffs
   'fixture-detail-live': 30 * 1000, // every 30s for in-play fixtures
   'fixture-detail-fullTime': 30 * 60 * 1000, // every 30 min after FT
+  'events-post-final': 30 * 60 * 1000, // timeline events settle after FT
   'lineups-post-confirm': 10 * 60 * 1000, // every 10 min after lineups confirmed
   'team-metadata': 6 * 60 * 60 * 1000,
   'player-metadata': 6 * 60 * 60 * 1000,
@@ -101,15 +105,14 @@ export interface IngestionFetchResult<TResponse = unknown> {
 
 /**
  * Optional bridge callback invoked after every successful `fetchWorkload`
- * call whose status is `fetched` or `cached` AND whose workload is a
- * fixture-detail variant (`fixture-detail-preKO`, `-live`, `-fullTime`).
+ * call whose status is `fetched` or `cached` and whose workload carries
+ * fixture-scoped provider data (fixture detail, events, or lineups).
  * The ingestion loop calls this without awaiting back-pressure: any error
  * is caught and logged via the loop's structured `#log` sink so the
  * fetch path can never be stalled by downstream wiring.
  *
- * Non-fixture workloads (lineups, team-metadata, player-metadata,
- * fixtures-next-7d) do NOT trigger this callback — their payload shape
- * differs from the per-fixture envelope.
+ * Discovery and metadata workloads do NOT trigger this callback; their payload
+ * shape differs from a single fixture resource.
  */
 export type OnFixtureFetchedCallback = (input: {
   readonly workload: IngestionWorkload;
@@ -127,7 +130,7 @@ export interface IngestionLoopOptions {
   readonly clock?: () => number;
   readonly logger?: (entry: Record<string, unknown>) => void;
   /**
-   * Optional bridge fired after fixture-detail fetches (cached or
+   * Optional bridge fired after fixture-scoped provider fetches (cached or
    * freshly-fetched). See {@link OnFixtureFetchedCallback}. Defaults to
    * a no-op so the existing test surface remains unaffected.
    */
@@ -464,7 +467,11 @@ export class ApiFootballIngestionLoop {
     const fetchFixtureWorkload = async (
       workload: Extract<
         IngestionWorkload,
-        'fixture-detail-preKO' | 'fixture-detail-live' | 'fixture-detail-fullTime'
+        | 'fixture-detail-preKO'
+        | 'fixture-detail-live'
+        | 'fixture-detail-fullTime'
+        | 'events-post-final'
+        | 'lineups-post-confirm'
       >,
       ids: readonly string[]
     ): Promise<void> => {
@@ -505,16 +512,24 @@ export class ApiFootballIngestionLoop {
         await fetchFixtureWorkload('fixture-detail-fullTime', fixtureIdsForImmediate());
       }
     );
-    enqueueTick('lineups-post-confirm', async () => {
-      await Promise.allSettled(
-        [...fixtureIds].map((id) =>
-          this.fetchWorkload({
-            workload: 'lineups-post-confirm',
-            resourceId: id,
-          })
-        )
-      );
-    });
+    enqueueTick(
+      'events-post-final',
+      async () => {
+        await fetchFixtureWorkload('events-post-final', [...fixtureIds]);
+      },
+      async () => {
+        await fetchFixtureWorkload('events-post-final', fixtureIdsForImmediate());
+      }
+    );
+    enqueueTick(
+      'lineups-post-confirm',
+      async () => {
+        await fetchFixtureWorkload('lineups-post-confirm', [...fixtureIds]);
+      },
+      async () => {
+        await fetchFixtureWorkload('lineups-post-confirm', fixtureIdsForImmediate());
+      }
+    );
 
     const teamIds = options.teamIds ?? [];
     if (teamIds.length > 0) {
@@ -578,12 +593,12 @@ export class ApiFootballIngestionLoop {
   }
 
   /**
-   * Fan out a successful fixture-detail fetch (cached or freshly-fetched)
+   * Fan out a successful fixture-scoped fetch (cached or freshly-fetched)
    * to the bridge callback. Any callback throw is caught + logged — the
    * fetch path must never be back-pressured by downstream consumers.
    *
-   * Workloads other than the fixture-detail trio are ignored here so the
-   * callback signature stays narrowly scoped to single-fixture payloads.
+   * Discovery and metadata workloads are ignored here so the callback stays
+   * scoped to one provider fixture resource at a time.
    */
   async #notifyFixtureFetched(
     workload: IngestionWorkload,
@@ -593,7 +608,7 @@ export class ApiFootballIngestionLoop {
     if (!this.#onFixtureFetched) {
       return;
     }
-    if (!FIXTURE_DETAIL_WORKLOADS.has(workload)) {
+    if (!BRIDGE_WORKLOADS.has(workload)) {
       return;
     }
     if (data === undefined) {
@@ -614,14 +629,20 @@ export class ApiFootballIngestionLoop {
 }
 
 /**
- * Workloads whose payload is a single-fixture envelope. Used to gate the
- * `onFixtureFetched` callback — other workloads (lineups, metadata) have
- * different shapes and must not flow through the bridge.
+ * Workloads whose payload is fixture detail. Event and lineup fetches also
+ * flow through the bridge via `BRIDGE_WORKLOADS`, but only these detail
+ * workloads drive match-concluded observation.
  */
 const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   'fixture-detail-preKO',
   'fixture-detail-live',
   'fixture-detail-fullTime',
+]);
+
+const BRIDGE_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
+  ...FIXTURE_DETAIL_WORKLOADS,
+  'events-post-final',
+  'lineups-post-confirm',
 ]);
 
 const FIXTURE_DISCOVERY_AHEAD_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -637,6 +658,8 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
     case 'fixture-detail-live':
     case 'fixture-detail-fullTime':
       return apiFootballFixturePath(resourceId);
+    case 'events-post-final':
+      return apiFootballEventPath(resourceId);
     case 'lineups-post-confirm':
       return apiFootballLineupPath(resourceId);
     case 'team-metadata':

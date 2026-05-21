@@ -66,7 +66,7 @@ export function estimateMatchdayCallBudget(
       },
       {
         workload: 'timeline',
-        strategy: 'fixture/live includes or state-change and full-time fetches',
+        strategy: '/fixtures/events post-final fetch, then cache',
         estimatedCalls: 3,
         period: 'match',
       },

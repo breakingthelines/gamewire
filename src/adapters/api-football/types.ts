@@ -66,6 +66,7 @@ export interface ApiFootballEventResponse {
   };
   readonly team: ApiFootballTeamRef;
   readonly player?: ApiFootballTeamRef | null;
+  readonly assist?: ApiFootballTeamRef | null;
   readonly type: string;
   readonly detail: string;
   readonly comments?: string | null;
