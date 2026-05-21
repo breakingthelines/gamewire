@@ -57,6 +57,7 @@ export const API_FOOTBALL_REPLAY_COMPETITION_ID = 'btl_football_competition_lb3d
 export const API_FOOTBALL_REPLAY_SEASON_ID = 'btl_football_season_sdc8762eb';
 export const API_FOOTBALL_REPLAY_HOME_TEAM_ID = 'btl_football_team_t8596499a';
 export const API_FOOTBALL_REPLAY_AWAY_TEAM_ID = 'btl_football_team_ta544eb41';
+export const API_FOOTBALL_REPLAY_FIXTURE_ID = 1917;
 
 const provider = create(ProviderAttributionSchema, {
   provider: API_FOOTBALL_PROVIDER_ID,
@@ -269,11 +270,35 @@ export function apiFootballReplayStandingsRequest(options: {
   });
 }
 
-function game() {
+/**
+ * Defensively stringify an API-Football fixture id for the protobuf
+ * `Game.provider_game_id` field. API-Football returns numeric ids; the proto
+ * field is a string. Returns "" when the id is missing, zero, NaN, or
+ * otherwise non-numeric — game-service skip-with-logs on empty, which is the
+ * correct steady-state behaviour for malformed envelopes.
+ */
+export function providerGameIdFromFixture(
+  fixture: { readonly id?: unknown } | undefined | null
+): string {
+  if (!fixture) return '';
+  const raw = fixture.id;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && raw !== 0 ? String(raw) : '';
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed === '0') return '';
+    return trimmed;
+  }
+  return '';
+}
+
+function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIXTURE_ID }) {
   return create(GameSchema, {
     id: API_FOOTBALL_REPLAY_GAME_ID,
     slug: 'arsenal-v-chelsea-2026-05-11',
     sport: Sport.FOOTBALL,
+    providerGameId: providerGameIdFromFixture(fixture),
     competition: subject(
       API_FOOTBALL_REPLAY_COMPETITION_ID,
       SubjectType.COMPETITION,

@@ -98,6 +98,24 @@ export interface IngestionFetchResult<TResponse = unknown> {
   readonly error?: { readonly message: string };
 }
 
+/**
+ * Optional bridge callback invoked after every successful `fetchWorkload`
+ * call whose status is `fetched` or `cached` AND whose workload is a
+ * fixture-detail variant (`fixture-detail-preKO`, `-live`, `-fullTime`).
+ * The ingestion loop calls this without awaiting back-pressure: any error
+ * is caught and logged via the loop's structured `#log` sink so the
+ * fetch path can never be stalled by downstream wiring.
+ *
+ * Non-fixture workloads (lineups, team-metadata, player-metadata,
+ * fixtures-next-7d) do NOT trigger this callback — their payload shape
+ * differs from the per-fixture envelope.
+ */
+export type OnFixtureFetchedCallback = (input: {
+  readonly workload: IngestionWorkload;
+  readonly resourceId: string;
+  readonly data: unknown;
+}) => Promise<void> | void;
+
 export interface IngestionLoopOptions {
   readonly config: GamewireWorkerConfig;
   readonly cache?: ProviderCache;
@@ -107,6 +125,12 @@ export interface IngestionLoopOptions {
   readonly fetchFn?: ProviderFetch;
   readonly clock?: () => number;
   readonly logger?: (entry: Record<string, unknown>) => void;
+  /**
+   * Optional bridge fired after fixture-detail fetches (cached or
+   * freshly-fetched). See {@link OnFixtureFetchedCallback}. Defaults to
+   * a no-op so the existing test surface remains unaffected.
+   */
+  readonly onFixtureFetched?: OnFixtureFetchedCallback;
 }
 
 export interface IngestionLoopStartOptions {
@@ -138,6 +162,7 @@ export class ApiFootballIngestionLoop {
   readonly #log: (entry: Record<string, unknown>) => void;
   readonly #provider: string;
   readonly #timers: unknown[] = [];
+  readonly #onFixtureFetched?: OnFixtureFetchedCallback;
 
   constructor(options: IngestionLoopOptions) {
     this.#config = options.config;
@@ -150,6 +175,7 @@ export class ApiFootballIngestionLoop {
     this.#fetchFn = options.fetchFn;
     this.#clock = options.clock ?? Date.now;
     this.#log = options.logger ?? defaultLogger;
+    this.#onFixtureFetched = options.onFixtureFetched;
   }
 
   get metrics(): IngestionMetrics {
@@ -199,6 +225,7 @@ export class ApiFootballIngestionLoop {
         workload,
         cacheKey,
       });
+      await this.#notifyFixtureFetched(workload, options.resourceId, cached);
       return {
         status: 'cached',
         workload,
@@ -223,6 +250,7 @@ export class ApiFootballIngestionLoop {
         this.#metrics.recordOutcome('cached');
         const snapshot = await this.#quota.snapshot();
         this.#recordQuota(snapshot);
+        await this.#notifyFixtureFetched(workload, options.resourceId, racedHit);
         return {
           status: 'cached',
           workload,
@@ -326,6 +354,8 @@ export class ApiFootballIngestionLoop {
         calls: reservation.snapshot.calls,
         cachedOnlyMode: reservation.snapshot.cachedOnlyMode,
       });
+
+      await this.#notifyFixtureFetched(workload, options.resourceId, json);
 
       return {
         status: 'fetched',
@@ -495,7 +525,53 @@ export class ApiFootballIngestionLoop {
   #recordQuota(snapshot: ProviderQuotaSnapshot): void {
     this.#metrics.recordQuota(snapshot.calls, snapshot.posture);
   }
+
+  /**
+   * Fan out a successful fixture-detail fetch (cached or freshly-fetched)
+   * to the bridge callback. Any callback throw is caught + logged — the
+   * fetch path must never be back-pressured by downstream consumers.
+   *
+   * Workloads other than the fixture-detail trio are ignored here so the
+   * callback signature stays narrowly scoped to single-fixture payloads.
+   */
+  async #notifyFixtureFetched(
+    workload: IngestionWorkload,
+    resourceId: string,
+    data: unknown
+  ): Promise<void> {
+    if (!this.#onFixtureFetched) {
+      return;
+    }
+    if (!FIXTURE_DETAIL_WORKLOADS.has(workload)) {
+      return;
+    }
+    if (data === undefined) {
+      return;
+    }
+    try {
+      await Promise.resolve(this.#onFixtureFetched({ workload, resourceId, data }));
+    } catch (error) {
+      this.#log({
+        event: 'ingestion_bridge_error',
+        provider: this.#provider,
+        workload,
+        resourceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
 }
+
+/**
+ * Workloads whose payload is a single-fixture envelope. Used to gate the
+ * `onFixtureFetched` callback — other workloads (lineups, metadata) have
+ * different shapes and must not flow through the bridge.
+ */
+const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
+  'fixture-detail-preKO',
+  'fixture-detail-live',
+  'fixture-detail-fullTime',
+]);
 
 function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): string {
   switch (workload) {

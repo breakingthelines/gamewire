@@ -5,6 +5,7 @@
 export {
   API_FOOTBALL_REPLAY_AWAY_TEAM_ID,
   API_FOOTBALL_REPLAY_COMPETITION_ID,
+  API_FOOTBALL_REPLAY_FIXTURE_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
   API_FOOTBALL_REPLAY_HOME_TEAM_ID,
   API_FOOTBALL_REPLAY_ID,
@@ -22,6 +23,7 @@ export {
   apiFootballReplayStandingsRequest,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
+  providerGameIdFromFixture,
 } from './adapter.js';
 
 export {
