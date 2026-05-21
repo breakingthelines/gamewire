@@ -5,19 +5,23 @@ import {
   type PlatformFact,
   PlatformFactSchema,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
-import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
+import {
+  type LookupGameByFixtureRequest,
+  type LookupGameByFixtureResponse,
+  LookupGameByFixtureResponseSchema,
+} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import {
   type LookupRequest,
   type LookupResponse,
   type ResolveRequest,
   type ResolveResponse,
-  ResolveResponseSchema,
   type SearchRequest,
   type SearchResponse,
   type StatsRequest,
   type StatsResponse,
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
+import type { FootballGameLookupClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   createMatchConcludedBridge,
@@ -85,41 +89,55 @@ const buildPublisher = (
   return { publisher, stream, metrics, emitted };
 };
 
-interface FakeIdentity {
-  readonly client: FootballIdentityLookupClient;
-  readonly resolveCalls: ResolveRequest[];
+/**
+ * Inert identity stub. The bridge still requires a
+ * `FootballIdentityLookupClient` field for future PLAYER / TEAM
+ * crosswalk paths, but the GAME path no longer touches it. Every
+ * method here throws to make accidental usage during a GAME test loud
+ * — if any of these fire, the swap regressed.
+ */
+const inertIdentity = (): FootballIdentityLookupClient => ({
+  async resolve(_request: ResolveRequest): Promise<ResolveResponse> {
+    throw new Error('identity.resolve must not be called on the GAME path');
+  },
+  async lookup(_request: LookupRequest): Promise<LookupResponse> {
+    throw new Error('lookup not implemented in inert identity');
+  },
+  async search(_request: SearchRequest): Promise<SearchResponse> {
+    throw new Error('search not implemented in inert identity');
+  },
+  async stats(_request: StatsRequest): Promise<StatsResponse> {
+    throw new Error('stats not implemented in inert identity');
+  },
+});
+
+interface FakeGameService {
+  readonly client: FootballGameLookupClient;
+  readonly lookupCalls: LookupGameByFixtureRequest[];
 }
 
-const fakeIdentity = (options: {
-  readonly response?: Partial<ResolveResponse>;
+const fakeGameService = (options: {
+  readonly response?: Partial<LookupGameByFixtureResponse>;
   readonly error?: unknown;
-}): FakeIdentity => {
-  const resolveCalls: ResolveRequest[] = [];
+}): FakeGameService => {
+  const lookupCalls: LookupGameByFixtureRequest[] = [];
   const error = options.error;
-  const response = create(ResolveResponseSchema, {
-    entityId: options.response?.entityId ?? '',
-    entityType: options.response?.entityType ?? EntityType.GAME,
+  const response = create(LookupGameByFixtureResponseSchema, {
+    gameId: options.response?.gameId ?? '',
     found: options.response?.found ?? false,
   });
-  const client: FootballIdentityLookupClient = {
-    async resolve(request: ResolveRequest): Promise<ResolveResponse> {
-      resolveCalls.push(request);
+  const client: FootballGameLookupClient = {
+    async lookupGameByFixture(
+      request: LookupGameByFixtureRequest,
+    ): Promise<LookupGameByFixtureResponse> {
+      lookupCalls.push(request);
       if (error !== undefined) {
         throw error;
       }
       return response;
     },
-    async lookup(_request: LookupRequest): Promise<LookupResponse> {
-      throw new Error('lookup not implemented in fake');
-    },
-    async search(_request: SearchRequest): Promise<SearchResponse> {
-      throw new Error('search not implemented in fake');
-    },
-    async stats(_request: StatsRequest): Promise<StatsResponse> {
-      throw new Error('stats not implemented in fake');
-    },
   };
-  return { client, resolveCalls };
+  return { client, lookupCalls };
 };
 
 describe('isFixtureDetailWorkload', () => {
@@ -217,10 +235,11 @@ describe('decodeFixtureEnvelope', () => {
 describe('createMatchConcludedBridge', () => {
   it('is a no-op for non-fixture workloads', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({});
+    const gameService = fakeGameService({});
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: noopLogger,
     });
@@ -246,17 +265,18 @@ describe('createMatchConcludedBridge', () => {
       data: { response: [] },
     });
 
-    expect(identity.resolveCalls).toHaveLength(0);
+    expect(gameService.lookupCalls).toHaveLength(0);
     expect(stream.published).toHaveLength(0);
   });
 
   it('skips malformed payloads and logs a structured event', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({});
+    const gameService = fakeGameService({});
     const logs: MatchConcludedBridgeLogEntry[] = [];
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: (entry) => logs.push(entry),
     });
@@ -267,18 +287,19 @@ describe('createMatchConcludedBridge', () => {
       data: { broken: 'shape' },
     });
 
-    expect(identity.resolveCalls).toHaveLength(0);
+    expect(gameService.lookupCalls).toHaveLength(0);
     expect(stream.published).toHaveLength(0);
     expect(logs.some((e) => e.event === 'bridge_decode_skipped')).toBe(true);
   });
 
-  it('skips publishing when identity returns no match', async () => {
+  it('skips publishing when game-service returns no match', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({ response: { found: false, entityId: '' } });
+    const gameService = fakeGameService({ response: { found: false, gameId: '' } });
     const logs: MatchConcludedBridgeLogEntry[] = [];
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: (entry) => logs.push(entry),
     });
@@ -289,21 +310,21 @@ describe('createMatchConcludedBridge', () => {
       data: buildFixtureResponse(12345, 'FT'),
     });
 
-    expect(identity.resolveCalls).toHaveLength(1);
-    expect(identity.resolveCalls[0]?.entityType).toBe(EntityType.GAME);
-    expect(identity.resolveCalls[0]?.provider).toBe('api-football');
-    expect(identity.resolveCalls[0]?.providerId).toBe('12345');
+    expect(gameService.lookupCalls).toHaveLength(1);
+    expect(gameService.lookupCalls[0]?.provider).toBe('api-football');
+    expect(gameService.lookupCalls[0]?.providerFixtureId).toBe('12345');
     expect(stream.published).toHaveLength(0);
-    expect(logs.some((e) => e.event === 'bridge_identity_miss')).toBe(true);
+    expect(logs.some((e) => e.event === 'bridge_game_not_found')).toBe(true);
   });
 
-  it('does not throw when identity client throws (caught and logged)', async () => {
+  it('does not throw when game-service client throws (caught and logged)', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({ error: new Error('network down') });
+    const gameService = fakeGameService({ error: new Error('network down') });
     const logs: MatchConcludedBridgeLogEntry[] = [];
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: (entry) => logs.push(entry),
     });
@@ -317,20 +338,50 @@ describe('createMatchConcludedBridge', () => {
     ).resolves.toBeUndefined();
 
     expect(stream.published).toHaveLength(0);
-    const errEntry = logs.find((e) => e.event === 'bridge_identity_error');
+    const errEntry = logs.find((e) => e.event === 'bridge_game_lookup_error');
     expect(errEntry).toBeDefined();
     expect(errEntry?.message).toContain('network down');
+  });
+
+  it('publishes the canonical game id returned by game-service', async () => {
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({
+      response: {
+        found: true,
+        gameId: 'btl_football_game_arsenal_v_chelsea_2026_03_15',
+      },
+    });
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: noopLogger,
+    });
+
+    await bridge({
+      workload: 'fixture-detail-fullTime',
+      resourceId: '12345',
+      data: buildFixtureResponse(12345, 'FT'),
+    });
+
+    expect(stream.published).toHaveLength(1);
+    const fact = decodeFact(stream.published[0]!.fields.data as Uint8Array);
+    expect(fact.sourceRecordId).toBe(
+      'btl_football_game_arsenal_v_chelsea_2026_03_15',
+    );
   });
 
   it('observes terminal-result statuses (FT, AET, PEN) end-to-end', async () => {
     for (const status of ['FT', 'AET', 'PEN']) {
       const { publisher, stream } = buildPublisher();
-      const identity = fakeIdentity({
-        response: { found: true, entityId: `game-${status.toLowerCase()}` },
+      const gameService = fakeGameService({
+        response: { found: true, gameId: `game-${status.toLowerCase()}` },
       });
       const bridge = createMatchConcludedBridge({
         publisher,
-        identity: identity.client,
+        gameService: gameService.client,
+        identity: inertIdentity(),
         providerId: 'api-football',
         logger: noopLogger,
       });
@@ -357,12 +408,13 @@ describe('createMatchConcludedBridge', () => {
   it('observes terminal-void statuses (PST, ABD, AWD, WO) with void_reason set', async () => {
     for (const status of ['PST', 'ABD', 'AWD', 'WO']) {
       const { publisher, stream } = buildPublisher();
-      const identity = fakeIdentity({
-        response: { found: true, entityId: `game-${status.toLowerCase()}` },
+      const gameService = fakeGameService({
+        response: { found: true, gameId: `game-${status.toLowerCase()}` },
       });
       const bridge = createMatchConcludedBridge({
         publisher,
-        identity: identity.client,
+        gameService: gameService.client,
+        identity: inertIdentity(),
         providerId: 'api-football',
         logger: noopLogger,
       });
@@ -383,12 +435,13 @@ describe('createMatchConcludedBridge', () => {
 
   it('records not_terminal outcome for non-terminal statuses without publishing', async () => {
     const { publisher, stream, metrics } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-99' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-99' },
     });
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: noopLogger,
     });
@@ -405,12 +458,13 @@ describe('createMatchConcludedBridge', () => {
 
   it('uses fixture.date as concludedAtMs when present', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-1' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
     });
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: noopLogger,
     });
@@ -430,13 +484,14 @@ describe('createMatchConcludedBridge', () => {
 
   it('falls back to clock() when fixture.date is missing', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-1' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
     });
     const fixedNow = Date.parse('2026-06-01T12:00:00Z');
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: noopLogger,
       clock: () => fixedNow,
@@ -455,14 +510,15 @@ describe('createMatchConcludedBridge', () => {
     expect(metadata.concluded_at).toBe(new Date(fixedNow).toISOString());
   });
 
-  it('passes the configured providerId through to identity + observation', async () => {
+  it('passes the configured providerId through to game-service + observation', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-1' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
     });
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'sportmonks',
       logger: noopLogger,
     });
@@ -473,19 +529,21 @@ describe('createMatchConcludedBridge', () => {
       data: buildFixtureResponse(7, 'FT'),
     });
 
-    expect(identity.resolveCalls[0]?.provider).toBe('sportmonks');
+    expect(gameService.lookupCalls[0]?.provider).toBe('sportmonks');
+    expect(gameService.lookupCalls[0]?.providerFixtureId).toBe('7');
     const fact = decodeFact(stream.published[0]!.fields.data as Uint8Array);
     expect(fact.idempotencyKey).toBe('match-concluded:7:FT');
   });
 
   it('emits exactly once per (providerId, providerFixtureId) across repeated invocations', async () => {
     const { publisher, stream } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-99' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-99' },
     });
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: noopLogger,
     });
@@ -503,13 +561,14 @@ describe('createMatchConcludedBridge', () => {
 
   it('logs bridge_observed with the publisher outcome', async () => {
     const { publisher } = buildPublisher();
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-1' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
     });
     const logs: MatchConcludedBridgeLogEntry[] = [];
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: (entry) => logs.push(entry),
     });
@@ -534,13 +593,14 @@ describe('createMatchConcludedBridge', () => {
     const observeSpy = vi
       .spyOn(publisher, 'observe')
       .mockRejectedValue(new Error('boom'));
-    const identity = fakeIdentity({
-      response: { found: true, entityId: 'game-1' },
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
     });
     const logs: MatchConcludedBridgeLogEntry[] = [];
     const bridge = createMatchConcludedBridge({
       publisher,
-      identity: identity.client,
+      gameService: gameService.client,
+      identity: inertIdentity(),
       providerId: 'api-football',
       logger: (entry) => logs.push(entry),
     });
@@ -555,6 +615,36 @@ describe('createMatchConcludedBridge', () => {
 
     expect(observeSpy).toHaveBeenCalledTimes(1);
     expect(logs.some((e) => e.event === 'bridge_observe_failed')).toBe(true);
+  });
+
+  it('does not call the identity client on the GAME path', async () => {
+    // Regression guard for the γ3 swap: identity-server runs on a
+    // read-only SQLite snapshot that does not carry fixture-level
+    // crosswalks. The bridge must route exclusively through
+    // game-service.LookupGameByFixture for GAME resolution.
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'game-1' },
+    });
+    const identity = inertIdentity(); // every method throws on call
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity,
+      providerId: 'api-football',
+      logger: noopLogger,
+    });
+
+    await expect(
+      bridge({
+        workload: 'fixture-detail-fullTime',
+        resourceId: '1',
+        data: buildFixtureResponse(1, 'FT'),
+      }),
+    ).resolves.toBeUndefined();
+
+    expect(stream.published).toHaveLength(1);
+    expect(gameService.lookupCalls).toHaveLength(1);
   });
 });
 

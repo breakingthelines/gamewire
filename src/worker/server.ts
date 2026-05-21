@@ -7,7 +7,11 @@ import {
   createFetchFootballIdentityLookupClient,
   type FootballIdentityLookupClient,
 } from './clients/identity.js';
-import type { GameServiceRecordRatingClient } from './clients/game-service.js';
+import {
+  createFetchFootballGameLookupClient,
+  type FootballGameLookupClient,
+  type GameServiceRecordRatingClient,
+} from './clients/game-service.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
@@ -174,11 +178,12 @@ if (config.redisUrl) {
 }
 
 /**
- * Identity-server client used by the match-concluded bridge to resolve
- * API-Football fixture ids into BTL canonical game ids. Wired only when
- * `config.identityServiceUrl` is set (default in every deployment) and
- * the publisher is available; the bridge itself is a no-op when either
- * dependency is missing.
+ * Identity-server client. Retained for future PLAYER / TEAM crosswalk
+ * paths (player metadata sync, etc.); the GAME path on the
+ * match-concluded bridge no longer routes through identity-server
+ * because its read-only SQLite snapshot does not carry fixture-level
+ * mappings. The client is wired here so the boundary stays in scope
+ * for downstream callers — do not remove it.
  */
 const identityClient: FootballIdentityLookupClient | undefined =
   config.identityServiceUrl
@@ -186,14 +191,38 @@ const identityClient: FootballIdentityLookupClient | undefined =
     : undefined;
 
 /**
+ * game-service client used by the match-concluded bridge to resolve
+ * API-Football fixture ids → BTL canonical game ids via
+ * `LookupGameByFixture`. The crosswalk lives in `provider_game_mappings`
+ * on game-service, populated by `IngestGames`. Wired only when
+ * `config.gameServiceUrl` is set (the default in every deployment);
+ * the bridge itself is a no-op when either the publisher or the
+ * game-service client is unavailable.
+ */
+const gameServiceLookupClient: FootballGameLookupClient | undefined =
+  config.gameServiceUrl
+    ? createFetchFootballGameLookupClient({ baseUrl: config.gameServiceUrl })
+    : undefined;
+
+if (!config.gameServiceUrl) {
+  console.log(
+    '[gamewire-worker] bridge inactive: game-service url not configured ' +
+      '(set GAME_SERVICE_URL)'
+  );
+}
+
+/**
  * Bridge callback handed to the ingestion loop. Reads the fixture detail
- * envelope, resolves identity, calls `publisher.observe()`. No-op when
- * either the publisher or the identity client is unavailable.
+ * envelope, resolves the canonical game id via game-service, calls
+ * `publisher.observe()`. No-op when the publisher, the game-service
+ * client, or the identity client is unavailable. (Identity client is
+ * carried through for downstream PLAYER / TEAM paths.)
  */
 const onFixtureFetched: OnFixtureFetchedCallback | undefined =
-  matchConcludedPublisher && identityClient
+  matchConcludedPublisher && gameServiceLookupClient && identityClient
     ? createMatchConcludedBridge({
         publisher: matchConcludedPublisher,
+        gameService: gameServiceLookupClient,
         identity: identityClient,
         providerId: config.providerId,
       })
@@ -202,12 +231,14 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined =
 if (onFixtureFetched) {
   console.log(
     '[gamewire-worker] match-concluded bridge active ' +
-      `(identity=${config.identityServiceUrl} provider=${config.providerId})`
+      `(gameService=${config.gameServiceUrl} ` +
+      `identity=${config.identityServiceUrl} provider=${config.providerId})`
   );
 } else if (config.redisUrl) {
   console.log(
     '[gamewire-worker] match-concluded bridge inactive ' +
       `(publisher=${matchConcludedPublisher ? 'ready' : 'missing'} ` +
+      `gameService=${gameServiceLookupClient ? 'ready' : 'missing'} ` +
       `identity=${identityClient ? 'ready' : 'missing'})`
   );
 }

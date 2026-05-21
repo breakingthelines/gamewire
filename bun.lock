@@ -5,7 +5,7 @@
     "": {
       "name": "@breakingthelines/gamewire",
       "dependencies": {
-        "@breakingthelines/protos": "0.9.0",
+        "@breakingthelines/protos": "^0.11.0",
         "@bufbuild/protobuf": "^2.0.0",
         "@connectrpc/connect": "^2.1.1",
       },
@@ -33,7 +33,7 @@
 
     "@bcoe/v8-coverage": ["@bcoe/v8-coverage@1.0.2", "", {}, "sha512-6zABk/ECA/QYSCQ1NGiVwwbQerUCZ+TQbp64Q3AgmfNvurHH0j8TtXa1qbShXA6qqkpAj4V5W8pP6mLe1mcMqA=="],
 
-    "@breakingthelines/protos": ["@breakingthelines/protos@0.9.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.9.0/3485b0e6e8f24cc965a4a741166a90c60eecb9e6", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-dElM/JGOuUeZB2kHEFYpu6qKo4m2UCilCA+ktTfM5HSgsYp98KvH/5lY7wYBRz8I/WugQKUpOXkfvVKaQ7RpCw=="],
+    "@breakingthelines/protos": ["@breakingthelines/protos@0.11.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.11.0/67368d0f1c9e9563c0b47a53c896fb009b6e4257", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-avJSbIE9wQYbRt6Tl0wsuSuTxKIGVg1sLD/uMApL02AUsvJp/P46URu2BF4MdSnkiVSR76EpwJKp2ymZNv5a9w=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.11.0", "", {}, "sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ=="],
 

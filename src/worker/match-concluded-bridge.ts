@@ -8,8 +8,17 @@
  *
  *   1. Decode an API-Football `/fixtures?id=<id>` response envelope.
  *   2. Resolve the provider fixture id → BTL canonical `game_id` via
- *      the identity-server.
+ *      `game-service.LookupGameByFixture` (the crosswalk lives in
+ *      `provider_game_mappings`, populated by `IngestGames`).
  *   3. Hand the resulting envelope to `publisher.observe(fixture)`.
+ *
+ * Why game-service and not identity-server: identity-server runs on a
+ * read-only SQLite snapshot (release-asset distribution) and does not
+ * carry fixture-level crosswalks; its `Resolve(GAME, ...)` calls will
+ * always miss. The live crosswalk is on game-service. The
+ * identity-client is still wired at boot (and elsewhere) for future
+ * paths (player crosswalks, team lookups) — only the GAME read path
+ * has been swapped here.
  *
  * The bridge NEVER throws — every failure path logs a structured event
  * and returns. Back-pressure on ingest would defeat the worker's call
@@ -20,20 +29,18 @@
  *   - No fixture polling here (that's the loop's `start()` path).
  *   - No status correction handling (publisher's emit-once gate stays
  *     authoritative; the consumer on game-service owns rescore).
- *   - No new transport layers (the identity-client is injected; see
- *     `clients/identity.ts` for the fetch-based default).
+ *   - No new transport layers (the game-service client is injected;
+ *     see `clients/game-service.ts` for the fetch-based default).
  */
 
 import { create } from '@bufbuild/protobuf';
 
 import {
-  EntityType,
-} from '@breakingthelines/protos/btl/identity/v1/identity_pb';
-import {
-  type ResolveResponse,
-  ResolveRequestSchema,
-} from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
+  type LookupGameByFixtureResponse,
+  LookupGameByFixtureRequestSchema,
+} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
+import type { FootballGameLookupClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import type { IngestionWorkload } from './ingestion.js';
 import type {
@@ -92,9 +99,22 @@ export const isFixtureDetailWorkload = (workload: IngestionWorkload): boolean =>
 export interface MatchConcludedBridgeOptions {
   /** Publisher that owns the emit-once gate + XADD. */
   readonly publisher: MatchConcludedPublisher;
-  /** Identity lookup boundary. Used to resolve fixture id → game id. */
+  /**
+   * Game-service lookup boundary. Used to resolve fixture id → BTL
+   * canonical `game_id` via `LookupGameByFixture`. This is the live
+   * crosswalk; identity-server cannot serve it (read-only snapshot).
+   */
+  readonly gameService: FootballGameLookupClient;
+  /**
+   * Identity-server lookup boundary. NOT used on the GAME path (which
+   * goes through `gameService` above), but kept on the bridge options
+   * so future PLAYER / TEAM lookup paths can land here without a
+   * second plumbing pass. Today this is a write-once boundary that the
+   * bridge stores for downstream callers; the field stays required so
+   * the boot wiring keeps the client in scope.
+   */
   readonly identity: FootballIdentityLookupClient;
-  /** Provider id used both for identity lookup + observation envelope. */
+  /** Provider id used both for the lookup + observation envelope. */
   readonly providerId: string;
   /** Override the bridge log sink. */
   readonly logger?: MatchConcludedBridgeLogger;
@@ -113,7 +133,12 @@ export const createMatchConcludedBridge = (
   const log = options.logger ?? defaultBridgeLogger;
   const clock = options.clock ?? Date.now;
   const publisher = options.publisher;
-  const identity = options.identity;
+  const gameService = options.gameService;
+  // Identity client deliberately retained on the bridge options for
+  // future PLAYER / TEAM crosswalk paths. The GAME path now resolves
+  // through game-service.LookupGameByFixture; identity-server's
+  // read-only snapshot cannot serve fixture-level mappings.
+  void options.identity;
   const providerId = options.providerId;
 
   return async ({ workload, resourceId, data }) => {
@@ -134,18 +159,17 @@ export const createMatchConcludedBridge = (
 
     const { providerFixtureId, providerStatus, concludedAtMs } = decoded;
 
-    let resolveResponse: ResolveResponse;
+    let lookupResponse: LookupGameByFixtureResponse;
     try {
-      resolveResponse = await identity.resolve(
-        create(ResolveRequestSchema, {
-          entityType: EntityType.GAME,
+      lookupResponse = await gameService.lookupGameByFixture(
+        create(LookupGameByFixtureRequestSchema, {
           provider: providerId,
-          providerId: providerFixtureId,
+          providerFixtureId,
         }),
       );
     } catch (err) {
       log({
-        event: 'bridge_identity_error',
+        event: 'bridge_game_lookup_error',
         workload,
         resourceId,
         providerFixtureId,
@@ -156,9 +180,9 @@ export const createMatchConcludedBridge = (
       return;
     }
 
-    if (!resolveResponse.found || !resolveResponse.entityId) {
+    if (!lookupResponse.found || !lookupResponse.gameId) {
       log({
-        event: 'bridge_identity_miss',
+        event: 'bridge_game_not_found',
         workload,
         resourceId,
         providerFixtureId,
@@ -170,7 +194,7 @@ export const createMatchConcludedBridge = (
 
     const observation: MatchFixtureObservation = {
       providerFixtureId,
-      gameId: resolveResponse.entityId,
+      gameId: lookupResponse.gameId,
       providerStatus,
       concludedAtMs: concludedAtMs ?? clock(),
       providerId,
