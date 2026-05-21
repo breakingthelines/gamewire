@@ -228,9 +228,7 @@ describe('RatingConsumer.handle - filtering and validation', () => {
   it('dead-letters facts with an invalid scale', async () => {
     const client = stubClient();
     const consumer = buildConsumer({ client });
-    const result = await consumer.handle(
-      buildFact({ metadata: { scale: 'NOT_A_REAL_SCALE' } })
-    );
+    const result = await consumer.handle(buildFact({ metadata: { scale: 'NOT_A_REAL_SCALE' } }));
     expect(result.outcome).toBe('dead_letter_permanent');
     expect(result.error?.message).toMatch(/scale/);
     expect(client.mock).not.toHaveBeenCalled();
@@ -264,10 +262,7 @@ describe('RatingConsumer.handle - transient errors', () => {
     expect(result.outcome).toBe('applied');
     expect(result.attempts).toBe(3);
     expect(client.mock).toHaveBeenCalledTimes(3);
-    expect(clock.sleeps).toEqual([
-      DEFAULT_RATING_BACKOFF_MS[0],
-      DEFAULT_RATING_BACKOFF_MS[1],
-    ]);
+    expect(clock.sleeps).toEqual([DEFAULT_RATING_BACKOFF_MS[0], DEFAULT_RATING_BACKOFF_MS[1]]);
 
     const snap = metrics.snapshot();
     expect(snap.retried).toBe(2);

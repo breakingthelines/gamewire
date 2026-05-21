@@ -73,9 +73,7 @@ export interface MatchConcludedBridgeLogEntry {
   readonly reason?: string;
 }
 
-export type MatchConcludedBridgeLogger = (
-  entry: MatchConcludedBridgeLogEntry,
-) => void;
+export type MatchConcludedBridgeLogger = (entry: MatchConcludedBridgeLogEntry) => void;
 
 const defaultBridgeLogger: MatchConcludedBridgeLogger = (entry) => {
   console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
@@ -128,7 +126,7 @@ export interface MatchConcludedBridgeOptions {
  * workloads or unparseable payloads.
  */
 export const createMatchConcludedBridge = (
-  options: MatchConcludedBridgeOptions,
+  options: MatchConcludedBridgeOptions
 ): OnFixtureFetched => {
   const log = options.logger ?? defaultBridgeLogger;
   const clock = options.clock ?? Date.now;
@@ -165,7 +163,7 @@ export const createMatchConcludedBridge = (
         create(LookupGameByFixtureRequestSchema, {
           provider: providerId,
           providerFixtureId,
-        }),
+        })
       );
     } catch (err) {
       log({

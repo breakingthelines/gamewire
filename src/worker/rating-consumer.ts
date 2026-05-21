@@ -573,9 +573,7 @@ export type RatingSubmittedParseResult =
  * consumer can route malformed events into the dead-letter sink without
  * panicking the loop.
  */
-export const parseRatingSubmittedFact = (
-  fact: PlatformFact
-): RatingSubmittedParseResult => {
+export const parseRatingSubmittedFact = (fact: PlatformFact): RatingSubmittedParseResult => {
   if (fact.type !== RATING_SUBMITTED_FACT_TYPE) {
     return { ok: false, reason: `unexpected fact type ${fact.type || '<empty>'}` };
   }
@@ -639,10 +637,7 @@ export const parseRatingSubmittedFact = (
   });
 
   const ratedAt = chooseRatedAt(fact);
-  const idempotencyKey =
-    fact.idempotencyKey.trim() ||
-    fact.id.trim() ||
-    `rating:${ratingId}`;
+  const idempotencyKey = fact.idempotencyKey.trim() || fact.id.trim() || `rating:${ratingId}`;
 
   return {
     ok: true,
@@ -666,9 +661,7 @@ export const parseRatingSubmittedFact = (
  * with payloads produced by a non-fact source (replay scripts, tests) can
  * skip the envelope step.
  */
-export const buildRecordRatingRequest = (
-  payload: RatingSubmittedPayload
-): RecordRatingRequest =>
+export const buildRecordRatingRequest = (payload: RatingSubmittedPayload): RecordRatingRequest =>
   create(RecordRatingRequestSchema, {
     ratingId: payload.ratingId,
     userId: payload.userId,
@@ -698,10 +691,7 @@ const isMeaningfulTimestamp = (ts: Timestamp): boolean => {
   return Number.isFinite(seconds) && (seconds !== 0 || ts.nanos !== 0);
 };
 
-const readMetadataString = (
-  metadata: Record<string, unknown>,
-  key: string
-): string | undefined => {
+const readMetadataString = (metadata: Record<string, unknown>, key: string): string | undefined => {
   const raw = metadata[key];
   if (raw === undefined || raw === null) {
     return undefined;
@@ -716,10 +706,7 @@ const readMetadataString = (
   return undefined;
 };
 
-const readMetadataNumber = (
-  metadata: Record<string, unknown>,
-  key: string
-): number | undefined => {
+const readMetadataNumber = (metadata: Record<string, unknown>, key: string): number | undefined => {
   const raw = metadata[key];
   if (raw === undefined || raw === null) {
     return undefined;

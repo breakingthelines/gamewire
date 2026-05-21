@@ -51,7 +51,7 @@ export const createFootballIdentityLookupBoundary = (
  */
 export type IdentityFetch = (
   input: string | URL,
-  init?: { method: string; headers: Record<string, string>; body: Uint8Array },
+  init?: { method: string; headers: Record<string, string>; body: Uint8Array }
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -87,7 +87,7 @@ const DEFAULT_IDENTITY_TIMEOUT_MS = 5_000;
  * call sites (player metadata sync, etc.) do not need to re-wire transport.
  */
 export const createFetchFootballIdentityLookupClient = (
-  options: FetchIdentityClientOptions,
+  options: FetchIdentityClientOptions
 ): FootballIdentityLookupClient => {
   const fetchFn = options.fetchFn ?? defaultIdentityFetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_IDENTITY_TIMEOUT_MS;
@@ -97,7 +97,7 @@ export const createFetchFootballIdentityLookupClient = (
     method: string,
     request: TReq,
     requestSchema: Parameters<typeof toBinary>[0],
-    responseSchema: Parameters<typeof fromBinary>[0],
+    responseSchema: Parameters<typeof fromBinary>[0]
   ): Promise<TRes> => {
     const url = `${baseUrl}${IDENTITY_SERVICE_PATH}/${method}`;
     const body = toBinary(requestSchema, request as never);
@@ -120,7 +120,7 @@ export const createFetchFootballIdentityLookupClient = (
     if (!response.ok) {
       const text = await safeReadText(response);
       throw new Error(
-        `identity-server ${method} failed: status=${response.status} body=${truncate(text, 200)}`,
+        `identity-server ${method} failed: status=${response.status} body=${truncate(text, 200)}`
       );
     }
     const buffer = await response.arrayBuffer();
@@ -134,7 +134,7 @@ export const createFetchFootballIdentityLookupClient = (
         'Lookup',
         request,
         LookupRequestSchema,
-        LookupResponseSchema,
+        LookupResponseSchema
       );
     },
     resolve(request: ResolveRequest): Promise<ResolveResponse> {
@@ -142,7 +142,7 @@ export const createFetchFootballIdentityLookupClient = (
         'Resolve',
         request,
         ResolveRequestSchema,
-        ResolveResponseSchema,
+        ResolveResponseSchema
       );
     },
     search(request: SearchRequest): Promise<SearchResponse> {
@@ -150,7 +150,7 @@ export const createFetchFootballIdentityLookupClient = (
         'Search',
         request,
         SearchRequestSchema,
-        SearchResponseSchema,
+        SearchResponseSchema
       );
     },
     stats(request: StatsRequest): Promise<StatsResponse> {
@@ -158,7 +158,7 @@ export const createFetchFootballIdentityLookupClient = (
         'Stats',
         request,
         StatsRequestSchema,
-        StatsResponseSchema,
+        StatsResponseSchema
       );
     },
   };
@@ -172,9 +172,7 @@ const defaultIdentityFetch: IdentityFetch = async (input, init) => {
 const stripTrailingSlash = (value: string): string =>
   value.endsWith('/') ? value.slice(0, -1) : value;
 
-const safeReadText = async (
-  response: { text(): Promise<string> },
-): Promise<string> => {
+const safeReadText = async (response: { text(): Promise<string> }): Promise<string> => {
   try {
     return await response.text();
   } catch {

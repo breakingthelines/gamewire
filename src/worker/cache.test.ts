@@ -1,10 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import {
-  InMemoryProviderCache,
-  RedisProviderCache,
-  type RedisLikeClient,
-} from './cache.js';
+import { InMemoryProviderCache, RedisProviderCache, type RedisLikeClient } from './cache.js';
 
 describe('InMemoryProviderCache', () => {
   it('returns undefined on miss', async () => {

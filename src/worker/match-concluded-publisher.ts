@@ -112,11 +112,7 @@ export type MatchTerminalClassification = 'terminal-result' | 'terminal-void';
  * API-Football status codes that map to a terminal-result classification.
  * Source: https://www.api-football.com/documentation-v3#section/Endpoints/Fixtures
  */
-export const TERMINAL_RESULT_STATUSES: ReadonlySet<string> = new Set([
-  'FT',
-  'AET',
-  'PEN',
-]);
+export const TERMINAL_RESULT_STATUSES: ReadonlySet<string> = new Set(['FT', 'AET', 'PEN']);
 
 /**
  * API-Football status codes that map to a terminal-void classification.
@@ -125,12 +121,7 @@ export const TERMINAL_RESULT_STATUSES: ReadonlySet<string> = new Set([
  * the exact reason (e.g. a postponed fixture may be rescheduled later
  * and re-emerge as `NS`).
  */
-export const TERMINAL_VOID_STATUSES: ReadonlySet<string> = new Set([
-  'PST',
-  'ABD',
-  'AWD',
-  'WO',
-]);
+export const TERMINAL_VOID_STATUSES: ReadonlySet<string> = new Set(['PST', 'ABD', 'AWD', 'WO']);
 
 /**
  * Classify a raw API-Football `fixture.status.short` value. Returns
@@ -141,7 +132,7 @@ export const TERMINAL_VOID_STATUSES: ReadonlySet<string> = new Set([
  * cannot silently drop fixtures.
  */
 export const classifyApiFootballStatus = (
-  statusShort: string | null | undefined,
+  statusShort: string | null | undefined
 ): MatchTerminalClassification | null => {
   if (typeof statusShort !== 'string') {
     return null;
@@ -297,7 +288,7 @@ export interface BunRedisStreamPublisher {
 export interface MatchConcludedStreamClient {
   publish(
     fields: Record<string, string | Uint8Array>,
-    options: { readonly stream: string; readonly maxLen: number },
+    options: { readonly stream: string; readonly maxLen: number }
   ): Promise<string>;
   readonly backend: 'redis' | 'memory';
 }
@@ -309,13 +300,17 @@ export interface MatchConcludedStreamClient {
  */
 export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamClient {
   readonly backend = 'memory' as const;
-  readonly #published: { stream: string; maxLen: number; fields: Record<string, string | Uint8Array> }[] = [];
+  readonly #published: {
+    stream: string;
+    maxLen: number;
+    fields: Record<string, string | Uint8Array>;
+  }[] = [];
   #nextId = 1;
   #failNext = false;
 
   async publish(
     fields: Record<string, string | Uint8Array>,
-    options: { readonly stream: string; readonly maxLen: number },
+    options: { readonly stream: string; readonly maxLen: number }
   ): Promise<string> {
     if (this.#failNext) {
       this.#failNext = false;
@@ -331,7 +326,11 @@ export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamC
     this.#failNext = true;
   }
 
-  get published(): readonly { stream: string; maxLen: number; fields: Record<string, string | Uint8Array> }[] {
+  get published(): readonly {
+    stream: string;
+    maxLen: number;
+    fields: Record<string, string | Uint8Array>;
+  }[] {
     return this.#published;
   }
 
@@ -352,7 +351,7 @@ export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamC
  * trips bytes that way in RESP2 mode.
  */
 export const createBunMatchConcludedStreamClient = (
-  client: BunRedisStreamPublisher,
+  client: BunRedisStreamPublisher
 ): MatchConcludedStreamClient => ({
   backend: 'redis' as const,
   async publish(fields, options) {
@@ -506,7 +505,7 @@ export class MatchConcludedPublisher {
     }
 
     const already = await Promise.resolve(
-      this.#emitted.hasEmitted(fixture.providerId, fixture.providerFixtureId),
+      this.#emitted.hasEmitted(fixture.providerId, fixture.providerFixtureId)
     );
     if (already) {
       this.#metrics.recordAlreadyEmitted();
@@ -545,7 +544,9 @@ export class MatchConcludedPublisher {
       // Mark AFTER a successful publish so a failed XADD is naturally
       // retried on the next observation of the same terminal status.
       // Tests for the emit-once gate rely on this ordering.
-      await Promise.resolve(this.#emitted.markEmitted(fixture.providerId, fixture.providerFixtureId));
+      await Promise.resolve(
+        this.#emitted.markEmitted(fixture.providerId, fixture.providerFixtureId)
+      );
       this.#metrics.recordPublished();
       this.#log({
         event: 'match_concluded_published',
@@ -588,7 +589,7 @@ export class MatchConcludedPublisher {
  */
 export const buildMatchConcludedIdempotencyKey = (
   providerFixtureId: string,
-  providerStatus: string,
+  providerStatus: string
 ): string => `match-concluded:${providerFixtureId}:${providerStatus.trim().toUpperCase()}`;
 
 /**
@@ -610,7 +611,7 @@ export const buildMatchConcludedFact = (input: {
   const normalisedStatus = input.providerStatus.trim().toUpperCase();
   const idempotencyKey = buildMatchConcludedIdempotencyKey(
     input.providerFixtureId,
-    normalisedStatus,
+    normalisedStatus
   );
   const voidReason = input.classification === 'terminal-void' ? normalisedStatus : null;
   const concludedAtIso = new Date(input.concludedAtMs).toISOString();

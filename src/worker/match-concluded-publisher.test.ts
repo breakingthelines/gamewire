@@ -24,8 +24,7 @@ import {
   __test,
 } from './match-concluded-publisher.js';
 
-const decodeBinary = (bytes: Uint8Array): PlatformFact =>
-  fromBinary(PlatformFactSchema, bytes);
+const decodeBinary = (bytes: Uint8Array): PlatformFact => fromBinary(PlatformFactSchema, bytes);
 
 const noopLogger = (): void => {
   /* swallow logs in unit tests */
@@ -191,13 +190,15 @@ describe('InMemoryEmittedFixtureStore', () => {
 });
 
 describe('MatchConcludedPublisher.observe', () => {
-  const fixtureObservation = (overrides: Partial<{
-    providerFixtureId: string;
-    gameId: string;
-    providerStatus: string;
-    concludedAtMs: number;
-    providerId: string;
-  }> = {}) => ({
+  const fixtureObservation = (
+    overrides: Partial<{
+      providerFixtureId: string;
+      gameId: string;
+      providerStatus: string;
+      concludedAtMs: number;
+      providerId: string;
+    }> = {}
+  ) => ({
     providerFixtureId: overrides.providerFixtureId ?? '1917',
     gameId: overrides.gameId ?? 'btl_football_game_api_football_1917',
     providerStatus: overrides.providerStatus ?? 'FT',
@@ -266,7 +267,7 @@ describe('MatchConcludedPublisher.observe', () => {
         logger: noopLogger,
       });
       const result = await publisher.observe(
-        fixtureObservation({ providerStatus: status, providerFixtureId: `fix-${status}` }),
+        fixtureObservation({ providerStatus: status, providerFixtureId: `fix-${status}` })
       );
       expect(result.outcome).toBe('published');
       const fact = decodeBinary(stream.published[0].fields.data as Uint8Array);
@@ -426,7 +427,7 @@ describe('MatchConcludedPublisher.observe', () => {
       fixtureObservation({
         providerStatus: 'FT',
         concludedAtMs: 1_700_000_000_000,
-      }),
+      })
     );
     const fact = decodeBinary(stream.published[0].fields.data as Uint8Array);
     expect(fact.occurredAt?.seconds).toBe(BigInt(1_700_000_000));
@@ -453,7 +454,7 @@ describe('createBunMatchConcludedStreamClient', () => {
         event_id: 'match-concluded:1917:FT',
         fact_type: 'game.match.concluded',
       },
-      { stream: MATCH_CONCLUDED_STREAM_NAME, maxLen: 10_000 },
+      { stream: MATCH_CONCLUDED_STREAM_NAME, maxLen: 10_000 }
     );
 
     expect(id).toBe('1700000000000-0');

@@ -38,8 +38,7 @@ import {
   MatchConcludedPublisherMetrics,
 } from './match-concluded-publisher.js';
 
-const decodeFact = (bytes: Uint8Array): PlatformFact =>
-  fromBinary(PlatformFactSchema, bytes);
+const decodeFact = (bytes: Uint8Array): PlatformFact => fromBinary(PlatformFactSchema, bytes);
 
 const noopLogger = (_: MatchConcludedBridgeLogEntry): void => {
   /* swallow logs in unit tests */
@@ -52,7 +51,7 @@ const noopLogger = (_: MatchConcludedBridgeLogEntry): void => {
 const buildFixtureResponse = (
   fixtureId: number | string,
   statusShort: string,
-  dateIso = '2026-05-20T15:00:00+00:00',
+  dateIso = '2026-05-20T15:00:00+00:00'
 ): unknown => ({
   response: [
     {
@@ -73,9 +72,7 @@ interface BuildPublisherResult {
   readonly emitted: InMemoryEmittedFixtureStore;
 }
 
-const buildPublisher = (
-  overrides: { readonly now?: () => number } = {},
-): BuildPublisherResult => {
+const buildPublisher = (overrides: { readonly now?: () => number } = {}): BuildPublisherResult => {
   const stream = new InMemoryMatchConcludedStreamClient();
   const metrics = new MatchConcludedPublisherMetrics();
   const emitted = new InMemoryEmittedFixtureStore();
@@ -128,7 +125,7 @@ const fakeGameService = (options: {
   });
   const client: FootballGameLookupClient = {
     async lookupGameByFixture(
-      request: LookupGameByFixtureRequest,
+      request: LookupGameByFixtureRequest
     ): Promise<LookupGameByFixtureResponse> {
       lookupCalls.push(request);
       if (error !== undefined) {
@@ -193,28 +190,26 @@ describe('decodeFixtureEnvelope', () => {
     expect(
       decodeFixtureEnvelope({
         response: [{ fixture: { status: { short: 'FT' } } }],
-      }),
+      })
     ).toBeNull();
     expect(
       decodeFixtureEnvelope({
         response: [{ fixture: { id: '', status: { short: 'FT' } } }],
-      }),
+      })
     ).toBeNull();
   });
 
   it('returns null when fixture.status.short is missing or malformed', () => {
-    expect(
-      decodeFixtureEnvelope({ response: [{ fixture: { id: 1, status: null } }] }),
-    ).toBeNull();
+    expect(decodeFixtureEnvelope({ response: [{ fixture: { id: 1, status: null } }] })).toBeNull();
     expect(
       decodeFixtureEnvelope({
         response: [{ fixture: { id: 1, status: { short: '' } } }],
-      }),
+      })
     ).toBeNull();
     expect(
       decodeFixtureEnvelope({
         response: [{ fixture: { id: 1, status: { short: 123 } } }],
-      }),
+      })
     ).toBeNull();
   });
 
@@ -334,7 +329,7 @@ describe('createMatchConcludedBridge', () => {
         workload: 'fixture-detail-fullTime',
         resourceId: '12345',
         data: buildFixtureResponse(12345, 'FT'),
-      }),
+      })
     ).resolves.toBeUndefined();
 
     expect(stream.published).toHaveLength(0);
@@ -367,9 +362,7 @@ describe('createMatchConcludedBridge', () => {
 
     expect(stream.published).toHaveLength(1);
     const fact = decodeFact(stream.published[0]!.fields.data as Uint8Array);
-    expect(fact.sourceRecordId).toBe(
-      'btl_football_game_arsenal_v_chelsea_2026_03_15',
-    );
+    expect(fact.sourceRecordId).toBe('btl_football_game_arsenal_v_chelsea_2026_03_15');
   });
 
   it('observes terminal-result statuses (FT, AET, PEN) end-to-end', async () => {
@@ -478,7 +471,7 @@ describe('createMatchConcludedBridge', () => {
     const fact = decodeFact(stream.published[0]!.fields.data as Uint8Array);
     const metadata = (fact.metadata ?? {}) as Record<string, unknown>;
     expect(metadata.concluded_at).toBe(
-      new Date(Date.parse('2026-05-20T16:45:00+00:00')).toISOString(),
+      new Date(Date.parse('2026-05-20T16:45:00+00:00')).toISOString()
     );
   });
 
@@ -590,9 +583,7 @@ describe('createMatchConcludedBridge', () => {
     const { publisher } = buildPublisher();
     // Force the publisher to throw by stubbing observe(). The publisher's
     // production observe() never throws, but the bridge must be robust.
-    const observeSpy = vi
-      .spyOn(publisher, 'observe')
-      .mockRejectedValue(new Error('boom'));
+    const observeSpy = vi.spyOn(publisher, 'observe').mockRejectedValue(new Error('boom'));
     const gameService = fakeGameService({
       response: { found: true, gameId: 'game-1' },
     });
@@ -610,7 +601,7 @@ describe('createMatchConcludedBridge', () => {
         workload: 'fixture-detail-fullTime',
         resourceId: '1',
         data: buildFixtureResponse(1, 'FT'),
-      }),
+      })
     ).resolves.toBeUndefined();
 
     expect(observeSpy).toHaveBeenCalledTimes(1);
@@ -640,7 +631,7 @@ describe('createMatchConcludedBridge', () => {
         workload: 'fixture-detail-fullTime',
         resourceId: '1',
         data: buildFixtureResponse(1, 'FT'),
-      }),
+      })
     ).resolves.toBeUndefined();
 
     expect(stream.published).toHaveLength(1);

@@ -74,9 +74,7 @@ export const createGameServiceRecordRatingClientBoundary = (
  * `FootballIdentityLookupClient` against identity-server.
  */
 export interface FootballGameLookupClient {
-  lookupGameByFixture(
-    request: LookupGameByFixtureRequest,
-  ): Promise<LookupGameByFixtureResponse>;
+  lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse>;
 }
 
 /**
@@ -87,7 +85,7 @@ export interface FootballGameLookupClient {
  */
 export type GameServiceFetch = (
   input: string | URL,
-  init?: { method: string; headers: Record<string, string>; body: Uint8Array },
+  init?: { method: string; headers: Record<string, string>; body: Uint8Array }
 ) => Promise<{
   ok: boolean;
   status: number;
@@ -124,7 +122,7 @@ const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
  * not surfaced here — keep the boundary narrow.
  */
 export const createFetchFootballGameLookupClient = (
-  options: FetchFootballGameLookupClientOptions,
+  options: FetchFootballGameLookupClientOptions
 ): FootballGameLookupClient => {
   const fetchFn = options.fetchFn ?? defaultGameServiceFetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
@@ -134,7 +132,7 @@ export const createFetchFootballGameLookupClient = (
     method: string,
     request: TReq,
     requestSchema: Parameters<typeof toBinary>[0],
-    responseSchema: Parameters<typeof fromBinary>[0],
+    responseSchema: Parameters<typeof fromBinary>[0]
   ): Promise<TRes> => {
     const url = `${baseUrl}${GAME_SERVICE_PATH}/${method}`;
     const body = toBinary(requestSchema, request as never);
@@ -157,7 +155,7 @@ export const createFetchFootballGameLookupClient = (
     if (!response.ok) {
       const text = await safeReadText(response);
       throw new Error(
-        `game-service ${method} failed: status=${response.status} body=${truncate(text, 200)}`,
+        `game-service ${method} failed: status=${response.status} body=${truncate(text, 200)}`
       );
     }
     const buffer = await response.arrayBuffer();
@@ -166,14 +164,12 @@ export const createFetchFootballGameLookupClient = (
   };
 
   return {
-    lookupGameByFixture(
-      request: LookupGameByFixtureRequest,
-    ): Promise<LookupGameByFixtureResponse> {
+    lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return callUnary<LookupGameByFixtureRequest, LookupGameByFixtureResponse>(
         'LookupGameByFixture',
         request,
         LookupGameByFixtureRequestSchema,
-        LookupGameByFixtureResponseSchema,
+        LookupGameByFixtureResponseSchema
       );
     },
   };
@@ -187,9 +183,7 @@ const defaultGameServiceFetch: GameServiceFetch = async (input, init) => {
 const stripTrailingSlash = (value: string): string =>
   value.endsWith('/') ? value.slice(0, -1) : value;
 
-const safeReadText = async (
-  response: { text(): Promise<string> },
-): Promise<string> => {
+const safeReadText = async (response: { text(): Promise<string> }): Promise<string> => {
   try {
     return await response.text();
   } catch {

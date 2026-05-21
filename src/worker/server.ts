@@ -1,7 +1,10 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage } from 'node:http';
 
-import type { RecordRatingRequest, RecordRatingResponse } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
+import type {
+  RecordRatingRequest,
+  RecordRatingResponse,
+} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
 import {
   createFetchFootballIdentityLookupClient,
@@ -21,10 +24,7 @@ import {
   MatchConcludedPublisher,
   createBunMatchConcludedStreamClient,
 } from './match-concluded-publisher.js';
-import {
-  RATING_SUBMITTED_FACT_TYPE,
-  RatingConsumer,
-} from './rating-consumer.js';
+import { RATING_SUBMITTED_FACT_TYPE, RatingConsumer } from './rating-consumer.js';
 import {
   RedisStreamConsumer,
   RedisStreamConsumerMetrics,
@@ -135,15 +135,13 @@ if (config.redisUrl) {
       });
 
       const controller = new AbortController();
-      streamConsumer
-        .run(controller.signal)
-        .catch((err: unknown) => {
-          console.log(
-            `[gamewire-worker] fact bus consumer crashed: ${
-              err instanceof Error ? err.message : String(err)
-            }`
-          );
-        });
+      streamConsumer.run(controller.signal).catch((err: unknown) => {
+        console.log(
+          `[gamewire-worker] fact bus consumer crashed: ${
+            err instanceof Error ? err.message : String(err)
+          }`
+        );
+      });
       stopFactConsumer = () => controller.abort();
       console.log(
         '[gamewire-worker] fact bus consumer started ' +
@@ -172,9 +170,7 @@ if (config.redisUrl) {
     );
   }
 } else {
-  console.log(
-    '[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled'
-  );
+  console.log('[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled');
 }
 
 /**
@@ -185,10 +181,9 @@ if (config.redisUrl) {
  * mappings. The client is wired here so the boundary stays in scope
  * for downstream callers — do not remove it.
  */
-const identityClient: FootballIdentityLookupClient | undefined =
-  config.identityServiceUrl
-    ? createFetchFootballIdentityLookupClient({ baseUrl: config.identityServiceUrl })
-    : undefined;
+const identityClient: FootballIdentityLookupClient | undefined = config.identityServiceUrl
+  ? createFetchFootballIdentityLookupClient({ baseUrl: config.identityServiceUrl })
+  : undefined;
 
 /**
  * game-service client used by the match-concluded bridge to resolve
@@ -199,15 +194,13 @@ const identityClient: FootballIdentityLookupClient | undefined =
  * the bridge itself is a no-op when either the publisher or the
  * game-service client is unavailable.
  */
-const gameServiceLookupClient: FootballGameLookupClient | undefined =
-  config.gameServiceUrl
-    ? createFetchFootballGameLookupClient({ baseUrl: config.gameServiceUrl })
-    : undefined;
+const gameServiceLookupClient: FootballGameLookupClient | undefined = config.gameServiceUrl
+  ? createFetchFootballGameLookupClient({ baseUrl: config.gameServiceUrl })
+  : undefined;
 
 if (!config.gameServiceUrl) {
   console.log(
-    '[gamewire-worker] bridge inactive: game-service url not configured ' +
-      '(set GAME_SERVICE_URL)'
+    '[gamewire-worker] bridge inactive: game-service url not configured ' + '(set GAME_SERVICE_URL)'
   );
 }
 

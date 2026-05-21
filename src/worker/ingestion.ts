@@ -537,7 +537,7 @@ export class ApiFootballIngestionLoop {
   async #notifyFixtureFetched(
     workload: IngestionWorkload,
     resourceId: string,
-    data: unknown,
+    data: unknown
   ): Promise<void> {
     if (!this.#onFixtureFetched) {
       return;
@@ -596,8 +596,7 @@ function defaultLogger(entry: Record<string, unknown>): void {
   console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
 }
 
-const defaultSchedule = (callback: () => void, ms: number): unknown =>
-  setInterval(callback, ms);
+const defaultSchedule = (callback: () => void, ms: number): unknown => setInterval(callback, ms);
 
 const defaultCancel = (handle: unknown): void => {
   if (handle && typeof handle === 'object' && 'unref' in handle) {

@@ -99,8 +99,7 @@ export const DEFAULT_BATCH_COUNT = 16;
  * Compute a fact-type stream key. Exported so tests and prod wiring
  * derive the same names from the same constant.
  */
-export const streamNameFor = (factType: string): string =>
-  `${STREAM_NAME_PREFIX}${factType}`;
+export const streamNameFor = (factType: string): string => `${STREAM_NAME_PREFIX}${factType}`;
 
 /**
  * Compute the default per-process consumer name. Multiple gamewire-worker
@@ -108,8 +107,7 @@ export const streamNameFor = (factType: string): string =>
  * combination of hostname and pid is sufficient for our deployment shape
  * (one process per container, container-id used as hostname).
  */
-export const defaultConsumerName = (): string =>
-  `${hostname()}:${process.pid}`;
+export const defaultConsumerName = (): string => `${hostname()}:${process.pid}`;
 
 /**
  * A single XREADGROUP entry as we surface it to the dispatcher. Mirrors
@@ -385,9 +383,7 @@ export class RedisStreamConsumer {
    */
   subscribe(subscription: StreamSubscription): void {
     if (this.#running) {
-      throw new Error(
-        'redis-stream-consumer: cannot subscribe after run() has started'
-      );
+      throw new Error('redis-stream-consumer: cannot subscribe after run() has started');
     }
     this.#subscriptions.set(subscription.factType, subscription);
   }
@@ -491,11 +487,7 @@ export class RedisStreamConsumer {
     }
   }
 
-  async #handleEntry(
-    sub: StreamSubscription,
-    stream: string,
-    entry: StreamEntry
-  ): Promise<void> {
+  async #handleEntry(sub: StreamSubscription, stream: string, entry: StreamEntry): Promise<void> {
     const factType = sub.factType;
     this.#metrics.recordReceived(factType);
 
@@ -567,7 +559,8 @@ export class RedisStreamConsumer {
       streamId: entry.id,
       eventId: dedupeKey,
       attempt,
-      message: threw instanceof Error ? threw.message : threw === undefined ? undefined : String(threw),
+      message:
+        threw instanceof Error ? threw.message : threw === undefined ? undefined : String(threw),
     });
 
     if (attempt >= this.#maxRetries) {
@@ -628,7 +621,8 @@ export class RedisStreamConsumer {
       streamId: entry.id,
       eventId,
       reason,
-      message: cause instanceof Error ? cause.message : cause === undefined ? undefined : String(cause),
+      message:
+        cause instanceof Error ? cause.message : cause === undefined ? undefined : String(cause),
     });
     // ACK after a successful DLQ publish — the message is now durable
     // on the dlq stream, so removing it from the PEL is safe.

@@ -128,9 +128,7 @@ describe('RedisStreamConsumer', () => {
 
     await consumer.ensureGroups();
 
-    expect(stub.groups).toEqual([
-      { stream: RATING_STREAM, group: RATING_GROUP, startId: '$' },
-    ]);
+    expect(stub.groups).toEqual([{ stream: RATING_STREAM, group: RATING_GROUP, startId: '$' }]);
   });
 
   it('decodes the data field, calls the handler, and XACKs on success', async () => {
@@ -158,9 +156,7 @@ describe('RedisStreamConsumer', () => {
     expect(call[1].streamId).toBe('100-0');
     expect(call[1].eventId).toBe(fact.id);
     expect(call[1].attempt).toBe(1);
-    expect(stub.acks).toEqual([
-      { stream: RATING_STREAM, group: RATING_GROUP, id: '100-0' },
-    ]);
+    expect(stub.acks).toEqual([{ stream: RATING_STREAM, group: RATING_GROUP, id: '100-0' }]);
     expect(stub.xadds).toEqual([]);
   });
 
@@ -221,9 +217,7 @@ describe('RedisStreamConsumer', () => {
     consumer.subscribe({ factType: RATING_FACT_TYPE, group: RATING_GROUP, handler });
 
     for (let i = 0; i < MAX_RETRIES; i += 1) {
-      stub.enqueue([
-        { stream: RATING_STREAM, entries: [entryFor(`400-${i}`, fact)] },
-      ]);
+      stub.enqueue([{ stream: RATING_STREAM, entries: [entryFor(`400-${i}`, fact)] }]);
       // We re-deliver the same fact id MAX_RETRIES times to simulate a
       // claim-and-redeliver loop. The attempt counter is keyed by fact.id
       // so the count climbs even though stream ids differ.
@@ -275,9 +269,7 @@ describe('RedisStreamConsumer', () => {
     expect(handler).not.toHaveBeenCalled();
     expect(stub.xadds).toHaveLength(1);
     expect(stub.xadds[0].fields.reason).toBe('decode_error');
-    expect(stub.acks).toEqual([
-      { stream: RATING_STREAM, group: RATING_GROUP, id: '500-0' },
-    ]);
+    expect(stub.acks).toEqual([{ stream: RATING_STREAM, group: RATING_GROUP, id: '500-0' }]);
     expect(metrics.snapshot().outcomes[RATING_FACT_TYPE]?.malformed).toBe(1);
   });
 
@@ -306,9 +298,7 @@ describe('RedisStreamConsumer', () => {
 
     expect(stub.xadds).toHaveLength(1);
     expect(stub.xadds[0].fields.reason).toBe('missing_data');
-    expect(stub.acks).toEqual([
-      { stream: RATING_STREAM, group: RATING_GROUP, id: '600-0' },
-    ]);
+    expect(stub.acks).toEqual([{ stream: RATING_STREAM, group: RATING_GROUP, id: '600-0' }]);
   });
 
   it('keeps the entry pending when XACK fails after a DLQ publish', async () => {
@@ -441,9 +431,7 @@ describe('createBunRedisStreamClient', () => {
         throw err;
       },
     });
-    await expect(
-      client.xGroupCreateMkStream('btl:facts:test', 'g', '$')
-    ).resolves.toBeUndefined();
+    await expect(client.xGroupCreateMkStream('btl:facts:test', 'g', '$')).resolves.toBeUndefined();
     void bun;
   });
 
@@ -453,9 +441,9 @@ describe('createBunRedisStreamClient', () => {
         throw new Error('connection refused');
       },
     });
-    await expect(
-      client.xGroupCreateMkStream('btl:facts:test', 'g', '$')
-    ).rejects.toThrow('connection refused');
+    await expect(client.xGroupCreateMkStream('btl:facts:test', 'g', '$')).rejects.toThrow(
+      'connection refused'
+    );
   });
 
   it('serialises XREADGROUP arguments in the documented order', async () => {
