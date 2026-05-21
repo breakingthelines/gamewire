@@ -40,7 +40,8 @@ import {
   LookupGameByFixtureRequestSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
-import type { FootballGameLookupClient } from './clients/game-service.js';
+import { apiFootballIngestGamesRequestFromFixtures } from '../adapters/api-football/index.js';
+import type { FootballGameBridgeClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import type { IngestionWorkload } from './ingestion.js';
 import type {
@@ -71,6 +72,8 @@ export interface MatchConcludedBridgeLogEntry {
   readonly outcome?: MatchConcludedObserveOutcome['outcome'];
   readonly message?: string;
   readonly reason?: string;
+  readonly acceptedCount?: number;
+  readonly updatedCount?: number;
 }
 
 export type MatchConcludedBridgeLogger = (entry: MatchConcludedBridgeLogEntry) => void;
@@ -102,7 +105,7 @@ export interface MatchConcludedBridgeOptions {
    * canonical `game_id` via `LookupGameByFixture`. This is the live
    * crosswalk; identity-server cannot serve it (read-only snapshot).
    */
-  readonly gameService: FootballGameLookupClient;
+  readonly gameService: FootballGameBridgeClient;
   /**
    * Identity-server lookup boundary. NOT used on the GAME path (which
    * goes through `gameService` above), but kept on the bridge options
@@ -156,6 +159,39 @@ export const createMatchConcludedBridge = (
     }
 
     const { providerFixtureId, providerStatus, concludedAtMs } = decoded;
+
+    const ingestRequest = apiFootballIngestGamesRequestFromFixtures({
+      provider: providerId,
+      replayId: `live:${workload}:${resourceId}`,
+      resourceId,
+      envelope: data,
+      fetchedAtMs: clock(),
+    });
+    if (ingestRequest.games.length > 0) {
+      try {
+        const ingestResponse = await gameService.ingestGames(ingestRequest);
+        log({
+          event: 'bridge_game_ingested',
+          workload,
+          resourceId,
+          providerFixtureId,
+          providerStatus,
+          providerId,
+          acceptedCount: ingestResponse.acceptedCount,
+          updatedCount: ingestResponse.updatedCount,
+        });
+      } catch (err) {
+        log({
+          event: 'bridge_game_ingest_error',
+          workload,
+          resourceId,
+          providerFixtureId,
+          providerStatus,
+          providerId,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
 
     let lookupResponse: LookupGameByFixtureResponse;
     try {

@@ -18,6 +18,8 @@ const baseConfig: GamewireWorkerConfig = {
   providerHardCap: 70_000,
   providerSoftCap: 60_000,
   ingestionEnabled: false,
+  bootstrapFixtureIds: [],
+  ingestionRunImmediateTick: false,
 };
 
 describe('API-Football provider HTTP boundary', () => {

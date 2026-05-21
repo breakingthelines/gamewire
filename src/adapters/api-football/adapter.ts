@@ -1,4 +1,5 @@
 import { create } from '@bufbuild/protobuf';
+import { TimestampSchema, timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
   IngestFootballLineupsRequestSchema,
@@ -23,9 +24,11 @@ import {
   GameOccurrenceSchema,
   GameParticipantRole,
   GameParticipantSchema,
+  GameScoreSchema,
   GameSchema,
   GameStatus,
   OccurrenceRevisionState,
+  ParticipantScoreSchema,
   ProviderAttributionSchema,
   ResolutionState,
   SportActionPayloadSchema,
@@ -35,6 +38,7 @@ import {
   FootballActionType,
   FootballClockPayloadSchema,
   FootballGamePayloadSchema,
+  FootballScorePayloadSchema,
   FootballLineupsSchema,
   FootballPeriod,
   FootballStandingEntrySchema,
@@ -48,7 +52,9 @@ import {
 import {
   API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
+  type ApiFootballEnvelope,
   type ApiFootballCompetitionPlan,
+  type ApiFootballFixtureResponse,
 } from './types.js';
 
 export const API_FOOTBALL_REPLAY_ID = 'api-football:replay:arsenal-chelsea-2026-05-11';
@@ -138,6 +144,34 @@ export function apiFootballReplayGameRequest(options: {
       options.gameId
     ),
     games: replayGame.id === options.gameId ? [replayGame] : [],
+  });
+}
+
+export function apiFootballIngestGamesRequestFromFixtures(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly envelope: ApiFootballEnvelope<readonly ApiFootballFixtureResponse[]> | unknown;
+  readonly fetchedAtMs?: number;
+}): IngestGamesRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const games = apiFootballFixturesFromEnvelope(options.envelope)
+    .map((fixture) =>
+      liveGame(fixture, {
+        fetchedAtMs: options.fetchedAtMs ?? Date.now(),
+      })
+    )
+    .filter((game): game is NonNullable<ReturnType<typeof liveGame>> => game !== null);
+
+  return create(IngestGamesRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'fixtures',
+      options.resourceId,
+      `provider://${providerId}/fixtures/${options.resourceId}`
+    ),
+    games,
   });
 }
 
@@ -293,10 +327,146 @@ export function providerGameIdFromFixture(
   return '';
 }
 
+function apiFootballFixturesFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballFixtureResponse[]> | unknown
+): readonly ApiFootballFixtureResponse[] {
+  if (!isRecord(envelope)) {
+    return [];
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  return response.filter(isApiFootballFixtureResponse);
+}
+
+function isApiFootballFixtureResponse(value: unknown): value is ApiFootballFixtureResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const fixture = (value as { fixture?: unknown }).fixture;
+  const league = (value as { league?: unknown }).league;
+  const teams = (value as { teams?: unknown }).teams;
+  return isRecord(fixture) && isRecord(league) && isRecord(teams);
+}
+
+function liveGame(response: ApiFootballFixtureResponse, options: { readonly fetchedAtMs: number }) {
+  const providerGameId = providerGameIdFromFixture(response.fixture);
+  if (providerGameId === '') {
+    return null;
+  }
+  const scheduledStartMs = Date.parse(response.fixture.date);
+  if (!Number.isFinite(scheduledStartMs)) {
+    return null;
+  }
+
+  const competition = subject(
+    `btl_football_competition_api_football_${response.league.id}`,
+    SubjectType.COMPETITION,
+    response.league.name,
+    slugify(response.league.name || `competition-${response.league.id}`)
+  );
+  const season = subject(
+    `btl_football_season_api_football_${response.league.id}_${response.league.season}`,
+    SubjectType.SEASON,
+    `${response.league.season} ${response.league.name}`,
+    slugify(`${response.league.season}-${response.league.name}`)
+  );
+  const home = subject(
+    `btl_football_team_api_football_${response.teams.home.id}`,
+    SubjectType.TEAM,
+    response.teams.home.name,
+    slugify(response.teams.home.name || `team-${response.teams.home.id}`)
+  );
+  const away = subject(
+    `btl_football_team_api_football_${response.teams.away.id}`,
+    SubjectType.TEAM,
+    response.teams.away.name,
+    slugify(response.teams.away.name || `team-${response.teams.away.id}`)
+  );
+
+  const homeGoals = nullableNumber(response.goals?.home);
+  const awayGoals = nullableNumber(response.goals?.away);
+  const hasScore = homeGoals !== undefined || awayGoals !== undefined;
+  const status = gameStatusFromApiFootball(response.fixture.status.short);
+  const finalScore = status === GameStatus.FINISHED || status === GameStatus.AWARDED;
+  const gameId = `btl_football_game_api_football_${providerGameId}`;
+  const routeId = `g3-fixture-${providerGameId}`;
+  const slug = slugify(
+    `${response.teams.home.name}-vs-${response.teams.away.name}-${new Date(scheduledStartMs)
+      .toISOString()
+      .slice(0, 10)}`
+  );
+
+  return create(GameSchema, {
+    id: gameId,
+    slug,
+    routeId,
+    sport: Sport.FOOTBALL,
+    providerGameId,
+    competition,
+    season,
+    participants: [
+      create(GameParticipantSchema, {
+        subject: home,
+        role: GameParticipantRole.HOME,
+        sortOrder: 1,
+      }),
+      create(GameParticipantSchema, {
+        subject: away,
+        role: GameParticipantRole.AWAY,
+        sortOrder: 2,
+      }),
+    ],
+    scheduledStart: create(TimestampSchema, timestampFromMs(scheduledStartMs)),
+    status,
+    clock: clockFromApiFootball(response.fixture.status.short, response.fixture.status.elapsed),
+    score: hasScore
+      ? create(GameScoreSchema, {
+          scores: [
+            create(ParticipantScoreSchema, {
+              participantId: home.id,
+              score: homeGoals ?? 0,
+              display: String(homeGoals ?? 0),
+            }),
+            create(ParticipantScoreSchema, {
+              participantId: away.id,
+              score: awayGoals ?? 0,
+              display: String(awayGoals ?? 0),
+            }),
+          ],
+          display: `${homeGoals ?? 0}-${awayGoals ?? 0}`,
+          final: finalScore,
+          sportScore: {
+            case: 'football',
+            value: create(FootballScorePayloadSchema, {
+              homeGoals: homeGoals ?? 0,
+              awayGoals: awayGoals ?? 0,
+            }),
+          },
+        })
+      : undefined,
+    hasLineups: false,
+    hasTimeline: false,
+    hasRichActions: false,
+    fallbackReasons: [],
+    provenance: [],
+    sportPayload: {
+      case: 'football',
+      value: create(FootballGamePayloadSchema, {
+        matchday: matchdayFromRound(response.league.round),
+        stage: response.league.round ?? '',
+      }),
+    },
+    updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
+  });
+}
+
 function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIXTURE_ID }) {
   return create(GameSchema, {
     id: API_FOOTBALL_REPLAY_GAME_ID,
     slug: 'arsenal-v-chelsea-2026-05-11',
+    routeId: `g3-fixture-${providerGameIdFromFixture(fixture)}`,
     sport: Sport.FOOTBALL,
     providerGameId: providerGameIdFromFixture(fixture),
     competition: subject(
@@ -350,11 +520,17 @@ function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIX
   });
 }
 
-function metadata(providerId: string, replayId: string, activity: string, resourceId: string) {
+function metadata(
+  providerId: string,
+  replayId: string,
+  activity: string,
+  resourceId: string,
+  rawPayloadRef = `replay://${providerId}/${activity}/${resourceId}`
+) {
   return create(IngestMetadataSchema, {
     provider: providerId,
     replayId,
-    rawPayloadRef: `replay://${providerId}/${activity}/${resourceId}`,
+    rawPayloadRef,
     normalizedBatchId: `${providerId}:${activity}:${resourceId}`,
     idempotencyKey: `${providerId}:${activity}:${resourceId}:${replayId}`,
   });
@@ -368,6 +544,106 @@ function subject(id: string, type: SubjectType, label: string, slug: string) {
     label,
     slug,
   });
+}
+
+function clockFromApiFootball(status: string, elapsed: number | null | undefined) {
+  if (elapsed === undefined || elapsed === null || elapsed < 0) {
+    return undefined;
+  }
+  const normalised = status.trim().toUpperCase();
+  return create(GameClockSchema, {
+    display: `${elapsed}'`,
+    period: footballPeriodFromStatus(normalised),
+    elapsedSeconds: elapsed * 60,
+    running: ['1H', '2H', 'ET', 'BT', 'P'].includes(normalised),
+    sportClock: {
+      case: 'football',
+      value: create(FootballClockPayloadSchema, {
+        period: footballPeriodFromStatus(normalised),
+        minute: elapsed,
+      }),
+    },
+  });
+}
+
+function footballPeriodFromStatus(status: string): FootballPeriod {
+  switch (status) {
+    case '1H':
+      return FootballPeriod.FIRST_HALF;
+    case 'HT':
+      return FootballPeriod.HALF_TIME;
+    case '2H':
+      return FootballPeriod.SECOND_HALF;
+    case 'ET':
+    case 'BT':
+      return FootballPeriod.EXTRA_TIME_FIRST;
+    case 'P':
+    case 'PEN':
+      return FootballPeriod.SHOOTOUT;
+    case 'FT':
+    case 'AET':
+      return FootballPeriod.FULL_TIME;
+    default:
+      return FootballPeriod.UNSPECIFIED;
+  }
+}
+
+function gameStatusFromApiFootball(status: string): GameStatus {
+  switch (status.trim().toUpperCase()) {
+    case '1H':
+    case '2H':
+    case 'ET':
+    case 'BT':
+    case 'P':
+    case 'INT':
+      return GameStatus.LIVE;
+    case 'HT':
+      return GameStatus.PAUSED;
+    case 'SUSP':
+      return GameStatus.SUSPENDED;
+    case 'FT':
+    case 'AET':
+    case 'PEN':
+      return GameStatus.FINISHED;
+    case 'PST':
+      return GameStatus.POSTPONED;
+    case 'CANC':
+      return GameStatus.CANCELLED;
+    case 'ABD':
+      return GameStatus.ABANDONED;
+    case 'AWD':
+    case 'WO':
+      return GameStatus.AWARDED;
+    case 'NS':
+    case 'TBD':
+    default:
+      return GameStatus.SCHEDULED;
+  }
+}
+
+function matchdayFromRound(round: string | undefined): number {
+  if (!round) {
+    return 0;
+  }
+  const match = round.match(/\b(\d{1,3})\b/);
+  return match ? Number.parseInt(match[1], 10) : 0;
+}
+
+function nullableNumber(value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function slugify(value: string): string {
+  return value
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function player(

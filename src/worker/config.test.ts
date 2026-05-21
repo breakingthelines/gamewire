@@ -13,6 +13,8 @@ describe('gamewire-worker config', () => {
     expect(config.providerMode).toBe('replay');
     expect(config.providerBaseUrl).toBe('https://v3.football.api-sports.io');
     expect(config.webhookPath).toBe('/webhooks/gamewire');
+    expect(config.bootstrapFixtureIds).toEqual([]);
+    expect(config.ingestionRunImmediateTick).toBe(false);
   });
 
   it('allows explicit runtime overrides without secrets', () => {
@@ -27,6 +29,8 @@ describe('gamewire-worker config', () => {
       API_FOOTBALL_KEY: 'test-provider-key',
       IDENTITY_PROVIDER_ID: 'identity-data-football',
       GAMEWIRE_WEBHOOK_PATH: '/provider/webhook',
+      GAMEWIRE_BOOTSTRAP_FIXTURE_IDS: '1917,  1035065,1917',
+      GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK: 'true',
       LOG_LEVEL: 'debug',
     });
 
@@ -42,6 +46,8 @@ describe('gamewire-worker config', () => {
       identityProviderId: 'identity-data-football',
       webhookPath: '/provider/webhook',
       logLevel: 'debug',
+      bootstrapFixtureIds: ['1917', '1035065'],
+      ingestionRunImmediateTick: true,
     });
   });
 
@@ -52,6 +58,12 @@ describe('gamewire-worker config', () => {
   it('rejects invalid provider modes', () => {
     expect(() => loadConfig({ GAMEWIRE_PROVIDER_MODE: 'secret-live-mode' })).toThrow(
       'Invalid gamewire provider mode'
+    );
+  });
+
+  it('rejects invalid immediate tick flags', () => {
+    expect(() => loadConfig({ GAMEWIRE_RUN_IMMEDIATE_TICK: 'sometimes' })).toThrow(
+      'Invalid gamewire ingestion immediate tick flag'
     );
   });
 });

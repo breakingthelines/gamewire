@@ -38,6 +38,7 @@ export interface ApiFootballLeagueRef {
   readonly name: string;
   readonly season: number;
   readonly country?: string;
+  readonly round?: string;
 }
 
 export interface ApiFootballTeamRef {

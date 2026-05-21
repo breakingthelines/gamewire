@@ -5,6 +5,7 @@ import {
   API_FOOTBALL_REPLAY_FIXTURE_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
   apiFootballFixtureSyncPaths,
+  apiFootballIngestGamesRequestFromFixtures,
   apiFootballLivePath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
@@ -76,5 +77,46 @@ describe('API-Football adapter', () => {
     expect(providerGameIdFromFixture({ id: Number.NaN })).toBe('');
     expect(providerGameIdFromFixture({ id: null })).toBe('');
     expect(providerGameIdFromFixture({ id: undefined })).toBe('');
+  });
+
+  it('normalizes live API-Football fixture envelopes into ingestable games', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail-fullTime:1917',
+      resourceId: '1917',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1917,
+              date: '2026-05-11T19:00:00+00:00',
+              status: { short: 'FT', elapsed: 90 },
+            },
+            league: {
+              id: 39,
+              name: 'Premier League',
+              season: 2025,
+              round: 'Regular Season - 1',
+            },
+            teams: {
+              home: { id: 42, name: 'Arsenal' },
+              away: { id: 49, name: 'Chelsea' },
+            },
+            goals: { home: 2, away: 1 },
+          },
+        ],
+      },
+    });
+
+    expect(request.metadata?.provider).toBe('api-football');
+    expect(request.metadata?.rawPayloadRef).toBe('provider://api-football/fixtures/1917');
+    expect(request.games).toHaveLength(1);
+    expect(request.games[0]?.id).toBe('btl_football_game_api_football_1917');
+    expect(request.games[0]?.routeId).toBe('g3-fixture-1917');
+    expect(request.games[0]?.slug).toBe('arsenal-vs-chelsea-2026-05-11');
+    expect(request.games[0]?.providerGameId).toBe('1917');
+    expect(request.games[0]?.score?.display).toBe('2-1');
+    expect(request.games[0]?.sportPayload.case).toBe('football');
+    expect(request.games[0]?.sportPayload.value?.matchday).toBe(1);
   });
 });

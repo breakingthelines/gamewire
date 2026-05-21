@@ -7,6 +7,7 @@ import {
   INGESTION_TICK_INTERVAL_MS,
   INGESTION_TTL_SECONDS,
   PROVIDER_ID,
+  __test as ingestionTest,
 } from './ingestion.js';
 import { IngestionMetrics } from './metrics.js';
 import type { ProviderFetch } from './provider-http.js';
@@ -29,6 +30,8 @@ const baseConfig: GamewireWorkerConfig = {
   providerHardCap: 5,
   providerSoftCap: 3,
   ingestionEnabled: true,
+  bootstrapFixtureIds: [],
+  ingestionRunImmediateTick: true,
 };
 
 const replayConfig: GamewireWorkerConfig = {
@@ -308,7 +311,7 @@ describe('ApiFootballIngestionLoop.start', () => {
       cancel,
     });
 
-    // 1 fixtures-next-7d + 4 per-fixture workloads + 1 team + 1 player = 7
+    // 1 fixtures-next-7d + 4 dynamic fixture workloads + 1 team + 1 player = 7
     expect(schedule).toHaveBeenCalledTimes(7);
     stop();
     expect(cancel).toHaveBeenCalledTimes(7);
@@ -325,10 +328,67 @@ describe('ApiFootballIngestionLoop.start', () => {
     const schedule = vi.fn(() => 'h');
     const cancel = vi.fn();
     loop.start({
-      intervals: { 'fixtures-next-7d': 0 },
+      intervals: {
+        'fixtures-next-7d': 0,
+        'fixture-detail-preKO': 0,
+        'fixture-detail-live': 0,
+        'fixture-detail-fullTime': 0,
+        'lineups-post-confirm': 0,
+      },
       schedule,
       cancel,
     });
     expect(schedule).not.toHaveBeenCalled();
+  });
+
+  it('can run one immediate boot tick for bootstrap fixture ids', async () => {
+    const fetchFn = buildFetchMock({ response: [{ fixture: { id: 1917 } }] });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    const schedule = vi.fn(() => 'h');
+    const cancel = vi.fn();
+    const stop = loop.start({
+      bootstrapFixtureIds: ['1917'],
+      runImmediately: true,
+      intervals: {
+        'fixtures-next-7d': 1_000,
+        'fixture-detail-preKO': 1_000,
+        'fixture-detail-live': 1_000,
+        'fixture-detail-fullTime': 1_000,
+        'lineups-post-confirm': 1_000,
+      },
+      schedule,
+      cancel,
+    });
+
+    for (let i = 0; i < 5 && fetchFn.mock.calls.length < 4; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(4);
+    const urls = fetchFn.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes('/fixtures?id=1917'))).toBe(true);
+    stop();
+  });
+
+  it('extracts only near-window fixture ids from fixture-list payloads', () => {
+    const now = Date.parse('2026-05-21T12:00:00Z');
+
+    expect(
+      ingestionTest.fixtureIdsFromFixtureList(
+        {
+          response: [
+            { fixture: { id: 1, date: '2026-05-22T15:00:00Z', status: { short: 'NS' } } },
+            { fixture: { id: 2, date: '2026-07-01T15:00:00Z', status: { short: 'NS' } } },
+            { fixture: { id: 3, date: '2026-05-01T15:00:00Z', status: { short: 'FT' } } },
+            { fixture: { id: 4, date: '2026-07-01T15:00:00Z', status: { short: '1H' } } },
+          ],
+        },
+        now
+      )
+    ).toEqual(['1', '4']);
   });
 });

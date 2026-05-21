@@ -6,6 +6,8 @@ import {
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
+  IngestBatchResponseSchema,
+  IngestGamesRequestSchema,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
   type LookupGameByFixtureRequest,
@@ -77,6 +79,12 @@ export interface FootballGameLookupClient {
   lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse>;
 }
 
+export interface FootballGameIngestClient {
+  ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse>;
+}
+
+export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
+
 /**
  * Minimal fetch contract used by the game-service client transport.
  * Mirrors the native `fetch` signature so tests can inject a mock without
@@ -123,7 +131,7 @@ const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
  */
 export const createFetchFootballGameLookupClient = (
   options: FetchFootballGameLookupClientOptions
-): FootballGameLookupClient => {
+): FootballGameBridgeClient => {
   const fetchFn = options.fetchFn ?? defaultGameServiceFetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
   const baseUrl = stripTrailingSlash(options.baseUrl);
@@ -164,6 +172,14 @@ export const createFetchFootballGameLookupClient = (
   };
 
   return {
+    ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse> {
+      return callUnary<IngestGamesRequest, IngestBatchResponse>(
+        'IngestGames',
+        request,
+        IngestGamesRequestSchema,
+        IngestBatchResponseSchema
+      );
+    },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return callUnary<LookupGameByFixtureRequest, LookupGameByFixtureResponse>(
         'LookupGameByFixture',

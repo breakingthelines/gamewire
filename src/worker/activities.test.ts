@@ -25,6 +25,8 @@ const testConfig: GamewireWorkerConfig = {
   providerHardCap: 70_000,
   providerSoftCap: 60_000,
   ingestionEnabled: false,
+  bootstrapFixtureIds: [],
+  ingestionRunImmediateTick: false,
 };
 
 describe('gamewire-worker activities', () => {

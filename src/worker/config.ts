@@ -23,6 +23,10 @@ export interface GamewireWorkerConfig {
   providerSoftCap: number;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
+  /** Fixture ids to poll immediately on boot, useful for deterministic staging smoke. */
+  bootstrapFixtureIds: readonly string[];
+  /** Run one polling tick at boot instead of waiting for the first interval. */
+  ingestionRunImmediateTick: boolean;
 }
 
 export type GamewireWorkerEnv = Record<string, string | undefined>;
@@ -96,6 +100,20 @@ const parseBoolean = (value: string | undefined, fallback: boolean, label: strin
   throw new Error(`Invalid ${label}: ${value}`);
 };
 
+const parseStringList = (value: string | undefined): readonly string[] => {
+  if (value === undefined || value.trim() === '') {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const part of value.split(',')) {
+    const trimmed = part.trim();
+    if (trimmed !== '') {
+      seen.add(trimmed);
+    }
+  }
+  return [...seen];
+};
+
 export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorkerConfig => {
   const providerMode = parseProviderMode(env.GAMEWIRE_PROVIDER_MODE);
   const hardCap = parsePositiveInt(
@@ -133,6 +151,12 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       env.GAMEWIRE_INGESTION_ENABLED,
       providerMode === 'live',
       'gamewire ingestion enabled flag'
+    ),
+    bootstrapFixtureIds: parseStringList(env.GAMEWIRE_BOOTSTRAP_FIXTURE_IDS),
+    ingestionRunImmediateTick: parseBoolean(
+      env.GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK ?? env.GAMEWIRE_RUN_IMMEDIATE_TICK,
+      providerMode === 'live',
+      'gamewire ingestion immediate tick flag'
     ),
   };
 };

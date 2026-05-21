@@ -20,6 +20,7 @@ import {
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
+  providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
 import type { ProviderCache } from './cache.js';
 import { InMemoryProviderCache } from './cache.js';
@@ -134,9 +135,14 @@ export interface IngestionLoopOptions {
 }
 
 export interface IngestionLoopStartOptions {
+  /** Recurring fixture ids to keep polling. */
   readonly fixtureIds?: readonly string[];
+  /** One-shot fixture ids to fetch during an immediate boot tick. */
+  readonly bootstrapFixtureIds?: readonly string[];
   readonly teamIds?: readonly string[];
   readonly playerIds?: readonly string[];
+  /** Run one tick immediately on start, then continue on the normal intervals. */
+  readonly runImmediately?: boolean;
   /** Override ms intervals for tests. */
   readonly intervals?: Partial<Record<IngestionWorkload, number>>;
   readonly schedule?: (callback: () => void, ms: number) => unknown;
@@ -394,76 +400,121 @@ export class ApiFootballIngestionLoop {
     const schedule = options.schedule ?? defaultSchedule;
     const cancel = options.cancel ?? defaultCancel;
     const stopHandles: unknown[] = [];
+    const fixtureIds = new Set(normaliseResourceIds(options.fixtureIds ?? []));
+    const bootstrapFixtureIds = new Set(normaliseResourceIds(options.bootstrapFixtureIds ?? []));
 
-    const enqueueTick = (workload: IngestionWorkload, refresh: () => Promise<void>): void => {
+    const enqueueTick = (
+      workload: IngestionWorkload,
+      refresh: () => Promise<void>,
+      immediateRefresh: () => Promise<void> = refresh
+    ): void => {
       const interval = intervals[workload];
       if (!interval || interval <= 0) {
         return;
       }
+      if (options.runImmediately) {
+        runRefresh(workload, immediateRefresh);
+      }
       const handle = schedule(() => {
-        refresh().catch((error: unknown) => {
-          this.#log({
-            event: 'ingestion_tick_error',
-            provider: this.#provider,
-            workload,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
+        runRefresh(workload, refresh);
       }, interval);
       stopHandles.push(handle);
     };
 
+    const runRefresh = (workload: IngestionWorkload, refresh: () => Promise<void>): void => {
+      refresh().catch((error: unknown) => {
+        this.#log({
+          event: 'ingestion_tick_error',
+          provider: this.#provider,
+          workload,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    };
+
+    const addFixtureIds = (ids: readonly string[], source: string): void => {
+      const before = fixtureIds.size;
+      for (const id of normaliseResourceIds(ids)) {
+        fixtureIds.add(id);
+      }
+      const added = fixtureIds.size - before;
+      if (added > 0) {
+        this.#log({
+          event: 'ingestion_fixture_ids_discovered',
+          provider: this.#provider,
+          source,
+          added,
+          total: fixtureIds.size,
+        });
+      }
+    };
+
     enqueueTick('fixtures-next-7d', async () => {
-      await this.fetchWorkload({
+      const result = await this.fetchWorkload({
         workload: 'fixtures-next-7d',
         resourceId: 'top-competitions',
         path: apiFootballFixtureSyncPaths()[0],
       });
+      addFixtureIds(fixtureIdsFromFixtureList(result.data, this.#clock()), 'fixtures-next-7d');
     });
 
-    const fixtureIds = options.fixtureIds ?? [];
-    if (fixtureIds.length > 0) {
-      enqueueTick('fixture-detail-preKO', async () => {
-        await Promise.allSettled(
-          fixtureIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'fixture-detail-preKO',
-              resourceId: id,
-            })
-          )
-        );
-      });
-      enqueueTick('fixture-detail-live', async () => {
-        await Promise.allSettled(
-          fixtureIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'fixture-detail-live',
-              resourceId: id,
-            })
-          )
-        );
-      });
-      enqueueTick('fixture-detail-fullTime', async () => {
-        await Promise.allSettled(
-          fixtureIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'fixture-detail-fullTime',
-              resourceId: id,
-            })
-          )
-        );
-      });
-      enqueueTick('lineups-post-confirm', async () => {
-        await Promise.allSettled(
-          fixtureIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'lineups-post-confirm',
-              resourceId: id,
-            })
-          )
-        );
-      });
-    }
+    const fixtureIdsForImmediate = (): readonly string[] => [
+      ...new Set([...fixtureIds, ...bootstrapFixtureIds]),
+    ];
+    const fetchFixtureWorkload = async (
+      workload: Extract<
+        IngestionWorkload,
+        'fixture-detail-preKO' | 'fixture-detail-live' | 'fixture-detail-fullTime'
+      >,
+      ids: readonly string[]
+    ): Promise<void> => {
+      await Promise.allSettled(
+        ids.map((id) =>
+          this.fetchWorkload({
+            workload,
+            resourceId: id,
+          })
+        )
+      );
+    };
+
+    enqueueTick(
+      'fixture-detail-preKO',
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-preKO', [...fixtureIds]);
+      },
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-preKO', fixtureIdsForImmediate());
+      }
+    );
+    enqueueTick(
+      'fixture-detail-live',
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-live', [...fixtureIds]);
+      },
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-live', fixtureIdsForImmediate());
+      }
+    );
+    enqueueTick(
+      'fixture-detail-fullTime',
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-fullTime', [...fixtureIds]);
+      },
+      async () => {
+        await fetchFixtureWorkload('fixture-detail-fullTime', fixtureIdsForImmediate());
+      }
+    );
+    enqueueTick('lineups-post-confirm', async () => {
+      await Promise.allSettled(
+        [...fixtureIds].map((id) =>
+          this.fetchWorkload({
+            workload: 'lineups-post-confirm',
+            resourceId: id,
+          })
+        )
+      );
+    });
 
     const teamIds = options.teamIds ?? [];
     if (teamIds.length > 0) {
@@ -573,6 +624,11 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   'fixture-detail-fullTime',
 ]);
 
+const FIXTURE_DISCOVERY_AHEAD_MS = 7 * 24 * 60 * 60 * 1_000;
+const FIXTURE_DISCOVERY_BEHIND_MS = 2 * 60 * 60 * 1_000;
+
+const LIVE_FIXTURE_STATUSES = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'INT', 'SUSP']);
+
 function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): string {
   switch (workload) {
     case 'fixtures-next-7d':
@@ -588,6 +644,64 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
     case 'player-metadata':
       return `/players?id=${encodeURIComponent(resourceId)}`;
   }
+}
+
+function fixtureIdsFromFixtureList(data: unknown, nowMs: number): readonly string[] {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return [];
+  }
+  const ids = new Set<string>();
+  for (const item of data.response) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const fixture = item.fixture;
+    if (!isRecord(fixture)) {
+      continue;
+    }
+    const id = providerGameIdFromFixture(fixture);
+    if (id === '') {
+      continue;
+    }
+    if (isDiscoverableFixture(fixture, nowMs)) {
+      ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+function isDiscoverableFixture(fixture: Record<string, unknown>, nowMs: number): boolean {
+  const status = isRecord(fixture.status) ? String(fixture.status.short ?? '').toUpperCase() : '';
+  if (LIVE_FIXTURE_STATUSES.has(status)) {
+    return true;
+  }
+  const rawDate = fixture.date;
+  if (typeof rawDate !== 'string' || rawDate.trim() === '') {
+    return false;
+  }
+  const scheduledMs = Date.parse(rawDate);
+  if (!Number.isFinite(scheduledMs)) {
+    return false;
+  }
+  return (
+    scheduledMs >= nowMs - FIXTURE_DISCOVERY_BEHIND_MS &&
+    scheduledMs <= nowMs + FIXTURE_DISCOVERY_AHEAD_MS
+  );
+}
+
+function normaliseResourceIds(ids: readonly string[]): readonly string[] {
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const trimmed = id.trim();
+    if (trimmed !== '') {
+      seen.add(trimmed);
+    }
+  }
+  return [...seen];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function defaultLogger(entry: Record<string, unknown>): void {
@@ -608,5 +722,6 @@ export const PROVIDER_ID = API_FOOTBALL_PROVIDER_ID;
 
 export const __test = {
   apiFootballPathFor,
+  fixtureIdsFromFixtureList,
   SECONDS_TO_MS,
 };

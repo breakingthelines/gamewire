@@ -6,9 +6,11 @@ import {
   PlatformFactSchema,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
+  IngestBatchResponseSchema,
   type LookupGameByFixtureRequest,
   type LookupGameByFixtureResponse,
   LookupGameByFixtureResponseSchema,
+  type IngestGamesRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import {
   type LookupRequest,
@@ -21,7 +23,7 @@ import {
   type StatsResponse,
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
-import type { FootballGameLookupClient } from './clients/game-service.js';
+import type { FootballGameBridgeClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   createMatchConcludedBridge,
@@ -109,7 +111,8 @@ const inertIdentity = (): FootballIdentityLookupClient => ({
 });
 
 interface FakeGameService {
-  readonly client: FootballGameLookupClient;
+  readonly client: FootballGameBridgeClient;
+  readonly ingestCalls: IngestGamesRequest[];
   readonly lookupCalls: LookupGameByFixtureRequest[];
 }
 
@@ -117,13 +120,22 @@ const fakeGameService = (options: {
   readonly response?: Partial<LookupGameByFixtureResponse>;
   readonly error?: unknown;
 }): FakeGameService => {
+  const ingestCalls: IngestGamesRequest[] = [];
   const lookupCalls: LookupGameByFixtureRequest[] = [];
   const error = options.error;
   const response = create(LookupGameByFixtureResponseSchema, {
     gameId: options.response?.gameId ?? '',
     found: options.response?.found ?? false,
   });
-  const client: FootballGameLookupClient = {
+  const client: FootballGameBridgeClient = {
+    async ingestGames(request: IngestGamesRequest) {
+      ingestCalls.push(request);
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.games.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
     async lookupGameByFixture(
       request: LookupGameByFixtureRequest
     ): Promise<LookupGameByFixtureResponse> {
@@ -134,7 +146,7 @@ const fakeGameService = (options: {
       return response;
     },
   };
-  return { client, lookupCalls };
+  return { client, ingestCalls, lookupCalls };
 };
 
 describe('isFixtureDetailWorkload', () => {

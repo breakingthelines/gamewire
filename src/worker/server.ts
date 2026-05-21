@@ -12,7 +12,7 @@ import {
 } from './clients/identity.js';
 import {
   createFetchFootballGameLookupClient,
-  type FootballGameLookupClient,
+  type FootballGameBridgeClient,
   type GameServiceRecordRatingClient,
 } from './clients/game-service.js';
 import { config } from './config.js';
@@ -205,7 +205,7 @@ const identityClient: FootballIdentityLookupClient | undefined = config.identity
  * the bridge itself is a no-op when either the publisher or the
  * game-service client is unavailable.
  */
-const gameServiceLookupClient: FootballGameLookupClient | undefined = config.gameServiceUrl
+const gameServiceLookupClient: FootballGameBridgeClient | undefined = config.gameServiceUrl
   ? createFetchFootballGameLookupClient({ baseUrl: config.gameServiceUrl })
   : undefined;
 
@@ -251,10 +251,15 @@ const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
 
 let stopIngestion: (() => void) | undefined;
 if (config.ingestionEnabled) {
-  stopIngestion = ingestion.start();
+  stopIngestion = ingestion.start({
+    bootstrapFixtureIds: config.bootstrapFixtureIds,
+    runImmediately: config.ingestionRunImmediateTick,
+  });
   console.log(
     `[gamewire-worker] ingestion loop started provider=${config.providerId} ` +
-      `hardCap=${config.providerHardCap} softCap=${config.providerSoftCap}`
+      `hardCap=${config.providerHardCap} softCap=${config.providerSoftCap} ` +
+      `bootstrapFixtures=${config.bootstrapFixtureIds.length} ` +
+      `runImmediateTick=${config.ingestionRunImmediateTick}`
   );
 } else {
   console.log(
