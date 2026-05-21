@@ -11,6 +11,7 @@ import {
   type LookupGameByFixtureResponse,
   LookupGameByFixtureResponseSchema,
   type IngestFootballLineupsRequest,
+  type IngestFootballSquadListsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
@@ -105,6 +106,24 @@ const buildLineupResponse = (): unknown => ({
   ],
 });
 
+const buildSquadResponse = (): unknown => ({
+  response: [
+    {
+      team: { id: 42, name: 'Arsenal', logo: 'https://media.api-sports.io/football/teams/42.png' },
+      players: [
+        {
+          id: 1460,
+          name: 'Bukayo Saka',
+          age: 24,
+          number: 7,
+          position: 'Attacker',
+          photo: 'https://media.api-sports.io/football/players/1460.png',
+        },
+      ],
+    },
+  ],
+});
+
 interface BuildPublisherResult {
   readonly publisher: MatchConcludedPublisher;
   readonly stream: InMemoryMatchConcludedStreamClient;
@@ -153,6 +172,7 @@ interface FakeGameService {
   readonly ingestCalls: IngestGamesRequest[];
   readonly occurrenceCalls: IngestGameOccurrencesRequest[];
   readonly lineupCalls: IngestFootballLineupsRequest[];
+  readonly squadListCalls: IngestFootballSquadListsRequest[];
   readonly lookupCalls: LookupGameByFixtureRequest[];
 }
 
@@ -164,6 +184,7 @@ const fakeGameService = (options: {
   const ingestCalls: IngestGamesRequest[] = [];
   const occurrenceCalls: IngestGameOccurrencesRequest[] = [];
   const lineupCalls: IngestFootballLineupsRequest[] = [];
+  const squadListCalls: IngestFootballSquadListsRequest[] = [];
   const lookupCalls: LookupGameByFixtureRequest[] = [];
   const error = options.error;
   const responses = (options.responses ?? [options.response ?? {}]).map((item) =>
@@ -197,6 +218,14 @@ const fakeGameService = (options: {
         replayId: request.metadata?.replayId ?? '',
       });
     },
+    async ingestFootballSquadLists(request: IngestFootballSquadListsRequest) {
+      squadListCalls.push(request);
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.squadLists.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
     async lookupGameByFixture(
       request: LookupGameByFixtureRequest
     ): Promise<LookupGameByFixtureResponse> {
@@ -207,7 +236,7 @@ const fakeGameService = (options: {
       return responses[Math.min(lookupCalls.length - 1, responses.length - 1)]!;
     },
   };
-  return { client, ingestCalls, occurrenceCalls, lineupCalls, lookupCalls };
+  return { client, ingestCalls, occurrenceCalls, lineupCalls, squadListCalls, lookupCalls };
 };
 
 describe('isFixtureDetailWorkload', () => {
@@ -480,6 +509,37 @@ describe('createMatchConcludedBridge', () => {
     );
     expect(logs.some((entry) => entry.event === 'bridge_lineups_ingested')).toBe(true);
     expect(logs.some((entry) => entry.event === 'bridge_lineups_missing')).toBe(true);
+  });
+
+  it('ingests API-Football squad lists against the fixture mapping without marking lineups present', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1538961' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({
+      workload: 'squad-list-fallback',
+      resourceId: '1538961:42',
+      data: buildSquadResponse(),
+    });
+
+    expect(gameService.lookupCalls.map((call) => call.providerFixtureId)).toEqual(['1538961']);
+    expect(gameService.lineupCalls).toHaveLength(0);
+    expect(gameService.squadListCalls).toHaveLength(1);
+    expect(gameService.squadListCalls[0]?.squadLists[0]?.gameId).toBe('btl_football_game_g1538961');
+    expect(gameService.squadListCalls[0]?.squadLists[0]?.teams[0]?.providerTeamId).toBe('42');
+    expect(gameService.squadListCalls[0]?.squadLists[0]?.teams[0]?.players[0]?.playerId).toBe(
+      'provider:api-football:player:1460'
+    );
+    expect(logs.some((entry) => entry.event === 'bridge_squad_list_ingested')).toBe(true);
   });
 
   it('does not throw when game-service client throws (caught and logged)', async () => {

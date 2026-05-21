@@ -5,6 +5,7 @@ import {
   GameService,
   IngestBatchResponseSchema,
   IngestFootballLineupsRequestSchema,
+  IngestFootballSquadListsRequestSchema,
   IngestGameOccurrencesRequestSchema,
   IngestGamesRequestSchema,
   LookupGameByFixtureRequestSchema,
@@ -51,6 +52,9 @@ describe('createFetchFootballGameLookupClient', () => {
     const ingestGames = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
     const ingestGameOccurrences = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
     const ingestFootballLineups = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
+    const ingestFootballSquadLists = vi
+      .fn()
+      .mockResolvedValue(create(IngestBatchResponseSchema, {}));
     const lookupGameByFixture = vi
       .fn()
       .mockResolvedValue(create(LookupGameByFixtureResponseSchema, { found: true }));
@@ -60,6 +64,7 @@ describe('createFetchFootballGameLookupClient', () => {
       ingestGames,
       ingestGameOccurrences,
       ingestFootballLineups,
+      ingestFootballSquadLists,
       lookupGameByFixture,
     });
 
@@ -78,8 +83,10 @@ describe('createFetchFootballGameLookupClient', () => {
     await client.ingestGames(ingestRequest);
     const occurrencesRequest = create(IngestGameOccurrencesRequestSchema, {});
     const lineupsRequest = create(IngestFootballLineupsRequestSchema, {});
+    const squadListsRequest = create(IngestFootballSquadListsRequestSchema, {});
     await client.ingestGameOccurrences(occurrencesRequest);
     await client.ingestFootballLineups(lineupsRequest);
+    await client.ingestFootballSquadLists(squadListsRequest);
     await client.lookupGameByFixture(lookupRequest);
 
     expect(mocks.createGrpcTransport).toHaveBeenCalledWith({
@@ -89,6 +96,9 @@ describe('createFetchFootballGameLookupClient', () => {
     expect(ingestGames).toHaveBeenCalledWith(ingestRequest, { timeoutMs: 1234 });
     expect(ingestGameOccurrences).toHaveBeenCalledWith(occurrencesRequest, { timeoutMs: 1234 });
     expect(ingestFootballLineups).toHaveBeenCalledWith(lineupsRequest, { timeoutMs: 1234 });
+    expect(ingestFootballSquadLists).toHaveBeenCalledWith(squadListsRequest, {
+      timeoutMs: 1234,
+    });
     expect(lookupGameByFixture).toHaveBeenCalledWith(lookupRequest, { timeoutMs: 1234 });
   });
 });

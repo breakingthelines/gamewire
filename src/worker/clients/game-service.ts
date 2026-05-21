@@ -5,6 +5,7 @@ import {
   GameService,
   type IngestBatchResponse,
   type IngestFootballLineupsRequest,
+  type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
@@ -21,6 +22,7 @@ import {
 export interface GameServiceIngestClient {
   ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse>;
   ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
+  ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
   ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse>;
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   listProviderConfigs(request: ListProviderConfigsRequest): Promise<ListProviderConfigsResponse>;
@@ -80,6 +82,7 @@ export interface FootballGameIngestClient {
   ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse>;
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
+  ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
@@ -116,6 +119,11 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse> {
       return client.ingestFootballLineups(request, { timeoutMs });
+    },
+    ingestFootballSquadLists(
+      request: IngestFootballSquadListsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestFootballSquadLists(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

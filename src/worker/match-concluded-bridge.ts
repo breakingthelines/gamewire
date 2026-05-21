@@ -50,6 +50,7 @@ import {
   apiFootballIngestGamesRequestFromFixtures,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballIngestSquadListRequestFromSquads,
   apiFootballSeasonProviderId,
   type ApiFootballEntityKind,
   type ApiFootballEntityResolutionMap,
@@ -57,6 +58,7 @@ import {
   type ApiFootballEventResponse,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
+  type ApiFootballSquadResponse,
   type ApiFootballTeamRef,
 } from '../adapters/api-football/index.js';
 import type { FootballGameBridgeClient } from './clients/game-service.js';
@@ -115,6 +117,7 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
 
 const EVENT_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['events-post-final']);
 const LINEUP_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['lineups-post-confirm']);
+const SQUAD_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['squad-list-fallback']);
 const GAME_LOOKUP_RETRY_DELAYS_MS = [100, 500, 1_000] as const;
 
 export const isFixtureDetailWorkload = (workload: IngestionWorkload): boolean =>
@@ -182,6 +185,21 @@ export const createMatchConcludedBridge = (
 
     if (LINEUP_WORKLOADS.has(workload)) {
       await ingestLineups({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+        gameLookupRetryDelaysMs,
+      });
+      return;
+    }
+
+    if (SQUAD_WORKLOADS.has(workload)) {
+      await ingestSquadList({
         workload,
         resourceId,
         data,
@@ -480,6 +498,90 @@ const ingestLineups = async (input: ProviderResourceBridgeInput): Promise<void> 
   }
 };
 
+const ingestSquadList = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const resource = parseSquadListResourceId(input.resourceId);
+  if (!resource) {
+    input.log({
+      event: 'bridge_squad_list_skipped',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'malformed_resource_id',
+    });
+    return;
+  }
+  const squads = decodeSquadEnvelope(input.data);
+  if (squads.length === 0) {
+    input.log({
+      event: 'bridge_squad_list_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: resource.fixtureId,
+      providerId: input.providerId,
+      reason: 'empty_provider_response',
+    });
+    return;
+  }
+  const gameId = await lookupGameId({ ...input, resourceId: resource.fixtureId });
+  if (!gameId) {
+    return;
+  }
+  const entityResolutions = await resolveSquadEntities(
+    input.identity,
+    input.providerId,
+    squads,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: resource.fixtureId,
+    }
+  );
+  const request = apiFootballIngestSquadListRequestFromSquads({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    gameId,
+    envelope: input.data,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.squadLists.length === 0) {
+    input.log({
+      event: 'bridge_squad_list_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: resource.fixtureId,
+      providerId: input.providerId,
+      reason: 'no_normalized_squad_list',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestFootballSquadLists(request);
+    input.log({
+      event: 'bridge_squad_list_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: resource.fixtureId,
+      providerId: input.providerId,
+      gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_squad_list_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: resource.fixtureId,
+      providerId: input.providerId,
+      gameId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
 const lookupGameId = async (input: ProviderResourceBridgeInput): Promise<string> => {
   for (let attempt = 0; ; attempt += 1) {
     let lookupResponse: LookupGameByFixtureResponse;
@@ -614,12 +716,34 @@ const decodeLineupEnvelope = (data: unknown): readonly ApiFootballLineupResponse
   });
 };
 
+const decodeSquadEnvelope = (data: unknown): readonly ApiFootballSquadResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballSquadResponse => {
+    if (!isRecord(item) || !isRecord(item.team) || !Array.isArray(item.players)) {
+      return false;
+    }
+    return item.players.some(
+      (entry) => isRecord(entry) && Number.isFinite(entry.id) && typeof entry.name === 'string'
+    );
+  });
+};
+
 const responseArray = (data: unknown): readonly unknown[] => {
   if (!isRecord(data)) {
     return [];
   }
   const response = data.response;
   return Array.isArray(response) ? response : [];
+};
+
+const parseSquadListResourceId = (
+  resourceId: string
+): { readonly fixtureId: string; readonly teamId: string } | null => {
+  const [fixtureId, teamId, ...rest] = resourceId.split(':');
+  if (rest.length > 0 || !fixtureId?.trim() || !teamId?.trim()) {
+    return null;
+  }
+  return { fixtureId: fixtureId.trim(), teamId: teamId.trim() };
 };
 
 interface ResolutionLogContext {
@@ -704,6 +828,23 @@ const resolveLineupEntities = async (
   return resolutions;
 };
 
+const resolveSquadEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  squads: readonly ApiFootballSquadResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const squad of squads) {
+    await addResolvedTeam(identity, providerId, resolutions, squad.team, log, context);
+    for (const player of squad.players) {
+      await addResolvedPlayer(identity, providerId, resolutions, player, log, context);
+    }
+  }
+  return resolutions;
+};
+
 const addResolvedTeam = async (
   identity: FootballIdentityLookupClient,
   providerId: string,
@@ -732,7 +873,7 @@ const addResolvedPlayer = async (
   identity: FootballIdentityLookupClient,
   providerId: string,
   resolutions: MutableResolutionMap,
-  player: ApiFootballTeamRef | null | undefined,
+  player: { readonly id: number; readonly name: string } | null | undefined,
   log: MatchConcludedBridgeLogger,
   context: ResolutionLogContext
 ): Promise<void> => {

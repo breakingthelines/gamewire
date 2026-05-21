@@ -21,6 +21,7 @@ import {
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
+  apiFootballSquadPath,
   providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
 import type { ProviderCache } from './cache.js';
@@ -46,6 +47,7 @@ export type IngestionWorkload =
   | 'fixture-detail-fullTime'
   | 'events-post-final'
   | 'lineups-post-confirm'
+  | 'squad-list-fallback'
   | 'team-metadata'
   | 'player-metadata';
 
@@ -61,6 +63,7 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'fixture-detail-fullTime': 6 * 60 * 60,
   'events-post-final': 6 * 60 * 60,
   'lineups-post-confirm': 60 * 60,
+  'squad-list-fallback': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
   'player-metadata': 24 * 60 * 60,
 } as const;
@@ -77,6 +80,7 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'fixture-detail-fullTime': 30 * 60 * 1000, // every 30 min after FT
   'events-post-final': 30 * 60 * 1000, // timeline events settle after FT
   'lineups-post-confirm': 10 * 60 * 1000, // every 10 min after lineups confirmed
+  'squad-list-fallback': 6 * 60 * 60 * 1000,
   'team-metadata': 6 * 60 * 60 * 1000,
   'player-metadata': 6 * 60 * 60 * 1000,
 } as const;
@@ -405,6 +409,7 @@ export class ApiFootballIngestionLoop {
     const stopHandles: unknown[] = [];
     const fixtureIds = new Set(normaliseResourceIds(options.fixtureIds ?? []));
     const bootstrapFixtureIds = new Set(normaliseResourceIds(options.bootstrapFixtureIds ?? []));
+    const fixtureTeamIds = new Map<string, readonly string[]>();
 
     const enqueueTick = (
       workload: IngestionWorkload,
@@ -476,10 +481,44 @@ export class ApiFootballIngestionLoop {
       ids: readonly string[]
     ): Promise<void> => {
       await Promise.allSettled(
-        ids.map((id) =>
-          this.fetchWorkload({
+        ids.map(async (id) => {
+          const result = await this.fetchWorkload({
             workload,
             resourceId: id,
+          });
+          if (FIXTURE_DETAIL_WORKLOADS.has(workload) && result.data !== undefined) {
+            const teamIds = teamIdsFromFixtureDetail(result.data);
+            if (teamIds.length > 0) {
+              fixtureTeamIds.set(id, teamIds);
+            }
+          }
+          if (workload === 'lineups-post-confirm' && lineupsMissing(result.data)) {
+            let teamIds = fixtureTeamIds.get(id) ?? [];
+            if (teamIds.length === 0) {
+              const fixtureDetail = await this.fetchWorkload({
+                workload: 'fixture-detail-fullTime',
+                resourceId: id,
+              });
+              teamIds = teamIdsFromFixtureDetail(fixtureDetail.data);
+              if (teamIds.length > 0) {
+                fixtureTeamIds.set(id, teamIds);
+              }
+            }
+            await fetchSquadFallbacksForFixture(id, teamIds);
+          }
+        })
+      );
+    };
+
+    const fetchSquadFallbacksForFixture = async (
+      fixtureId: string,
+      teamIds: readonly string[]
+    ): Promise<void> => {
+      await Promise.allSettled(
+        normaliseResourceIds(teamIds).map((teamId) =>
+          this.fetchWorkload({
+            workload: 'squad-list-fallback',
+            resourceId: squadListResourceId(fixtureId, teamId),
           })
         )
       );
@@ -643,6 +682,7 @@ const BRIDGE_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   ...FIXTURE_DETAIL_WORKLOADS,
   'events-post-final',
   'lineups-post-confirm',
+  'squad-list-fallback',
 ]);
 
 const FIXTURE_DISCOVERY_AHEAD_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -662,6 +702,8 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       return apiFootballEventPath(resourceId);
     case 'lineups-post-confirm':
       return apiFootballLineupPath(resourceId);
+    case 'squad-list-fallback':
+      return apiFootballSquadPath(teamIdFromSquadListResourceId(resourceId));
     case 'team-metadata':
       return `/teams?id=${encodeURIComponent(resourceId)}`;
     case 'player-metadata':
@@ -723,6 +765,42 @@ function normaliseResourceIds(ids: readonly string[]): readonly string[] {
   return [...seen];
 }
 
+function teamIdsFromFixtureDetail(data: unknown): readonly string[] {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return [];
+  }
+  const ids = new Set<string>();
+  for (const item of data.response) {
+    if (!isRecord(item) || !isRecord(item.teams)) {
+      continue;
+    }
+    for (const key of ['home', 'away'] as const) {
+      const team = item.teams[key];
+      if (!isRecord(team)) {
+        continue;
+      }
+      const id = team.id;
+      if ((typeof id === 'string' && id.trim() !== '') || (typeof id === 'number' && id > 0)) {
+        ids.add(String(id).trim());
+      }
+    }
+  }
+  return [...ids];
+}
+
+function lineupsMissing(data: unknown): boolean {
+  return isRecord(data) && Array.isArray(data.response) && data.response.length === 0;
+}
+
+function squadListResourceId(fixtureId: string, teamId: string): string {
+  return `${fixtureId.trim()}:${teamId.trim()}`;
+}
+
+function teamIdFromSquadListResourceId(resourceId: string): string {
+  const [, teamId = ''] = resourceId.split(':');
+  return teamId.trim();
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -746,5 +824,8 @@ export const PROVIDER_ID = API_FOOTBALL_PROVIDER_ID;
 export const __test = {
   apiFootballPathFor,
   fixtureIdsFromFixtureList,
+  lineupsMissing,
+  squadListResourceId,
+  teamIdsFromFixtureDetail,
   SECONDS_TO_MS,
 };

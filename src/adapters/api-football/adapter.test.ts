@@ -8,11 +8,13 @@ import {
   apiFootballIngestGamesRequestFromFixtures,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballIngestSquadListRequestFromSquads,
   apiFootballLivePath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
   apiFootballReplayOccurrencesRequest,
   apiFootballStandingSyncPaths,
+  apiFootballSquadPath,
   apiFootballStatusPath,
   providerGameIdFromFixture,
 } from './index.js';
@@ -31,6 +33,7 @@ describe('API-Football adapter', () => {
     expect(apiFootballStandingSyncPaths()).toHaveLength(6);
     expect(apiFootballLivePath()).toBe('/fixtures?live=all');
     expect(apiFootballStatusPath()).toBe('/status');
+    expect(apiFootballSquadPath('10379')).toBe('/players/squads?team=10379');
   });
 
   it('builds canonical replay ingest requests from provider-shaped data', () => {
@@ -283,5 +286,51 @@ describe('API-Football adapter', () => {
     expect(request.lineups[0]?.teamSheets[0]?.players[0]?.playerId).toBe(
       'provider:api-football:player:1460'
     );
+  });
+
+  it('normalizes API-Football squad lists as a distinct lineup fallback', () => {
+    const request = apiFootballIngestSquadListRequestFromSquads({
+      replayId: 'live:squad-list-fallback:1538961:10379',
+      resourceId: '1538961:10379',
+      gameId: 'btl_football_game_g1538961',
+      entityResolutions: {
+        teams: {
+          '10379': { entityId: 'btl_football_team_t10379', label: 'San Marino U19' },
+        },
+      },
+      envelope: {
+        response: [
+          {
+            team: {
+              id: 10379,
+              name: 'San Marino U19',
+              logo: 'https://media.api-sports.io/football/teams/10379.png',
+            },
+            players: [
+              {
+                id: 123,
+                name: 'Registered Player',
+                age: 18,
+                number: 7,
+                position: 'Attacker',
+                photo: 'https://media.api-sports.io/football/players/123.png',
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(request.metadata?.rawPayloadRef).toBe(
+      'provider://api-football/players/squads/1538961:10379'
+    );
+    expect(request.squadLists).toHaveLength(1);
+    expect(request.squadLists[0]?.gameId).toBe('btl_football_game_g1538961');
+    expect(request.squadLists[0]?.teams[0]?.teamId).toBe('btl_football_team_t10379');
+    expect(request.squadLists[0]?.teams[0]?.providerTeamId).toBe('10379');
+    expect(request.squadLists[0]?.teams[0]?.players[0]?.playerId).toBe(
+      'provider:api-football:player:123'
+    );
+    expect(request.squadLists[0]?.teams[0]?.players[0]?.positionCode).toBe('Attacker');
   });
 });

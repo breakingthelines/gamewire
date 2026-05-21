@@ -3,12 +3,14 @@ import { TimestampSchema, timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
   IngestFootballLineupsRequestSchema,
+  IngestFootballSquadListsRequestSchema,
   IngestFootballStandingsRequestSchema,
   IngestGameOccurrencesRequestSchema,
   IngestGamesRequestSchema,
   IngestMetadataSchema,
   type GameFilter,
   type IngestFootballLineupsRequest,
+  type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
@@ -45,6 +47,9 @@ import {
   FootballScorePayloadSchema,
   FootballLineupsSchema,
   FootballPeriod,
+  FootballSquadListPlayerSchema,
+  FootballSquadListSchema,
+  FootballSquadListTeamSchema,
   FootballStandingEntrySchema,
   FootballStandingsSchema,
   FootballTeamSheetPlayerSchema,
@@ -64,6 +69,8 @@ import {
   type ApiFootballCompetitionPlan,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
+  type ApiFootballSquadPlayer,
+  type ApiFootballSquadResponse,
   type ApiFootballTeamRef,
 } from './types.js';
 
@@ -140,6 +147,10 @@ export function apiFootballFixturePath(fixtureId: string): string {
 
 export function apiFootballLineupPath(fixtureId: string): string {
   return `/fixtures/lineups?fixture=${encodeURIComponent(fixtureId)}`;
+}
+
+export function apiFootballSquadPath(teamId: string): string {
+  return `/players/squads?team=${encodeURIComponent(teamId)}`;
 }
 
 export function apiFootballEventPath(fixtureId: string): string {
@@ -388,6 +399,48 @@ export function apiFootballIngestLineupsRequestFromLineups(options: {
   });
 }
 
+export function apiFootballIngestSquadListRequestFromSquads(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly gameId: string;
+  readonly envelope: ApiFootballEnvelope<readonly ApiFootballSquadResponse[]> | unknown;
+  readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  readonly fetchedAtMs?: number;
+}): IngestFootballSquadListsRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const squads = apiFootballSquadsFromEnvelope(options.envelope);
+  const teams = squads.map((squad) =>
+    squadListTeamFromSquad(squad, {
+      providerId,
+      entityResolutions: options.entityResolutions,
+    })
+  );
+
+  return create(IngestFootballSquadListsRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'squads',
+      options.resourceId,
+      `provider://${providerId}/players/squads/${options.resourceId}`
+    ),
+    squadLists:
+      teams.length > 0
+        ? [
+            create(FootballSquadListSchema, {
+              gameId: options.gameId,
+              teams,
+              updatedAt: create(
+                TimestampSchema,
+                timestampFromMs(options.fetchedAtMs ?? Date.now())
+              ),
+            }),
+          ]
+        : [],
+  });
+}
+
 export function apiFootballReplayStandingsRequest(options: {
   readonly provider?: string;
   readonly replayId: string;
@@ -478,6 +531,19 @@ function apiFootballLineupsFromEnvelope(
   return response.filter(isApiFootballLineupResponse);
 }
 
+function apiFootballSquadsFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballSquadResponse[]> | unknown
+): readonly ApiFootballSquadResponse[] {
+  if (!isRecord(envelope)) {
+    return [];
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  return response.filter(isApiFootballSquadResponse);
+}
+
 function isApiFootballFixtureResponse(value: unknown): value is ApiFootballFixtureResponse {
   if (!isRecord(value)) {
     return false;
@@ -509,6 +575,23 @@ function isApiFootballLineupResponse(value: unknown): value is ApiFootballLineup
     typeof (value as { formation?: unknown }).formation === 'string' &&
     Array.isArray((value as { startXI?: unknown }).startXI) &&
     Array.isArray((value as { substitutes?: unknown }).substitutes)
+  );
+}
+
+function isApiFootballSquadResponse(value: unknown): value is ApiFootballSquadResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const team = (value as { team?: unknown }).team;
+  const players = (value as { players?: unknown }).players;
+  return isRecord(team) && Array.isArray(players) && players.some(isApiFootballSquadPlayer);
+}
+
+function isApiFootballSquadPlayer(value: unknown): value is ApiFootballSquadPlayer {
+  return (
+    isRecord(value) &&
+    Number.isFinite((value as { id?: unknown }).id) &&
+    typeof (value as { name?: unknown }).name === 'string'
   );
 }
 
@@ -761,6 +844,60 @@ function teamSheetFromLineup(
         })
       ),
     ],
+  });
+}
+
+function squadListTeamFromSquad(
+  squad: ApiFootballSquadResponse,
+  options: {
+    readonly providerId: string;
+    readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  }
+) {
+  const providerTeamId = String(squad.team.id);
+  const resolved = resolvedEntity(
+    'team',
+    providerTeamId,
+    squad.team.name,
+    options.entityResolutions
+  );
+  return create(FootballSquadListTeamSchema, {
+    teamId: resolved?.entityId ?? providerStorageId(options.providerId, 'team', providerTeamId),
+    teamName: resolved?.label ?? squad.team.name,
+    logoUrl: stringOrEmpty(squad.team.logo),
+    providerTeamId,
+    players: squad.players.map((entry) =>
+      squadListPlayer(entry, {
+        providerId: options.providerId,
+        entityResolutions: options.entityResolutions,
+      })
+    ),
+  });
+}
+
+function squadListPlayer(
+  entry: ApiFootballSquadPlayer,
+  options: {
+    readonly providerId: string;
+    readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  }
+) {
+  const providerPlayerId = String(entry.id);
+  const resolved = resolvedEntity(
+    'player',
+    providerPlayerId,
+    entry.name,
+    options.entityResolutions
+  );
+  return create(FootballSquadListPlayerSchema, {
+    playerId:
+      resolved?.entityId ?? providerStorageId(options.providerId, 'player', providerPlayerId),
+    playerName: resolved?.label ?? entry.name,
+    shirtNumber: nullableNumber(entry.number) ?? 0,
+    positionCode: entry.position ?? '',
+    age: nullableNumber(entry.age) ?? 0,
+    photoUrl: stringOrEmpty(entry.photo),
+    providerPlayerId,
   });
 }
 

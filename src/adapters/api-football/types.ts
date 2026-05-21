@@ -96,6 +96,20 @@ export interface ApiFootballLineupPlayer {
   };
 }
 
+export interface ApiFootballSquadResponse {
+  readonly team: ApiFootballTeamRef;
+  readonly players: readonly ApiFootballSquadPlayer[];
+}
+
+export interface ApiFootballSquadPlayer {
+  readonly id: number;
+  readonly name: string;
+  readonly age?: number | null;
+  readonly number?: number | null;
+  readonly position?: string | null;
+  readonly photo?: string | null;
+}
+
 export interface ApiFootballStandingResponse {
   readonly league: ApiFootballLeagueRef & {
     readonly standings: readonly (readonly ApiFootballStandingEntry[])[];

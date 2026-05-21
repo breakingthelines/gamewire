@@ -11,6 +11,7 @@ import {
   GetLeaderboardRequestSchema,
   IngestBatchResponseSchema,
   IngestFootballLineupsRequestSchema,
+  IngestFootballSquadListsRequestSchema,
   IngestFootballStandingsRequestSchema,
   IngestGameOccurrencesRequestSchema,
   IngestGamesRequestSchema,
@@ -51,6 +52,9 @@ import {
 } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
 import {
   FootballLineupsSchema,
+  FootballSquadListPlayerSchema,
+  FootballSquadListSchema,
+  FootballSquadListTeamSchema,
   FootballStandingEntrySchema,
   FootballStandingsSchema,
   FootballTeamSheetPlayerSchema,
@@ -87,6 +91,9 @@ describe('published Track E proto handoff', () => {
     expect(methods.ingestGames.input.typeName).toBe('btl.game.v1.IngestGamesRequest');
     expect(methods.ingestFootballLineups.input.typeName).toBe(
       'btl.game.v1.IngestFootballLineupsRequest'
+    );
+    expect(methods.ingestFootballSquadLists.input.typeName).toBe(
+      'btl.game.v1.IngestFootballSquadListsRequest'
     );
     expect(methods.ingestFootballStandings.input.typeName).toBe(
       'btl.game.v1.IngestFootballStandingsRequest'
@@ -171,6 +178,28 @@ describe('published Track E proto handoff', () => {
       metadata,
       lineups: [lineups],
     });
+    const squadList = create(FootballSquadListSchema, {
+      gameId: game.id,
+      teams: [
+        create(FootballSquadListTeamSchema, {
+          teamId: homeTeam.id,
+          teamName: homeTeam.label,
+          providerTeamId: '42',
+          players: [
+            create(FootballSquadListPlayerSchema, {
+              playerId: 'provider:api-football:player:999',
+              playerName: 'Registered Fallback',
+              providerPlayerId: '999',
+              positionCode: 'Midfielder',
+            }),
+          ],
+        }),
+      ],
+    });
+    const ingestSquadLists = create(IngestFootballSquadListsRequestSchema, {
+      metadata,
+      squadLists: [squadList],
+    });
     const ingestStandings = create(IngestFootballStandingsRequestSchema, {
       metadata,
       standings: [standings],
@@ -230,6 +259,7 @@ describe('published Track E proto handoff', () => {
 
     expect(ingestGames.games[0]?.id).toBe('btl_football_game_001');
     expect(ingestLineups.lineups[0]?.teamSheets[0]?.players[0]?.positionCode).toBe('AM');
+    expect(ingestSquadLists.squadLists[0]?.teams[0]?.players[0]?.providerPlayerId).toBe('999');
     expect(ingestStandings.standings[0]?.entries[0]?.points).toBe(23);
     expect(ingestOccurrences.occurrences[0]?.kind).toBe(GameOccurrenceKind.ACTION);
     expect(providerConfig.attribution?.provider).toBe('api-football');

@@ -70,6 +70,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'fixture-detail-fullTime': 6 * 60 * 60,
       'events-post-final': 6 * 60 * 60,
       'lineups-post-confirm': 60 * 60,
+      'squad-list-fallback': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
     });
@@ -395,5 +396,25 @@ describe('ApiFootballIngestionLoop.start', () => {
         now
       )
     ).toEqual(['1', '4']);
+  });
+
+  it('extracts fixture team ids and builds squad-list fallback resources', () => {
+    const fixture = {
+      response: [
+        {
+          teams: {
+            home: { id: 10379, name: 'San Marino U19' },
+            away: { id: 10339, name: 'Latvia U19' },
+          },
+        },
+      ],
+    };
+
+    expect(ingestionTest.teamIdsFromFixtureDetail(fixture)).toEqual(['10379', '10339']);
+    expect(ingestionTest.lineupsMissing({ response: [] })).toBe(true);
+    expect(ingestionTest.squadListResourceId('1538961', '10379')).toBe('1538961:10379');
+    expect(ingestionTest.apiFootballPathFor('squad-list-fallback', '1538961:10379')).toBe(
+      '/players/squads?team=10379'
+    );
   });
 });
