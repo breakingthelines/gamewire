@@ -16,6 +16,7 @@ import {
  *   - SET NX returns null on a duplicate, "OK" on first set.
  *   - SET EX sets an absolute deadline (ms) so TTL can be read back.
  *   - EXISTS returns 1 / 0.
+ *   - DEL removes one or more keys and returns the deleted count.
  *   - TTL returns the remaining seconds, -1 for no-expiry keys, -2 for
  *     missing keys.
  *
@@ -39,6 +40,9 @@ class InMemoryBunRedisMock implements BunRedisEmittedFixtureClient {
     }
     if (upper === 'EXISTS') {
       return this.#exists(args);
+    }
+    if (upper === 'DEL') {
+      return this.#del(args);
     }
     if (upper === 'TTL') {
       return this.#ttl(args);
@@ -104,6 +108,17 @@ class InMemoryBunRedisMock implements BunRedisEmittedFixtureClient {
     return Math.max(0, Math.ceil(remainingMs / 1000));
   }
 
+  #del(args: string[]): number {
+    let count = 0;
+    for (const key of args) {
+      this.#purgeIfExpired(key);
+      if (this.#store.delete(key)) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
   #purgeIfExpired(key: string): void {
     const entry = this.#store.get(key);
     if (!entry || entry.expiresAtMs === null) {
@@ -121,7 +136,7 @@ describe('RedisEmittedFixtureStore', () => {
     const store = new RedisEmittedFixtureStore({ client: redis });
 
     expect(await store.hasEmitted('api-football', '1917')).toBe(false);
-    await store.markEmitted('api-football', '1917');
+    expect(await store.markEmitted('api-football', '1917')).toBe(true);
 
     expect(await store.hasEmitted('api-football', '1917')).toBe(true);
     const expectedKey = `${EMITTED_FIXTURE_REDIS_KEY_PREFIX}api-football:1917`;
@@ -133,14 +148,14 @@ describe('RedisEmittedFixtureStore', () => {
     const redis = new InMemoryBunRedisMock();
     const store = new RedisEmittedFixtureStore({ client: redis });
 
-    await store.markEmitted('api-football', '1917');
+    expect(await store.markEmitted('api-football', '1917')).toBe(true);
     const setCallsBefore = redis.calls.filter((c) => c.command.toUpperCase() === 'SET').length;
 
     // Second markEmitted issues the SET NX (so the publisher's
     // post-publish-call site stays a single round-trip) but Redis
-    // rejects the overwrite under NX. The store treats this as a no-op
-    // by contract.
-    await store.markEmitted('api-football', '1917');
+    // rejects the overwrite under NX. The store returns false so the
+    // caller can skip publishing.
+    expect(await store.markEmitted('api-football', '1917')).toBe(false);
 
     const setCalls = redis.calls.filter((c) => c.command.toUpperCase() === 'SET');
     expect(setCalls.length).toBe(setCallsBefore + 1);
@@ -168,6 +183,19 @@ describe('RedisEmittedFixtureStore', () => {
     clock.mockReturnValue(baseNow + 5 * 24 * 60 * 60 * 1000);
     const ttlLater = await store.ttlSeconds('api-football', '1917');
     expect(ttlLater).toBe(25 * 24 * 60 * 60);
+  });
+
+  it('can clear a reserved marker after a failed publish', async () => {
+    const redis = new InMemoryBunRedisMock();
+    const store = new RedisEmittedFixtureStore({ client: redis });
+
+    expect(await store.markEmitted('api-football', '1917')).toBe(true);
+    expect(await store.hasEmitted('api-football', '1917')).toBe(true);
+
+    await store.clearEmitted('api-football', '1917');
+
+    expect(await store.hasEmitted('api-football', '1917')).toBe(false);
+    expect(await store.markEmitted('api-football', '1917')).toBe(true);
   });
 
   it('process restart sees prior emits when a new store instance points at the same Redis', async () => {

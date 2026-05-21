@@ -211,10 +211,17 @@ export interface EmittedFixtureStore {
   hasEmitted(providerId: string, providerFixtureId: string): Promise<boolean> | boolean;
 
   /**
-   * Mark the fixture as emitted. The store should make this idempotent
-   * — repeated calls for the same key are not an error.
+   * Atomically reserve the fixture for emission. Returns true only for
+   * the caller that acquired the marker; repeated calls for the same key
+   * return false and MUST skip publishing.
    */
-  markEmitted(providerId: string, providerFixtureId: string): Promise<void> | void;
+  markEmitted(providerId: string, providerFixtureId: string): Promise<boolean> | boolean;
+
+  /**
+   * Best-effort rollback used when a caller reserved the marker but failed
+   * before the stream publish completed.
+   */
+  clearEmitted?(providerId: string, providerFixtureId: string): Promise<void> | void;
 
   /**
    * Optional probe used in logs.
@@ -243,10 +250,10 @@ export class InMemoryEmittedFixtureStore implements EmittedFixtureStore {
     return this.#seen.has(this.#key(providerId, providerFixtureId));
   }
 
-  markEmitted(providerId: string, providerFixtureId: string): void {
+  markEmitted(providerId: string, providerFixtureId: string): boolean {
     const key = this.#key(providerId, providerFixtureId);
     if (this.#seen.has(key)) {
-      return;
+      return false;
     }
     this.#seen.add(key);
     if (this.#seen.size > this.#max) {
@@ -255,6 +262,11 @@ export class InMemoryEmittedFixtureStore implements EmittedFixtureStore {
         this.#seen.delete(oldest);
       }
     }
+    return true;
+  }
+
+  clearEmitted(providerId: string, providerFixtureId: string): void {
+    this.#seen.delete(this.#key(providerId, providerFixtureId));
   }
 
   size(): number {
@@ -504,10 +516,10 @@ export class MatchConcludedPublisher {
       return { outcome: 'not_terminal' };
     }
 
-    const already = await Promise.resolve(
-      this.#emitted.hasEmitted(fixture.providerId, fixture.providerFixtureId)
+    const reserved = await Promise.resolve(
+      this.#emitted.markEmitted(fixture.providerId, fixture.providerFixtureId)
     );
-    if (already) {
+    if (!reserved) {
       this.#metrics.recordAlreadyEmitted();
       this.#log({
         event: 'match_concluded_already_emitted',
@@ -541,12 +553,6 @@ export class MatchConcludedPublisher {
         stream: this.#streamName,
         maxLen: this.#maxLen,
       });
-      // Mark AFTER a successful publish so a failed XADD is naturally
-      // retried on the next observation of the same terminal status.
-      // Tests for the emit-once gate rely on this ordering.
-      await Promise.resolve(
-        this.#emitted.markEmitted(fixture.providerId, fixture.providerFixtureId)
-      );
       this.#metrics.recordPublished();
       this.#log({
         event: 'match_concluded_published',
@@ -559,6 +565,9 @@ export class MatchConcludedPublisher {
       });
       return { outcome: 'published', fact };
     } catch (err) {
+      await Promise.resolve(
+        this.#emitted.clearEmitted?.(fixture.providerId, fixture.providerFixtureId)
+      );
       this.#metrics.recordFailed();
       const message = err instanceof Error ? err.message : String(err);
       this.#log({

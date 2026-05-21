@@ -28,14 +28,11 @@
  * # Atomicity
  *
  * `markEmitted` uses `SET key 1 NX EX <ttl>`, a single round-trip that
- * is atomic on the Redis side. `hasEmitted` uses `EXISTS`. The publisher
- * still calls `hasEmitted` before `XADD` and `markEmitted` after a
- * successful `XADD`, so the failure-then-retry path documented in the
- * publisher is preserved exactly. Two replicas that race past
- * `hasEmitted` simultaneously can still both publish; the consumer's
- * `event_id` dedupe catches that case. This impl removes the
- * worker-restart double-emit, which is the only loss we can fix
- * without changing the publisher's surface.
+ * is atomic on the Redis side. The publisher reserves the marker before
+ * `XADD`, so concurrent workers or concurrent workload lanes cannot all
+ * publish the same terminal fixture. If the publish fails before XADD
+ * completes, the publisher calls `clearEmitted` as a best-effort rollback
+ * so the next observation can retry.
  */
 
 import type { EmittedFixtureStore } from './match-concluded-publisher.js';
@@ -103,19 +100,20 @@ export class RedisEmittedFixtureStore implements EmittedFixtureStore {
     return toInteger(raw) === 1;
   }
 
-  async markEmitted(providerId: string, providerFixtureId: string): Promise<void> {
+  async markEmitted(providerId: string, providerFixtureId: string): Promise<boolean> {
     // SET NX is atomic: returns OK on first set, null/nil on duplicate.
-    // We don't branch on the response because the publisher only calls
-    // markEmitted after a successful XADD; the worst case is a no-op
-    // overwrite attempt that Redis rejects via NX. Keeping the method
-    // void-returning matches the in-memory store's contract exactly.
-    await this.#client.send('SET', [
+    const raw = await this.#client.send('SET', [
       this.#key(providerId, providerFixtureId),
       '1',
       'NX',
       'EX',
       String(this.#ttlSeconds),
     ]);
+    return raw === 'OK';
+  }
+
+  async clearEmitted(providerId: string, providerFixtureId: string): Promise<void> {
+    await this.#client.send('DEL', [this.#key(providerId, providerFixtureId)]);
   }
 
   /**

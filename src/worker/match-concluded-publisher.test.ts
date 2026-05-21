@@ -158,7 +158,7 @@ describe('InMemoryEmittedFixtureStore', () => {
   it('returns false until markEmitted is called, then true', () => {
     const store = new InMemoryEmittedFixtureStore();
     expect(store.hasEmitted('api-football', '1917')).toBe(false);
-    store.markEmitted('api-football', '1917');
+    expect(store.markEmitted('api-football', '1917')).toBe(true);
     expect(store.hasEmitted('api-football', '1917')).toBe(true);
   });
 
@@ -171,10 +171,21 @@ describe('InMemoryEmittedFixtureStore', () => {
 
   it('is idempotent on repeated markEmitted calls', () => {
     const store = new InMemoryEmittedFixtureStore();
-    store.markEmitted('api-football', '1917');
-    store.markEmitted('api-football', '1917');
-    store.markEmitted('api-football', '1917');
+    expect(store.markEmitted('api-football', '1917')).toBe(true);
+    expect(store.markEmitted('api-football', '1917')).toBe(false);
+    expect(store.markEmitted('api-football', '1917')).toBe(false);
     expect(store.size()).toBe(1);
+  });
+
+  it('can clear a reserved marker after a failed publish', () => {
+    const store = new InMemoryEmittedFixtureStore();
+    expect(store.markEmitted('api-football', '1917')).toBe(true);
+    expect(store.hasEmitted('api-football', '1917')).toBe(true);
+
+    store.clearEmitted('api-football', '1917');
+
+    expect(store.hasEmitted('api-football', '1917')).toBe(false);
+    expect(store.markEmitted('api-football', '1917')).toBe(true);
   });
 
   it('evicts oldest entry when bound is exceeded', () => {
@@ -321,6 +332,34 @@ describe('MatchConcludedPublisher.observe', () => {
       alreadyEmitted: 1,
       notTerminal: 0,
       failed: 0,
+    });
+  });
+
+  it('emits once when concurrent workload lanes observe the same terminal fixture', async () => {
+    const stream = new InMemoryMatchConcludedStreamClient();
+    const metrics = new MatchConcludedPublisherMetrics();
+    const publisher = new MatchConcludedPublisher({
+      stream,
+      emitted: new InMemoryEmittedFixtureStore(),
+      metrics,
+      logger: noopLogger,
+    });
+
+    const results = await Promise.all([
+      publisher.observe(fixtureObservation({ providerStatus: 'FT' })),
+      publisher.observe(fixtureObservation({ providerStatus: 'FT' })),
+      publisher.observe(fixtureObservation({ providerStatus: 'FT' })),
+    ]);
+
+    expect(results.map((result) => result.outcome).sort()).toEqual([
+      'already_emitted',
+      'already_emitted',
+      'published',
+    ]);
+    expect(stream.published).toHaveLength(1);
+    expect(metrics.snapshot()).toMatchObject({
+      published: 1,
+      alreadyEmitted: 2,
     });
   });
 
