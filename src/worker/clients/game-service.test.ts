@@ -1,5 +1,3 @@
-// @ts-expect-error Bun provides this test helper at runtime.
-import { mock } from 'bun:test';
 import { create } from '@bufbuild/protobuf';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -11,15 +9,17 @@ import {
   LookupGameByFixtureResponseSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
-const createClientMock = vi.fn();
-const createGrpcTransportMock = vi.fn();
-
-mock.module('@connectrpc/connect', () => ({
-  createClient: createClientMock,
+const mocks = vi.hoisted(() => ({
+  createClient: vi.fn(),
+  createGrpcTransport: vi.fn(),
 }));
 
-mock.module('@connectrpc/connect-node', () => ({
-  createGrpcTransport: createGrpcTransportMock,
+vi.mock('@connectrpc/connect', () => ({
+  createClient: mocks.createClient,
+}));
+
+vi.mock('@connectrpc/connect-node', () => ({
+  createGrpcTransport: mocks.createGrpcTransport,
 }));
 
 describe('createFetchFootballGameLookupClient', () => {
@@ -30,8 +30,8 @@ describe('createFetchFootballGameLookupClient', () => {
       .fn()
       .mockResolvedValue(create(LookupGameByFixtureResponseSchema, { found: true }));
 
-    createGrpcTransportMock.mockReturnValue(transport);
-    createClientMock.mockReturnValue({
+    mocks.createGrpcTransport.mockReturnValue(transport);
+    mocks.createClient.mockReturnValue({
       ingestGames,
       lookupGameByFixture,
     });
@@ -51,10 +51,10 @@ describe('createFetchFootballGameLookupClient', () => {
     await client.ingestGames(ingestRequest);
     await client.lookupGameByFixture(lookupRequest);
 
-    expect(createGrpcTransportMock).toHaveBeenCalledWith({
+    expect(mocks.createGrpcTransport).toHaveBeenCalledWith({
       baseUrl: 'http://game-service:50059',
     });
-    expect(createClientMock).toHaveBeenCalledWith(GameService, transport);
+    expect(mocks.createClient).toHaveBeenCalledWith(GameService, transport);
     expect(ingestGames).toHaveBeenCalledWith(ingestRequest, { timeoutMs: 1234 });
     expect(lookupGameByFixture).toHaveBeenCalledWith(lookupRequest, { timeoutMs: 1234 });
   });
