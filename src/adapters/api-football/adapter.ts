@@ -31,6 +31,7 @@ import {
   GameTimelinePayloadSchema,
   OccurrenceRevisionState,
   ParticipantScoreSchema,
+  ProviderEntitySnapshotSchema,
   ProviderRefSchema,
   ProviderAttributionSchema,
   ResolutionState,
@@ -59,6 +60,7 @@ import {
   API_FOOTBALL_PROVIDER_ID,
   type ApiFootballEnvelope,
   type ApiFootballEventResponse,
+  type ApiFootballLeagueRef,
   type ApiFootballCompetitionPlan,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
@@ -533,7 +535,8 @@ function liveGame(
     String(response.league.id),
     SubjectType.COMPETITION,
     response.league.name,
-    options.entityResolutions
+    options.entityResolutions,
+    competitionSnapshot(response.league)
   );
   const season = resolvedSubject(
     'season',
@@ -541,7 +544,8 @@ function liveGame(
     apiFootballSeasonProviderId(response.league.id, response.league.season),
     SubjectType.SEASON,
     `${response.league.season} ${response.league.name}`,
-    options.entityResolutions
+    options.entityResolutions,
+    seasonSnapshot(response.league)
   );
   const home = resolvedSubject(
     'team',
@@ -549,7 +553,8 @@ function liveGame(
     String(response.teams.home.id),
     SubjectType.TEAM,
     response.teams.home.name,
-    options.entityResolutions
+    options.entityResolutions,
+    teamSnapshot(response.teams.home)
   );
   const away = resolvedSubject(
     'team',
@@ -557,7 +562,8 @@ function liveGame(
     String(response.teams.away.id),
     SubjectType.TEAM,
     response.teams.away.name,
-    options.entityResolutions
+    options.entityResolutions,
+    teamSnapshot(response.teams.away)
   );
 
   const homeGoals = nullableNumber(response.goals?.home);
@@ -896,13 +902,14 @@ function providerAttribution(providerId: string) {
   });
 }
 
-function subject(id: string, type: SubjectType, label: string, slug: string) {
+function subject(id: string, type: SubjectType, label: string, slug: string, imageUrl = '') {
   return create(SubjectRefSchema, {
     id,
     type,
     sport: Sport.FOOTBALL,
     label,
     slug,
+    imageUrl,
   });
 }
 
@@ -912,7 +919,8 @@ function resolvedSubject(
   providerIdValue: string,
   entityType: SubjectType,
   displayLabel: string,
-  resolutions: ApiFootballEntityResolutionMap | undefined
+  resolutions: ApiFootballEntityResolutionMap | undefined,
+  providerSnapshot?: ReturnType<typeof providerEntitySnapshot>
 ) {
   const resolved = resolvedEntity(kind, providerIdValue, displayLabel, resolutions);
   const providerResourceType = providerResourceTypeFor(kind);
@@ -922,7 +930,8 @@ function resolvedSubject(
     providerResourceType,
     entityType,
     resolved?.label ?? displayLabel,
-    resolved
+    resolved,
+    providerSnapshot
   );
   return {
     subject: resolved
@@ -930,7 +939,8 @@ function resolvedSubject(
           resolved.entityId,
           entityType,
           resolved.label ?? displayLabel,
-          resolved.slug ?? slugify(resolved.label ?? displayLabel)
+          resolved.slug ?? slugify(resolved.label ?? displayLabel),
+          providerSnapshot?.imageUrl
         )
       : undefined,
     resolutionRef,
@@ -977,7 +987,8 @@ function entityResolutionRef(
   providerResourceType: string,
   entityType: SubjectType,
   displayLabel: string,
-  resolved: ApiFootballResolvedEntity | undefined
+  resolved: ApiFootballResolvedEntity | undefined,
+  providerSnapshot?: ReturnType<typeof providerEntitySnapshot>
 ) {
   return create(EntityResolutionRefSchema, {
     entityId: resolved?.entityId ?? '',
@@ -989,7 +1000,89 @@ function entityResolutionRef(
       providerResourceType,
     }),
     displayLabel: resolved?.label ?? displayLabel,
+    providerSnapshot,
   });
+}
+
+function competitionSnapshot(league: ApiFootballLeagueRef) {
+  return providerEntitySnapshot({
+    label: league.name,
+    slug: slugify(league.name),
+    imageUrl: stringOrEmpty(league.logo),
+    country: stringOrEmpty(league.country),
+    attributes: {
+      provider_league_id: String(league.id),
+      season: String(league.season),
+      round: stringOrEmpty(league.round),
+      standings: league.standings === undefined ? '' : String(league.standings),
+    },
+  });
+}
+
+function seasonSnapshot(league: ApiFootballLeagueRef) {
+  return providerEntitySnapshot({
+    label: `${league.season} ${league.name}`,
+    slug: slugify(`${league.season} ${league.name}`),
+    imageUrl: stringOrEmpty(league.logo),
+    country: stringOrEmpty(league.country),
+    attributes: {
+      provider_league_id: String(league.id),
+      season: String(league.season),
+      round: stringOrEmpty(league.round),
+    },
+  });
+}
+
+function teamSnapshot(team: ApiFootballTeamRef) {
+  return providerEntitySnapshot({
+    label: team.name,
+    slug: slugify(team.name),
+    imageUrl: stringOrEmpty(team.logo),
+    country: stringOrEmpty(team.country),
+    shortName: stringOrEmpty(team.code),
+    attributes: {
+      provider_team_id: String(team.id),
+      winner: team.winner === undefined || team.winner === null ? '' : String(team.winner),
+    },
+  });
+}
+
+function providerEntitySnapshot(input: {
+  readonly label?: string;
+  readonly slug?: string;
+  readonly imageUrl?: string;
+  readonly country?: string;
+  readonly shortName?: string;
+  readonly providerUrl?: string;
+  readonly attributes?: Readonly<Record<string, string>>;
+}) {
+  const attributes = Object.fromEntries(
+    Object.entries(input.attributes ?? {}).filter(([, value]) => value.trim() !== '')
+  );
+  const hasValue =
+    stringOrEmpty(input.label) !== '' ||
+    stringOrEmpty(input.slug) !== '' ||
+    stringOrEmpty(input.imageUrl) !== '' ||
+    stringOrEmpty(input.country) !== '' ||
+    stringOrEmpty(input.shortName) !== '' ||
+    stringOrEmpty(input.providerUrl) !== '' ||
+    Object.keys(attributes).length > 0;
+  if (!hasValue) {
+    return undefined;
+  }
+  return create(ProviderEntitySnapshotSchema, {
+    label: stringOrEmpty(input.label),
+    slug: stringOrEmpty(input.slug),
+    imageUrl: stringOrEmpty(input.imageUrl),
+    country: stringOrEmpty(input.country),
+    shortName: stringOrEmpty(input.shortName),
+    providerUrl: stringOrEmpty(input.providerUrl),
+    attributes,
+  });
+}
+
+function stringOrEmpty(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 function actorFromProviderRef(
@@ -1008,7 +1101,8 @@ function actorFromProviderRef(
     providerResourceTypeFor(kind),
     entityType,
     ref.name,
-    resolvedEntity(kind, String(ref.id), ref.name, resolutions)
+    resolvedEntity(kind, String(ref.id), ref.name, resolutions),
+    kind === 'team' ? teamSnapshot(ref) : providerEntitySnapshot({ label: ref.name })
   );
 }
 

@@ -101,8 +101,20 @@ describe('API-Football adapter', () => {
               round: 'Regular Season - 1',
             },
             teams: {
-              home: { id: 42, name: 'Arsenal' },
-              away: { id: 49, name: 'Chelsea' },
+              home: {
+                id: 42,
+                name: 'Arsenal',
+                code: 'ARS',
+                country: 'England',
+                logo: 'https://media.api-sports.io/football/teams/42.png',
+              },
+              away: {
+                id: 49,
+                name: 'Chelsea',
+                code: 'CHE',
+                country: 'England',
+                logo: 'https://media.api-sports.io/football/teams/49.png',
+              },
             },
             goals: { home: 2, away: 1 },
           },
@@ -120,6 +132,12 @@ describe('API-Football adapter', () => {
     expect(request.games[0]?.resolutionRef?.providerRef?.providerId).toBe('1917');
     expect(request.games[0]?.participants[0]?.subject).toBeUndefined();
     expect(request.games[0]?.participants[0]?.resolutionRef?.providerRef?.providerId).toBe('42');
+    expect(request.games[0]?.participants[0]?.resolutionRef?.providerSnapshot?.imageUrl).toBe(
+      'https://media.api-sports.io/football/teams/42.png'
+    );
+    expect(request.games[0]?.participants[0]?.resolutionRef?.providerSnapshot?.shortName).toBe(
+      'ARS'
+    );
     expect(request.games[0]?.score?.display).toBe('2-1');
     expect(request.games[0]?.score?.scores[0]?.participantId).toBe('provider:api-football:team:42');
     expect(request.games[0]?.sportPayload.case).toBe('football');
@@ -160,8 +178,16 @@ describe('API-Football adapter', () => {
               round: 'Regular Season - 1',
             },
             teams: {
-              home: { id: 42, name: 'Arsenal' },
-              away: { id: 49, name: 'Chelsea' },
+              home: {
+                id: 42,
+                name: 'Arsenal',
+                logo: 'https://media.api-sports.io/football/teams/42.png',
+              },
+              away: {
+                id: 49,
+                name: 'Chelsea',
+                logo: 'https://media.api-sports.io/football/teams/49.png',
+              },
             },
             goals: { home: 2, away: 1 },
           },
@@ -173,9 +199,18 @@ describe('API-Football adapter', () => {
     expect(game?.competition?.id).toBe('btl_football_competition_lb3d230cb');
     expect(game?.season?.id).toBe('btl_football_season_sdc8762eb');
     expect(game?.participants[0]?.subject?.id).toBe('btl_football_team_t8596499a');
+    expect(game?.participants[0]?.subject?.imageUrl).toBe(
+      'https://media.api-sports.io/football/teams/42.png'
+    );
     expect(game?.participants[0]?.resolutionRef?.entityId).toBe('btl_football_team_t8596499a');
+    expect(game?.participants[0]?.resolutionRef?.providerSnapshot?.imageUrl).toBe(
+      'https://media.api-sports.io/football/teams/42.png'
+    );
     expect(game?.participants[1]?.subject).toBeUndefined();
     expect(game?.participants[1]?.resolutionRef?.providerRef?.providerId).toBe('49');
+    expect(game?.participants[1]?.resolutionRef?.providerSnapshot?.imageUrl).toBe(
+      'https://media.api-sports.io/football/teams/49.png'
+    );
   });
 
   it('normalizes API-Football fixture events into timeline occurrences', () => {

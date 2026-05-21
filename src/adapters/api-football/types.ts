@@ -38,12 +38,19 @@ export interface ApiFootballLeagueRef {
   readonly name: string;
   readonly season: number;
   readonly country?: string;
+  readonly logo?: string | null;
+  readonly flag?: string | null;
   readonly round?: string;
+  readonly standings?: boolean;
 }
 
 export interface ApiFootballTeamRef {
   readonly id: number;
   readonly name: string;
+  readonly code?: string | null;
+  readonly country?: string | null;
+  readonly logo?: string | null;
+  readonly winner?: boolean | null;
 }
 
 export interface ApiFootballFixtureResponse {
