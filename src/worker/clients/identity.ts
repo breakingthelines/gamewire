@@ -1,21 +1,18 @@
-import { fromBinary, toBinary } from '@bufbuild/protobuf';
+import { fromJsonString } from '@bufbuild/protobuf';
 
+import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
 import {
   type LookupRequest,
   type LookupResponse,
-  LookupRequestSchema,
   LookupResponseSchema,
   type ResolveRequest,
   type ResolveResponse,
-  ResolveRequestSchema,
   ResolveResponseSchema,
   type SearchRequest,
   type SearchResponse,
-  SearchRequestSchema,
   SearchResponseSchema,
   type StatsRequest,
   type StatsResponse,
-  StatsRequestSchema,
   StatsResponseSchema,
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
@@ -50,24 +47,19 @@ export const createFootballIdentityLookupBoundary = (
  */
 export type IdentityFetch = (
   input: string | URL,
-  init?: { method: string; headers: Record<string, string>; body: Uint8Array }
+  init?: { method: string; headers: Record<string, string>; signal?: AbortSignal }
 ) => Promise<{
   ok: boolean;
   status: number;
-  arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
 }>;
 
 /**
- * Connect-protocol unary endpoint shape:
- *   `<baseUrl>/<package>.<service>/<method>`
- * Always POST with `application/proto` content type carrying the binary
- * request body. The identity-server is the only consumer here so we keep
- * the transport private to this module rather than pulling in
- * `@connectrpc/connect-node` (not in dependencies).
+ * The deployed identity-server exposes its read-only surface over simple
+ * HTTP GET endpoints that return protobuf JSON. Do not use Connect here:
+ * the gRPC server is exposed separately, while the staging worker is wired
+ * to the HTTP port.
  */
-const IDENTITY_SERVICE_PATH = '/btl.identity.v1.IdentityService';
-
 export interface FetchIdentityClientOptions {
   /** Base URL of the identity-server, e.g. `http://identity:9090`. */
   readonly baseUrl: string;
@@ -80,9 +72,10 @@ export interface FetchIdentityClientOptions {
 const DEFAULT_IDENTITY_TIMEOUT_MS = 5_000;
 
 /**
- * Build a `FootballIdentityLookupClient` backed by native fetch + Connect
- * protocol unary calls. The bridge exercises `resolve`; the other methods are
- * provided so the boundary stays complete for browser/server callers.
+ * Build a `FootballIdentityLookupClient` backed by native fetch + the
+ * identity-server HTTP JSON endpoints. The bridge exercises `resolve`; the
+ * other methods are provided so the boundary stays complete for browser/server
+ * callers.
  */
 export const createFetchFootballIdentityLookupClient = (
   options: FetchIdentityClientOptions
@@ -91,26 +84,23 @@ export const createFetchFootballIdentityLookupClient = (
   const timeoutMs = options.timeoutMs ?? DEFAULT_IDENTITY_TIMEOUT_MS;
   const baseUrl = stripTrailingSlash(options.baseUrl);
 
-  const callUnary = async <TReq, TRes>(
-    method: string,
-    request: TReq,
-    requestSchema: Parameters<typeof toBinary>[0],
-    responseSchema: Parameters<typeof fromBinary>[0]
+  const callJson = async <TRes>(
+    path: string,
+    params: URLSearchParams,
+    responseSchema: Parameters<typeof fromJsonString>[0]
   ): Promise<TRes> => {
-    const url = `${baseUrl}${IDENTITY_SERVICE_PATH}/${method}`;
-    const body = toBinary(requestSchema, request as never);
+    const query = params.toString();
+    const url = `${baseUrl}${path}${query ? `?${query}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response: Awaited<ReturnType<IdentityFetch>>;
     try {
       response = await fetchFn(url, {
-        method: 'POST',
+        method: 'GET',
         headers: {
-          'content-type': 'application/proto',
-          accept: 'application/proto',
-          'connect-protocol-version': '1',
+          accept: 'application/json',
         },
-        body,
+        signal: controller.signal,
       });
     } finally {
       clearTimeout(timer);
@@ -118,46 +108,41 @@ export const createFetchFootballIdentityLookupClient = (
     if (!response.ok) {
       const text = await safeReadText(response);
       throw new Error(
-        `identity-server ${method} failed: status=${response.status} body=${truncate(text, 200)}`
+        `identity-server ${path} failed: status=${response.status} body=${truncate(text, 200)}`
       );
     }
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    return fromBinary(responseSchema, bytes) as TRes;
+    const text = await response.text();
+    return fromJsonString(responseSchema, text, { ignoreUnknownFields: true }) as TRes;
   };
 
   return {
     lookup(request: LookupRequest): Promise<LookupResponse> {
-      return callUnary<LookupRequest, LookupResponse>(
-        'Lookup',
-        request,
-        LookupRequestSchema,
-        LookupResponseSchema
-      );
+      const params = new URLSearchParams({ id: request.id });
+      appendEntityType(params, request.entityType);
+      return callJson<LookupResponse>('/v1/lookup', params, LookupResponseSchema);
     },
     resolve(request: ResolveRequest): Promise<ResolveResponse> {
-      return callUnary<ResolveRequest, ResolveResponse>(
-        'Resolve',
-        request,
-        ResolveRequestSchema,
-        ResolveResponseSchema
-      );
+      const params = new URLSearchParams({
+        provider: request.provider,
+        provider_id: request.providerId,
+      });
+      appendEntityType(params, request.entityType);
+      return callJson<ResolveResponse>('/v1/resolve', params, ResolveResponseSchema);
     },
     search(request: SearchRequest): Promise<SearchResponse> {
-      return callUnary<SearchRequest, SearchResponse>(
-        'Search',
-        request,
-        SearchRequestSchema,
-        SearchResponseSchema
-      );
+      const params = new URLSearchParams({ q: request.query });
+      appendEntityType(params, request.entityType);
+      if (request.limit > 0) {
+        params.set('limit', String(request.limit));
+      }
+      return callJson<SearchResponse>('/v1/search', params, SearchResponseSchema);
     },
     stats(request: StatsRequest): Promise<StatsResponse> {
-      return callUnary<StatsRequest, StatsResponse>(
-        'Stats',
-        request,
-        StatsRequestSchema,
-        StatsResponseSchema
-      );
+      const params = new URLSearchParams();
+      if (request.sport) {
+        params.set('sport', request.sport);
+      }
+      return callJson<StatsResponse>('/v1/stats', params, StatsResponseSchema);
     },
   };
 };
@@ -180,3 +165,33 @@ const safeReadText = async (response: { text(): Promise<string> }): Promise<stri
 
 const truncate = (value: string, max: number): string =>
   value.length <= max ? value : `${value.slice(0, max)}…`;
+
+const appendEntityType = (params: URLSearchParams, entityType: EntityType): void => {
+  const value = entityTypeParam(entityType);
+  if (value) {
+    params.set('type', value);
+  }
+};
+
+const entityTypeParam = (entityType: EntityType): string => {
+  switch (entityType) {
+    case EntityType.PLAYER:
+      return 'player';
+    case EntityType.TEAM:
+      return 'team';
+    case EntityType.COACH:
+      return 'coach';
+    case EntityType.COMPETITION:
+      return 'competition';
+    case EntityType.SEASON:
+      return 'season';
+    case EntityType.VENUE:
+      return 'venue';
+    case EntityType.OFFICIAL:
+      return 'official';
+    case EntityType.GAME:
+      return 'game';
+    default:
+      return '';
+  }
+};
