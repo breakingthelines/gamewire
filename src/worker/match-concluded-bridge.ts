@@ -7,18 +7,19 @@
  * adapter between them:
  *
  *   1. Decode an API-Football `/fixtures?id=<id>` response envelope.
- *   2. Resolve the provider fixture id → BTL canonical `game_id` via
+ *   2. Resolve provider teams/players/competition/seasons through identity
+ *      where possible, preserving unresolved provider refs when identity misses.
+ *   3. Resolve the provider fixture id → BTL canonical `game_id` via
  *      `game-service.LookupGameByFixture` (the crosswalk lives in
  *      `provider_game_mappings`, populated by `IngestGames`).
- *   3. Hand the resulting envelope to `publisher.observe(fixture)`.
+ *   4. Hand the resulting envelope to `publisher.observe(fixture)`.
  *
  * Why game-service and not identity-server: identity-server runs on a
  * read-only SQLite snapshot (release-asset distribution) and does not
  * carry fixture-level crosswalks; its `Resolve(GAME, ...)` calls will
  * always miss. The live crosswalk is on game-service. The
- * identity-client is still wired at boot (and elsewhere) for future
- * paths (player crosswalks, team lookups) — only the GAME read path
- * has been swapped here.
+ * identity-client is used for provider participant/entity resolution, but
+ * only the GAME read path resolves through game-service.
  *
  * The bridge NEVER throws — every failure path logs a structured event
  * and returns. Back-pressure on ingest would defeat the worker's call
@@ -39,8 +40,25 @@ import {
   type LookupGameByFixtureResponse,
   LookupGameByFixtureRequestSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
+import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
+import {
+  type ResolveResponse,
+  ResolveRequestSchema,
+} from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
-import { apiFootballIngestGamesRequestFromFixtures } from '../adapters/api-football/index.js';
+import {
+  apiFootballIngestGamesRequestFromFixtures,
+  apiFootballIngestLineupsRequestFromLineups,
+  apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballSeasonProviderId,
+  type ApiFootballEntityKind,
+  type ApiFootballEntityResolutionMap,
+  type ApiFootballResolvedEntity,
+  type ApiFootballEventResponse,
+  type ApiFootballFixtureResponse,
+  type ApiFootballLineupResponse,
+  type ApiFootballTeamRef,
+} from '../adapters/api-football/index.js';
 import type { FootballGameBridgeClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import type { IngestionWorkload } from './ingestion.js';
@@ -52,7 +70,7 @@ import type {
 
 /**
  * Callback shape consumed by the ingestion loop. Fired after every
- * successful `fetchWorkload` for a fixture-detail workload that returned
+ * successful `fetchWorkload` for a fixture-scoped workload that returned
  * either freshly-fetched or cached JSON.
  */
 export type OnFixtureFetched = (input: {
@@ -74,6 +92,7 @@ export interface MatchConcludedBridgeLogEntry {
   readonly reason?: string;
   readonly acceptedCount?: number;
   readonly updatedCount?: number;
+  readonly skippedCount?: number;
 }
 
 export type MatchConcludedBridgeLogger = (entry: MatchConcludedBridgeLogEntry) => void;
@@ -84,15 +103,17 @@ const defaultBridgeLogger: MatchConcludedBridgeLogger = (entry) => {
 
 /**
  * Workloads whose response payload is a single-fixture envelope. The
- * bridge ignores any other workload to keep the contract obvious — a
- * lineups or fixtures-list payload has a different shape and must not
- * accidentally trigger an observation.
+ * match-concluded observation ignores any other workload to keep that contract
+ * obvious. Event and lineup workloads are handled by separate ingest branches.
  */
 const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   'fixture-detail-preKO',
   'fixture-detail-live',
   'fixture-detail-fullTime',
 ]);
+
+const EVENT_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['events-post-final']);
+const LINEUP_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['lineups-post-confirm']);
 
 export const isFixtureDetailWorkload = (workload: IngestionWorkload): boolean =>
   FIXTURE_DETAIL_WORKLOADS.has(workload);
@@ -107,12 +128,9 @@ export interface MatchConcludedBridgeOptions {
    */
   readonly gameService: FootballGameBridgeClient;
   /**
-   * Identity-server lookup boundary. NOT used on the GAME path (which
-   * goes through `gameService` above), but kept on the bridge options
-   * so future PLAYER / TEAM lookup paths can land here without a
-   * second plumbing pass. Today this is a write-once boundary that the
-   * bridge stores for downstream callers; the field stays required so
-   * the boot wiring keeps the client in scope.
+   * Identity-server lookup boundary for provider teams, players,
+   * competitions, and seasons. GAME ids still resolve through
+   * `gameService.LookupGameByFixture` above.
    */
   readonly identity: FootballIdentityLookupClient;
   /** Provider id used both for the lookup + observation envelope. */
@@ -135,14 +153,38 @@ export const createMatchConcludedBridge = (
   const clock = options.clock ?? Date.now;
   const publisher = options.publisher;
   const gameService = options.gameService;
-  // Identity client deliberately retained on the bridge options for
-  // future PLAYER / TEAM crosswalk paths. The GAME path now resolves
-  // through game-service.LookupGameByFixture; identity-server's
-  // read-only snapshot cannot serve fixture-level mappings.
-  void options.identity;
+  const identity = options.identity;
   const providerId = options.providerId;
 
   return async ({ workload, resourceId, data }) => {
+    if (EVENT_WORKLOADS.has(workload)) {
+      await ingestEvents({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+      });
+      return;
+    }
+
+    if (LINEUP_WORKLOADS.has(workload)) {
+      await ingestLineups({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+      });
+      return;
+    }
+
     if (!FIXTURE_DETAIL_WORKLOADS.has(workload)) {
       return;
     }
@@ -159,12 +201,19 @@ export const createMatchConcludedBridge = (
     }
 
     const { providerFixtureId, providerStatus, concludedAtMs } = decoded;
+    const entityResolutions = await resolveFixtureEntities(identity, providerId, data, log, {
+      workload,
+      resourceId,
+      providerFixtureId,
+      providerStatus,
+    });
 
     const ingestRequest = apiFootballIngestGamesRequestFromFixtures({
       provider: providerId,
       replayId: `live:${workload}:${resourceId}`,
       resourceId,
       envelope: data,
+      entityResolutions,
       fetchedAtMs: clock(),
     });
     if (ingestRequest.games.length > 0) {
@@ -263,6 +312,196 @@ export const createMatchConcludedBridge = (
   };
 };
 
+interface ProviderResourceBridgeInput {
+  readonly workload: IngestionWorkload;
+  readonly resourceId: string;
+  readonly data: unknown;
+  readonly providerId: string;
+  readonly gameService: FootballGameBridgeClient;
+  readonly identity: FootballIdentityLookupClient;
+  readonly log: MatchConcludedBridgeLogger;
+  readonly clock: () => number;
+}
+
+const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const events = decodeEventEnvelope(input.data);
+  if (events.length === 0) {
+    input.log({
+      event: 'bridge_events_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'empty_provider_response',
+    });
+    return;
+  }
+  const gameId = await lookupGameId(input);
+  if (!gameId) {
+    return;
+  }
+  const entityResolutions = await resolveEventEntities(
+    input.identity,
+    input.providerId,
+    events,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+    }
+  );
+  const request = apiFootballIngestOccurrencesRequestFromEvents({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    gameId,
+    envelope: input.data,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.occurrences.length === 0) {
+    input.log({
+      event: 'bridge_events_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_normalized_occurrences',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestGameOccurrences(request);
+    input.log({
+      event: 'bridge_events_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_events_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+const ingestLineups = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const lineups = decodeLineupEnvelope(input.data);
+  if (lineups.length === 0) {
+    input.log({
+      event: 'bridge_lineups_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'empty_provider_response',
+    });
+    return;
+  }
+  const gameId = await lookupGameId(input);
+  if (!gameId) {
+    return;
+  }
+  const entityResolutions = await resolveLineupEntities(
+    input.identity,
+    input.providerId,
+    lineups,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+    }
+  );
+  const request = apiFootballIngestLineupsRequestFromLineups({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    gameId,
+    envelope: input.data,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.lineups.length === 0) {
+    input.log({
+      event: 'bridge_lineups_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_normalized_lineups',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestFootballLineups(request);
+    input.log({
+      event: 'bridge_lineups_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_lineups_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+const lookupGameId = async (input: ProviderResourceBridgeInput): Promise<string> => {
+  let lookupResponse: LookupGameByFixtureResponse;
+  try {
+    lookupResponse = await input.gameService.lookupGameByFixture(
+      create(LookupGameByFixtureRequestSchema, {
+        provider: input.providerId,
+        providerFixtureId: input.resourceId,
+      })
+    );
+  } catch (err) {
+    input.log({
+      event: 'bridge_game_lookup_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return '';
+  }
+  if (!lookupResponse.found || !lookupResponse.gameId) {
+    input.log({
+      event: 'bridge_game_not_found',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+    });
+    return '';
+  }
+  return lookupResponse.gameId;
+};
+
 interface DecodedFixture {
   readonly providerFixtureId: string;
   readonly providerStatus: string;
@@ -318,6 +557,272 @@ export const decodeFixtureEnvelope = (data: unknown): DecodedFixture | null => {
     providerStatus: shortRaw,
     concludedAtMs,
   };
+};
+
+const decodeFixtureResponses = (data: unknown): readonly ApiFootballFixtureResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballFixtureResponse => {
+    if (!isRecord(item) || !isRecord(item.fixture) || !isRecord(item.league)) {
+      return false;
+    }
+    const teams = item.teams;
+    return isRecord(teams) && isRecord(teams.home) && isRecord(teams.away);
+  });
+};
+
+const decodeEventEnvelope = (data: unknown): readonly ApiFootballEventResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballEventResponse => {
+    if (!isRecord(item) || !isRecord(item.time) || !isRecord(item.team)) {
+      return false;
+    }
+    return typeof item.type === 'string' && typeof item.detail === 'string';
+  });
+};
+
+const decodeLineupEnvelope = (data: unknown): readonly ApiFootballLineupResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballLineupResponse => {
+    if (!isRecord(item) || !isRecord(item.team)) {
+      return false;
+    }
+    return (
+      typeof item.formation === 'string' &&
+      Array.isArray(item.startXI) &&
+      Array.isArray(item.substitutes)
+    );
+  });
+};
+
+const responseArray = (data: unknown): readonly unknown[] => {
+  if (!isRecord(data)) {
+    return [];
+  }
+  const response = data.response;
+  return Array.isArray(response) ? response : [];
+};
+
+interface ResolutionLogContext {
+  readonly workload: IngestionWorkload;
+  readonly resourceId: string;
+  readonly providerFixtureId?: string;
+  readonly providerStatus?: string;
+}
+
+const resolveFixtureEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  data: unknown,
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  const fixture = decodeFixtureResponses(data)[0];
+  if (!fixture) {
+    return resolutions;
+  }
+  await addResolvedEntity({
+    identity,
+    providerId,
+    resolutions,
+    kind: 'competition',
+    entityType: EntityType.COMPETITION,
+    providerIds: [String(fixture.league.id)],
+    label: fixture.league.name,
+    log,
+    context,
+  });
+  await addResolvedEntity({
+    identity,
+    providerId,
+    resolutions,
+    kind: 'season',
+    entityType: EntityType.SEASON,
+    providerIds: [
+      apiFootballSeasonProviderId(fixture.league.id, fixture.league.season),
+      String(fixture.league.season),
+    ],
+    label: `${fixture.league.season} ${fixture.league.name}`,
+    log,
+    context,
+  });
+  await addResolvedTeam(identity, providerId, resolutions, fixture.teams.home, log, context);
+  await addResolvedTeam(identity, providerId, resolutions, fixture.teams.away, log, context);
+  return resolutions;
+};
+
+const resolveEventEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  events: readonly ApiFootballEventResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const event of events) {
+    await addResolvedTeam(identity, providerId, resolutions, event.team, log, context);
+    await addResolvedPlayer(identity, providerId, resolutions, event.player, log, context);
+    await addResolvedPlayer(identity, providerId, resolutions, event.assist, log, context);
+  }
+  return resolutions;
+};
+
+const resolveLineupEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  lineups: readonly ApiFootballLineupResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const lineup of lineups) {
+    await addResolvedTeam(identity, providerId, resolutions, lineup.team, log, context);
+    for (const entry of [...lineup.startXI, ...lineup.substitutes]) {
+      await addResolvedPlayer(identity, providerId, resolutions, entry.player, log, context);
+    }
+  }
+  return resolutions;
+};
+
+const addResolvedTeam = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  resolutions: MutableResolutionMap,
+  team: ApiFootballTeamRef | null | undefined,
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<void> => {
+  if (!team) {
+    return;
+  }
+  await addResolvedEntity({
+    identity,
+    providerId,
+    resolutions,
+    kind: 'team',
+    entityType: EntityType.TEAM,
+    providerIds: [String(team.id)],
+    label: team.name,
+    log,
+    context,
+  });
+};
+
+const addResolvedPlayer = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  resolutions: MutableResolutionMap,
+  player: ApiFootballTeamRef | null | undefined,
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<void> => {
+  if (!player) {
+    return;
+  }
+  await addResolvedEntity({
+    identity,
+    providerId,
+    resolutions,
+    kind: 'player',
+    entityType: EntityType.PLAYER,
+    providerIds: [String(player.id)],
+    label: player.name,
+    log,
+    context,
+  });
+};
+
+type MutableResolutionMap = {
+  competitions: Record<string, ApiFootballResolvedEntity | undefined>;
+  seasons: Record<string, ApiFootballResolvedEntity | undefined>;
+  teams: Record<string, ApiFootballResolvedEntity | undefined>;
+  players: Record<string, ApiFootballResolvedEntity | undefined>;
+};
+
+const emptyResolutionMap = (): MutableResolutionMap => ({
+  competitions: {},
+  seasons: {},
+  teams: {},
+  players: {},
+});
+
+const addResolvedEntity = async (input: {
+  readonly identity: FootballIdentityLookupClient;
+  readonly providerId: string;
+  readonly resolutions: MutableResolutionMap;
+  readonly kind: ApiFootballEntityKind;
+  readonly entityType: EntityType;
+  readonly providerIds: readonly string[];
+  readonly label: string;
+  readonly log: MatchConcludedBridgeLogger;
+  readonly context: ResolutionLogContext;
+}): Promise<void> => {
+  const primaryProviderId = input.providerIds[0] ?? '';
+  if (!primaryProviderId || resolutionBucket(input.resolutions, input.kind)[primaryProviderId]) {
+    return;
+  }
+  for (const providerEntityId of input.providerIds) {
+    try {
+      const resolved = await input.identity.resolve(
+        create(ResolveRequestSchema, {
+          entityType: input.entityType,
+          provider: input.providerId,
+          providerId: providerEntityId,
+        })
+      );
+      if (resolved.found && resolved.entityId) {
+        resolutionBucket(input.resolutions, input.kind)[primaryProviderId] = {
+          entityId: resolved.entityId,
+          label: labelFromResolveResponse(resolved) || input.label,
+        };
+        return;
+      }
+    } catch (err) {
+      input.log({
+        event: 'bridge_identity_resolve_error',
+        workload: input.context.workload,
+        resourceId: input.context.resourceId,
+        providerFixtureId: input.context.providerFixtureId,
+        providerStatus: input.context.providerStatus,
+        providerId: input.providerId,
+        reason: `${input.kind}:${providerEntityId}`,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+  }
+};
+
+const resolutionBucket = (
+  resolutions: MutableResolutionMap,
+  kind: ApiFootballEntityKind
+): Record<string, ApiFootballResolvedEntity | undefined> => {
+  switch (kind) {
+    case 'competition':
+      return resolutions.competitions;
+    case 'season':
+      return resolutions.seasons;
+    case 'team':
+      return resolutions.teams;
+    case 'player':
+      return resolutions.players;
+  }
+};
+
+const labelFromResolveResponse = (response: ResolveResponse): string => {
+  const entity = response.entity?.entity;
+  switch (entity?.case) {
+    case 'player':
+      return entity.value.commonName || entity.value.fullName;
+    case 'team':
+      return entity.value.shortName || entity.value.name || entity.value.fullName;
+    case 'competition':
+      return entity.value.shortName || entity.value.name;
+    case 'season':
+      return entity.value.label;
+    default:
+      return '';
+  }
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

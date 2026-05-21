@@ -15,6 +15,8 @@ export {
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballIngestGamesRequestFromFixtures,
+  apiFootballIngestLineupsRequestFromLineups,
+  apiFootballIngestOccurrencesRequestFromEvents,
   apiFootballLineupPath,
   apiFootballLivePath,
   apiFootballReplayFixturesRequest,
@@ -22,9 +24,13 @@ export {
   apiFootballReplayLineupsRequest,
   apiFootballReplayOccurrencesRequest,
   apiFootballReplayStandingsRequest,
+  apiFootballSeasonProviderId,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
   providerGameIdFromFixture,
+  type ApiFootballEntityKind,
+  type ApiFootballEntityResolutionMap,
+  type ApiFootballResolvedEntity,
 } from './adapter.js';
 
 export {

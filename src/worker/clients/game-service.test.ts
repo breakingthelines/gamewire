@@ -4,6 +4,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   GameService,
   IngestBatchResponseSchema,
+  IngestFootballLineupsRequestSchema,
+  IngestGameOccurrencesRequestSchema,
   IngestGamesRequestSchema,
   LookupGameByFixtureRequestSchema,
   LookupGameByFixtureResponseSchema,
@@ -26,6 +28,8 @@ describe('createFetchFootballGameLookupClient', () => {
   it('uses the native gRPC transport for game-service mesh calls', async () => {
     const transport = { kind: 'grpc-transport' };
     const ingestGames = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
+    const ingestGameOccurrences = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
+    const ingestFootballLineups = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
     const lookupGameByFixture = vi
       .fn()
       .mockResolvedValue(create(LookupGameByFixtureResponseSchema, { found: true }));
@@ -33,6 +37,8 @@ describe('createFetchFootballGameLookupClient', () => {
     mocks.createGrpcTransport.mockReturnValue(transport);
     mocks.createClient.mockReturnValue({
       ingestGames,
+      ingestGameOccurrences,
+      ingestFootballLineups,
       lookupGameByFixture,
     });
 
@@ -49,6 +55,10 @@ describe('createFetchFootballGameLookupClient', () => {
     });
 
     await client.ingestGames(ingestRequest);
+    const occurrencesRequest = create(IngestGameOccurrencesRequestSchema, {});
+    const lineupsRequest = create(IngestFootballLineupsRequestSchema, {});
+    await client.ingestGameOccurrences(occurrencesRequest);
+    await client.ingestFootballLineups(lineupsRequest);
     await client.lookupGameByFixture(lookupRequest);
 
     expect(mocks.createGrpcTransport).toHaveBeenCalledWith({
@@ -56,6 +66,8 @@ describe('createFetchFootballGameLookupClient', () => {
     });
     expect(mocks.createClient).toHaveBeenCalledWith(GameService, transport);
     expect(ingestGames).toHaveBeenCalledWith(ingestRequest, { timeoutMs: 1234 });
+    expect(ingestGameOccurrences).toHaveBeenCalledWith(occurrencesRequest, { timeoutMs: 1234 });
+    expect(ingestFootballLineups).toHaveBeenCalledWith(lineupsRequest, { timeoutMs: 1234 });
     expect(lookupGameByFixture).toHaveBeenCalledWith(lookupRequest, { timeoutMs: 1234 });
   });
 });

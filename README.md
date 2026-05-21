@@ -87,9 +87,18 @@ For API-Football, the live implementation must send the key as
 is the call-efficiency contract for the later live provider implementation.
 
 `gamewire` does not depend on local `identity` artifacts. Runtime provider-key
-resolution must use a published `@breakingthelines/identity-data-football`
-version, or the deployed `identity-server`, once `identity` `0.1.0` is actually
-released.
+resolution uses the deployed `identity-server`: API-Football team, player,
+competition, and season provider ids resolve to canonical BTL ids when the
+snapshot has a match, and stay as explicit provider refs when it does not.
+Provider fixture ids resolve to canonical game ids through game-service because
+game-service owns the live provider fixture crosswalk.
+
+For live API-Football fixture detail payloads, gamewire leaves game ids
+uncanonicalized and carries `provider_game_id` plus structured provider refs;
+game-service derives the service-owned `btl_football_game_g<hash>` id and route.
+The ingestion loop also fetches `/fixtures/events` for timeline occurrences and
+`/fixtures/lineups` for team sheets. Empty lineup responses are skipped so
+lineups remain honestly missing.
 
 Call budget modelling is available from the worker export:
 

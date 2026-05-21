@@ -10,6 +10,8 @@ import {
   type LookupGameByFixtureRequest,
   type LookupGameByFixtureResponse,
   LookupGameByFixtureResponseSchema,
+  type IngestFootballLineupsRequest,
+  type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import {
@@ -67,6 +69,42 @@ const buildFixtureResponse = (
   ],
 });
 
+const buildEventResponse = (fixtureId: number | string = 1538961): unknown => ({
+  response: [
+    {
+      time: { elapsed: 27, extra: null },
+      team: { id: 49, name: 'Chelsea' },
+      player: { id: 152982, name: 'Cole Palmer' },
+      assist: { id: 999, name: 'Provider Assist' },
+      type: 'Goal',
+      detail: 'Normal Goal',
+      comments: null,
+      fixture: { id: fixtureId },
+    },
+  ],
+});
+
+const buildLineupResponse = (): unknown => ({
+  response: [
+    {
+      team: { id: 42, name: 'Arsenal' },
+      formation: '4-3-3',
+      startXI: [
+        {
+          player: {
+            id: 1460,
+            name: 'Bukayo Saka',
+            number: 7,
+            pos: 'RW',
+            grid: '3:3',
+          },
+        },
+      ],
+      substitutes: [],
+    },
+  ],
+});
+
 interface BuildPublisherResult {
   readonly publisher: MatchConcludedPublisher;
   readonly stream: InMemoryMatchConcludedStreamClient;
@@ -113,6 +151,8 @@ const inertIdentity = (): FootballIdentityLookupClient => ({
 interface FakeGameService {
   readonly client: FootballGameBridgeClient;
   readonly ingestCalls: IngestGamesRequest[];
+  readonly occurrenceCalls: IngestGameOccurrencesRequest[];
+  readonly lineupCalls: IngestFootballLineupsRequest[];
   readonly lookupCalls: LookupGameByFixtureRequest[];
 }
 
@@ -121,6 +161,8 @@ const fakeGameService = (options: {
   readonly error?: unknown;
 }): FakeGameService => {
   const ingestCalls: IngestGamesRequest[] = [];
+  const occurrenceCalls: IngestGameOccurrencesRequest[] = [];
+  const lineupCalls: IngestFootballLineupsRequest[] = [];
   const lookupCalls: LookupGameByFixtureRequest[] = [];
   const error = options.error;
   const response = create(LookupGameByFixtureResponseSchema, {
@@ -136,6 +178,22 @@ const fakeGameService = (options: {
         replayId: request.metadata?.replayId ?? '',
       });
     },
+    async ingestGameOccurrences(request: IngestGameOccurrencesRequest) {
+      occurrenceCalls.push(request);
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.occurrences.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
+    async ingestFootballLineups(request: IngestFootballLineupsRequest) {
+      lineupCalls.push(request);
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.lineups.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
     async lookupGameByFixture(
       request: LookupGameByFixtureRequest
     ): Promise<LookupGameByFixtureResponse> {
@@ -146,7 +204,7 @@ const fakeGameService = (options: {
       return response;
     },
   };
-  return { client, ingestCalls, lookupCalls };
+  return { client, ingestCalls, occurrenceCalls, lineupCalls, lookupCalls };
 };
 
 describe('isFixtureDetailWorkload', () => {
@@ -240,7 +298,7 @@ describe('decodeFixtureEnvelope', () => {
 });
 
 describe('createMatchConcludedBridge', () => {
-  it('is a no-op for non-fixture workloads', async () => {
+  it('is a no-op for unsupported workloads and empty fixture-scoped payloads', async () => {
     const { publisher, stream } = buildPublisher();
     const gameService = fakeGameService({});
     const bridge = createMatchConcludedBridge({
@@ -322,6 +380,73 @@ describe('createMatchConcludedBridge', () => {
     expect(gameService.lookupCalls[0]?.providerFixtureId).toBe('12345');
     expect(stream.published).toHaveLength(0);
     expect(logs.some((e) => e.event === 'bridge_game_not_found')).toBe(true);
+  });
+
+  it('ingests API-Football event payloads as GameOccurrence timeline data', async () => {
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1538961' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+      clock: () => Date.parse('2026-05-21T12:00:00Z'),
+    });
+
+    await bridge({
+      workload: 'events-post-final',
+      resourceId: '1538961',
+      data: buildEventResponse(1538961),
+    });
+
+    expect(gameService.lookupCalls).toHaveLength(1);
+    expect(gameService.occurrenceCalls).toHaveLength(1);
+    const request = gameService.occurrenceCalls[0];
+    expect(request?.gameId).toBe('btl_football_game_g1538961');
+    expect(request?.occurrences).toHaveLength(1);
+    expect(request?.occurrences[0]?.payload.case).toBe('timeline');
+    expect(request?.occurrences[0]?.actors[0]?.providerRef?.providerId).toBe('49');
+    expect(stream.published).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
+  });
+
+  it('ingests API-Football lineups and skips honestly empty lineup responses', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1538961' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({
+      workload: 'lineups-post-confirm',
+      resourceId: '1538961',
+      data: buildLineupResponse(),
+    });
+    await bridge({
+      workload: 'lineups-post-confirm',
+      resourceId: '1538962',
+      data: { response: [] },
+    });
+
+    expect(gameService.lookupCalls.map((call) => call.providerFixtureId)).toEqual(['1538961']);
+    expect(gameService.lineupCalls).toHaveLength(1);
+    expect(gameService.lineupCalls[0]?.lineups[0]?.gameId).toBe('btl_football_game_g1538961');
+    expect(gameService.lineupCalls[0]?.lineups[0]?.teamSheets[0]?.teamId).toBe(
+      'provider:api-football:team:42'
+    );
+    expect(logs.some((entry) => entry.event === 'bridge_lineups_ingested')).toBe(true);
+    expect(logs.some((entry) => entry.event === 'bridge_lineups_missing')).toBe(true);
   });
 
   it('does not throw when game-service client throws (caught and logged)', async () => {
@@ -620,16 +745,14 @@ describe('createMatchConcludedBridge', () => {
     expect(logs.some((e) => e.event === 'bridge_observe_failed')).toBe(true);
   });
 
-  it('does not call the identity client on the GAME path', async () => {
-    // Regression guard for the γ3 swap: identity-server runs on a
-    // read-only SQLite snapshot that does not carry fixture-level
-    // crosswalks. The bridge must route exclusively through
-    // game-service.LookupGameByFixture for GAME resolution.
+  it('continues to resolve GAME ids through game-service when identity misses', async () => {
+    // The bridge may ask identity for fixture participants, but GAME
+    // resolution itself must still route through game-service.LookupGameByFixture.
     const { publisher, stream } = buildPublisher();
     const gameService = fakeGameService({
       response: { found: true, gameId: 'game-1' },
     });
-    const identity = inertIdentity(); // every method throws on call
+    const identity = inertIdentity(); // every method throws; bridge falls back to provider refs
     const bridge = createMatchConcludedBridge({
       publisher,
       gameService: gameService.client,

@@ -20,10 +20,9 @@ import {
 } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
 /**
- * Read-only client boundary for the BTL identity-server. The match-concluded
- * ingestion bridge calls `resolve` to translate API-Football fixture ids into
- * BTL canonical `game_id`s; future paths (player crosswalks, team lookups)
- * use the broader surface.
+ * Read-only client boundary for the BTL identity-server. The API-Football
+ * ingestion bridge calls `resolve` for provider teams, players, competitions,
+ * and seasons. Provider fixture → canonical game lookup stays on game-service.
  */
 export interface FootballIdentityLookupClient {
   lookup(request: LookupRequest): Promise<LookupResponse>;
@@ -82,9 +81,8 @@ const DEFAULT_IDENTITY_TIMEOUT_MS = 5_000;
 
 /**
  * Build a `FootballIdentityLookupClient` backed by native fetch + Connect
- * protocol unary calls. The bridge currently only exercises `resolve`; the
- * other methods are provided so the boundary stays complete and future
- * call sites (player metadata sync, etc.) do not need to re-wire transport.
+ * protocol unary calls. The bridge exercises `resolve`; the other methods are
+ * provided so the boundary stays complete for browser/server callers.
  */
 export const createFetchFootballIdentityLookupClient = (
   options: FetchIdentityClientOptions

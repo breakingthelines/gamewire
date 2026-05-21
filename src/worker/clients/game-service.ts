@@ -68,9 +68,8 @@ export const createGameServiceRecordRatingClientBoundary = (
  * game-service, populated by `IngestGames` — identity-server runs on a
  * read-only SQLite snapshot and does not carry fixture-level mappings.
  *
- * Kept narrow on purpose: ingestion bridges have no need for the broader
- * GameService surface, so we avoid widening this contract. Future paths
- * (player crosswalks, team metadata, etc.) continue to use
+ * Kept narrow on purpose: ingestion bridges only need provider fixture lookup
+ * plus the game/event/lineup ingest RPCs. Entity crosswalks continue to use
  * `FootballIdentityLookupClient` against identity-server.
  */
 export interface FootballGameLookupClient {
@@ -79,6 +78,8 @@ export interface FootballGameLookupClient {
 
 export interface FootballGameIngestClient {
   ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse>;
+  ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
+  ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
@@ -109,6 +110,12 @@ export const createFetchFootballGameLookupClient = (
   return {
     ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse> {
       return client.ingestGames(request, { timeoutMs });
+    },
+    ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse> {
+      return client.ingestGameOccurrences(request, { timeoutMs });
+    },
+    ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse> {
+      return client.ingestFootballLineups(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });
