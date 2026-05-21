@@ -93,6 +93,7 @@ export interface MatchConcludedBridgeLogEntry {
   readonly acceptedCount?: number;
   readonly updatedCount?: number;
   readonly skippedCount?: number;
+  readonly attempts?: number;
 }
 
 export type MatchConcludedBridgeLogger = (entry: MatchConcludedBridgeLogEntry) => void;
@@ -114,6 +115,7 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
 
 const EVENT_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['events-post-final']);
 const LINEUP_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['lineups-post-confirm']);
+const GAME_LOOKUP_RETRY_DELAYS_MS = [100, 500, 1_000] as const;
 
 export const isFixtureDetailWorkload = (workload: IngestionWorkload): boolean =>
   FIXTURE_DETAIL_WORKLOADS.has(workload);
@@ -139,6 +141,11 @@ export interface MatchConcludedBridgeOptions {
   readonly logger?: MatchConcludedBridgeLogger;
   /** Wall clock; defaulted for tests. */
   readonly clock?: () => number;
+  /**
+   * Short retry window for event/lineup workloads that can race fixture-detail
+   * ingestion during an immediate boot tick.
+   */
+  readonly gameLookupRetryDelaysMs?: readonly number[];
 }
 
 /**
@@ -155,6 +162,7 @@ export const createMatchConcludedBridge = (
   const gameService = options.gameService;
   const identity = options.identity;
   const providerId = options.providerId;
+  const gameLookupRetryDelaysMs = options.gameLookupRetryDelaysMs ?? GAME_LOOKUP_RETRY_DELAYS_MS;
 
   return async ({ workload, resourceId, data }) => {
     if (EVENT_WORKLOADS.has(workload)) {
@@ -167,6 +175,7 @@ export const createMatchConcludedBridge = (
         identity,
         log,
         clock,
+        gameLookupRetryDelaysMs,
       });
       return;
     }
@@ -181,6 +190,7 @@ export const createMatchConcludedBridge = (
         identity,
         log,
         clock,
+        gameLookupRetryDelaysMs,
       });
       return;
     }
@@ -321,6 +331,7 @@ interface ProviderResourceBridgeInput {
   readonly identity: FootballIdentityLookupClient;
   readonly log: MatchConcludedBridgeLogger;
   readonly clock: () => number;
+  readonly gameLookupRetryDelaysMs: readonly number[];
 }
 
 const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> => {
@@ -470,36 +481,45 @@ const ingestLineups = async (input: ProviderResourceBridgeInput): Promise<void> 
 };
 
 const lookupGameId = async (input: ProviderResourceBridgeInput): Promise<string> => {
-  let lookupResponse: LookupGameByFixtureResponse;
-  try {
-    lookupResponse = await input.gameService.lookupGameByFixture(
-      create(LookupGameByFixtureRequestSchema, {
-        provider: input.providerId,
+  for (let attempt = 0; ; attempt += 1) {
+    let lookupResponse: LookupGameByFixtureResponse;
+    try {
+      lookupResponse = await input.gameService.lookupGameByFixture(
+        create(LookupGameByFixtureRequestSchema, {
+          provider: input.providerId,
+          providerFixtureId: input.resourceId,
+        })
+      );
+    } catch (err) {
+      input.log({
+        event: 'bridge_game_lookup_error',
+        workload: input.workload,
+        resourceId: input.resourceId,
         providerFixtureId: input.resourceId,
-      })
-    );
-  } catch (err) {
-    input.log({
-      event: 'bridge_game_lookup_error',
-      workload: input.workload,
-      resourceId: input.resourceId,
-      providerFixtureId: input.resourceId,
-      providerId: input.providerId,
-      message: err instanceof Error ? err.message : String(err),
-    });
-    return '';
+        providerId: input.providerId,
+        attempts: attempt + 1,
+        message: err instanceof Error ? err.message : String(err),
+      });
+      return '';
+    }
+    if (lookupResponse.found && lookupResponse.gameId) {
+      return lookupResponse.gameId;
+    }
+
+    const delayMs = input.gameLookupRetryDelaysMs[attempt];
+    if (delayMs === undefined) {
+      input.log({
+        event: 'bridge_game_not_found',
+        workload: input.workload,
+        resourceId: input.resourceId,
+        providerFixtureId: input.resourceId,
+        providerId: input.providerId,
+        attempts: attempt + 1,
+      });
+      return '';
+    }
+    await sleep(delayMs);
   }
-  if (!lookupResponse.found || !lookupResponse.gameId) {
-    input.log({
-      event: 'bridge_game_not_found',
-      workload: input.workload,
-      resourceId: input.resourceId,
-      providerFixtureId: input.resourceId,
-      providerId: input.providerId,
-    });
-    return '';
-  }
-  return lookupResponse.gameId;
 };
 
 interface DecodedFixture {
@@ -827,6 +847,9 @@ const labelFromResolveResponse = (response: ResolveResponse): string => {
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
 /** Test-only exports. */
 export const __test = {
