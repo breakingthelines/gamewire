@@ -25,6 +25,7 @@ import {
   createBunMatchConcludedStreamClient,
 } from './match-concluded-publisher.js';
 import { RATING_SUBMITTED_FACT_TYPE, RatingConsumer } from './rating-consumer.js';
+import { RedisEmittedFixtureStore } from './redis-emitted-fixture-store.js';
 import {
   RedisStreamConsumer,
   RedisStreamConsumerMetrics,
@@ -154,12 +155,22 @@ if (config.redisUrl) {
       // event_id ... fact_type ...` call per terminal fixture. The
       // bridge below pipes fixture-detail ingestion results into
       // `observe()` so terminal fixtures emit one fact each.
+      //
+      // The emit-once gate is backed by Redis (`SET NX EX 30d` under
+      // `btl:fact:emitted:`) so a worker restart between two terminal
+      // observations of the same fixture no longer re-emits. The
+      // in-memory store remains the default inside the publisher
+      // constructor and is used implicitly when Redis is unavailable
+      // (the entire `if (bunRedis)` branch below is skipped in that
+      // case, falling through to the "fact bus consumer disabled" log).
+      const emittedStore = new RedisEmittedFixtureStore({ client: bunRedis });
       matchConcludedPublisher = new MatchConcludedPublisher({
         stream: createBunMatchConcludedStreamClient(bunRedis),
+        emitted: emittedStore,
       });
       console.log(
         '[gamewire-worker] match-concluded publisher ready ' +
-          `(stream=${MATCH_CONCLUDED_STREAM_NAME})`
+          `(stream=${MATCH_CONCLUDED_STREAM_NAME} emitted-store=${emittedStore.backend})`
       );
     }
   } catch (err) {
