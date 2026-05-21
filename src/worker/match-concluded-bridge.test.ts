@@ -158,6 +158,7 @@ interface FakeGameService {
 
 const fakeGameService = (options: {
   readonly response?: Partial<LookupGameByFixtureResponse>;
+  readonly responses?: readonly Partial<LookupGameByFixtureResponse>[];
   readonly error?: unknown;
 }): FakeGameService => {
   const ingestCalls: IngestGamesRequest[] = [];
@@ -165,10 +166,12 @@ const fakeGameService = (options: {
   const lineupCalls: IngestFootballLineupsRequest[] = [];
   const lookupCalls: LookupGameByFixtureRequest[] = [];
   const error = options.error;
-  const response = create(LookupGameByFixtureResponseSchema, {
-    gameId: options.response?.gameId ?? '',
-    found: options.response?.found ?? false,
-  });
+  const responses = (options.responses ?? [options.response ?? {}]).map((item) =>
+    create(LookupGameByFixtureResponseSchema, {
+      gameId: item.gameId ?? '',
+      found: item.found ?? false,
+    })
+  );
   const client: FootballGameBridgeClient = {
     async ingestGames(request: IngestGamesRequest) {
       ingestCalls.push(request);
@@ -201,7 +204,7 @@ const fakeGameService = (options: {
       if (error !== undefined) {
         throw error;
       }
-      return response;
+      return responses[Math.min(lookupCalls.length - 1, responses.length - 1)]!;
     },
   };
   return { client, ingestCalls, occurrenceCalls, lineupCalls, lookupCalls };
@@ -411,6 +414,36 @@ describe('createMatchConcludedBridge', () => {
     expect(request?.occurrences[0]?.payload.case).toBe('timeline');
     expect(request?.occurrences[0]?.actors[0]?.providerRef?.providerId).toBe('49');
     expect(stream.published).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
+  });
+
+  it('retries event game lookup when fixture detail creates the mapping during boot', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      responses: [
+        { found: false, gameId: '' },
+        { found: true, gameId: 'btl_football_game_g1538961' },
+      ],
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+      gameLookupRetryDelaysMs: [0],
+    });
+
+    await bridge({
+      workload: 'events-post-final',
+      resourceId: '1538961',
+      data: buildEventResponse(1538961),
+    });
+
+    expect(gameService.lookupCalls).toHaveLength(2);
+    expect(gameService.occurrenceCalls).toHaveLength(1);
+    expect(logs.some((entry) => entry.event === 'bridge_game_not_found')).toBe(false);
     expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
   });
 
