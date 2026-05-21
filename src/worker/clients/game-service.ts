@@ -1,19 +1,17 @@
-import { fromBinary, toBinary } from '@bufbuild/protobuf';
+import { createClient } from '@connectrpc/connect';
+import { createGrpcTransport } from '@connectrpc/connect-node';
 
 import {
+  GameService,
   type IngestBatchResponse,
   type IngestFootballLineupsRequest,
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
-  IngestBatchResponseSchema,
-  IngestGamesRequestSchema,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
   type LookupGameByFixtureRequest,
   type LookupGameByFixtureResponse,
-  LookupGameByFixtureRequestSchema,
-  LookupGameByFixtureResponseSchema,
   type RecordRatingRequest,
   type RecordRatingResponse,
   type ReportProviderHealthRequest,
@@ -85,37 +83,9 @@ export interface FootballGameIngestClient {
 
 export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
 
-/**
- * Minimal fetch contract used by the game-service client transport.
- * Mirrors the native `fetch` signature so tests can inject a mock without
- * depending on the global. Identical shape to `IdentityFetch` in
- * `clients/identity.ts`.
- */
-export type GameServiceFetch = (
-  input: string | URL,
-  init?: { method: string; headers: Record<string, string>; body: Uint8Array }
-) => Promise<{
-  ok: boolean;
-  status: number;
-  arrayBuffer(): Promise<ArrayBuffer>;
-  text(): Promise<string>;
-}>;
-
-/**
- * Connect-protocol unary endpoint shape:
- *   `<baseUrl>/<package>.<service>/<method>`
- * Always POST with `application/proto` content type carrying the binary
- * request body. game-service is the only consumer here so we keep the
- * transport private to this module rather than pulling in
- * `@connectrpc/connect-node` (not in dependencies).
- */
-const GAME_SERVICE_PATH = '/btl.game.v1.GameService';
-
 export interface FetchFootballGameLookupClientOptions {
-  /** Base URL of the game-service, e.g. `http://game-service:9090`. */
+  /** Base URL of the game-service gRPC server, e.g. `http://game-service:50059`. */
   readonly baseUrl: string;
-  /** Override fetch for tests. Defaults to the global `fetch`. */
-  readonly fetchFn?: GameServiceFetch;
   /** Hard request timeout in ms. Defaults to 5 seconds. */
   readonly timeoutMs?: number;
 }
@@ -123,89 +93,28 @@ export interface FetchFootballGameLookupClientOptions {
 const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
 
 /**
- * Build a `FootballGameLookupClient` backed by native fetch + Connect
- * protocol unary calls. Used by the match-concluded bridge to swap the
- * old identity-server `Resolve` call for the new game-service
- * `LookupGameByFixture` RPC. Other GameService methods are deliberately
- * not surfaced here — keep the boundary narrow.
+ * Build a `FootballGameLookupClient` backed by a real gRPC transport.
+ * game-service exposes native gRPC on the mesh port, not Connect-over-HTTP,
+ * so the worker must use `createGrpcTransport` here.
  */
 export const createFetchFootballGameLookupClient = (
   options: FetchFootballGameLookupClientOptions
 ): FootballGameBridgeClient => {
-  const fetchFn = options.fetchFn ?? defaultGameServiceFetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
-  const baseUrl = stripTrailingSlash(options.baseUrl);
-
-  const callUnary = async <TReq, TRes>(
-    method: string,
-    request: TReq,
-    requestSchema: Parameters<typeof toBinary>[0],
-    responseSchema: Parameters<typeof fromBinary>[0]
-  ): Promise<TRes> => {
-    const url = `${baseUrl}${GAME_SERVICE_PATH}/${method}`;
-    const body = toBinary(requestSchema, request as never);
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Awaited<ReturnType<GameServiceFetch>>;
-    try {
-      response = await fetchFn(url, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/proto',
-          accept: 'application/proto',
-          'connect-protocol-version': '1',
-        },
-        body,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!response.ok) {
-      const text = await safeReadText(response);
-      throw new Error(
-        `game-service ${method} failed: status=${response.status} body=${truncate(text, 200)}`
-      );
-    }
-    const buffer = await response.arrayBuffer();
-    const bytes = new Uint8Array(buffer);
-    return fromBinary(responseSchema, bytes) as TRes;
-  };
+  const transport = createGrpcTransport({
+    baseUrl: stripTrailingSlash(options.baseUrl),
+  });
+  const client = createClient(GameService, transport);
 
   return {
     ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse> {
-      return callUnary<IngestGamesRequest, IngestBatchResponse>(
-        'IngestGames',
-        request,
-        IngestGamesRequestSchema,
-        IngestBatchResponseSchema
-      );
+      return client.ingestGames(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
-      return callUnary<LookupGameByFixtureRequest, LookupGameByFixtureResponse>(
-        'LookupGameByFixture',
-        request,
-        LookupGameByFixtureRequestSchema,
-        LookupGameByFixtureResponseSchema
-      );
+      return client.lookupGameByFixture(request, { timeoutMs });
     },
   };
-};
-
-const defaultGameServiceFetch: GameServiceFetch = async (input, init) => {
-  const response = await fetch(input as string | URL, init as RequestInit | undefined);
-  return response;
 };
 
 const stripTrailingSlash = (value: string): string =>
   value.endsWith('/') ? value.slice(0, -1) : value;
-
-const safeReadText = async (response: { text(): Promise<string> }): Promise<string> => {
-  try {
-    return await response.text();
-  } catch {
-    return '';
-  }
-};
-
-const truncate = (value: string, max: number): string =>
-  value.length <= max ? value : `${value.slice(0, max)}…`;
