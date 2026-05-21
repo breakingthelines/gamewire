@@ -11,21 +11,42 @@ import {
   LookupGameByFixtureResponseSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
-const mocks = vi.hoisted(() => ({
-  createClient: vi.fn(),
-  createGrpcTransport: vi.fn(),
-}));
+interface GameServiceClientMocks {
+  createClient: ReturnType<typeof vi.fn>;
+  createGrpcTransport: ReturnType<typeof vi.fn>;
+}
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __gameServiceClientMocks: GameServiceClientMocks | undefined;
+}
+
+function gameServiceClientMocks(): GameServiceClientMocks {
+  globalThis.__gameServiceClientMocks ??= {
+    createClient: vi.fn(),
+    createGrpcTransport: vi.fn(),
+  };
+  return globalThis.__gameServiceClientMocks;
+}
+
+const callMock = (mock: ReturnType<typeof vi.fn>, args: unknown[]): unknown =>
+  (mock as unknown as (...callArgs: unknown[]) => unknown)(...args);
 
 vi.mock('@connectrpc/connect', () => ({
-  createClient: mocks.createClient,
+  createClient: (...args: unknown[]) => callMock(gameServiceClientMocks().createClient, args),
 }));
 
 vi.mock('@connectrpc/connect-node', () => ({
-  createGrpcTransport: mocks.createGrpcTransport,
+  createGrpcTransport: (...args: unknown[]) =>
+    callMock(gameServiceClientMocks().createGrpcTransport, args),
 }));
 
 describe('createFetchFootballGameLookupClient', () => {
   it('uses the native gRPC transport for game-service mesh calls', async () => {
+    const mocks = gameServiceClientMocks();
+    mocks.createClient.mockReset();
+    mocks.createGrpcTransport.mockReset();
+
     const transport = { kind: 'grpc-transport' };
     const ingestGames = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
     const ingestGameOccurrences = vi.fn().mockResolvedValue(create(IngestBatchResponseSchema, {}));
