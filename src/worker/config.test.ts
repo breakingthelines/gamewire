@@ -2,9 +2,17 @@ import { describe, expect, it } from 'vitest';
 
 import { loadConfig } from './config.js';
 
+const authEnv = (overrides: Record<string, string | undefined> = {}) => ({
+  GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
+  GAMEWIRE_AUTH_CONTEXT_ISSUER: 'auth-service',
+  GAMEWIRE_AUTH_CONTEXT_AUDIENCE: 'gamewire-worker',
+  GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE: 'gamewire.workflow.invoke',
+  ...overrides,
+});
+
 describe('gamewire-worker config', () => {
   it('defaults to the local scaffold port and BTL service targets', () => {
-    const config = loadConfig({});
+    const config = loadConfig(authEnv());
 
     expect(config.port).toBe(8095);
     expect(config.gameServiceUrl).toBe('http://game-service:9090');
@@ -18,21 +26,23 @@ describe('gamewire-worker config', () => {
   });
 
   it('allows explicit runtime overrides without secrets', () => {
-    const config = loadConfig({
-      GAMEWIRE_WORKER_PORT: '9100',
-      GAME_SERVICE_URL: 'http://localhost:19090',
-      IDENTITY_SERVICE_URL: 'http://localhost:19091',
-      GAMEWIRE_PROVIDER_ID: 'fixture-provider',
-      GAMEWIRE_PROVIDER_KIND: 'fixture',
-      GAMEWIRE_PROVIDER_MODE: 'live',
-      GAMEWIRE_PROVIDER_BASE_URL: 'https://provider.example.test',
-      API_FOOTBALL_KEY: 'test-provider-key',
-      IDENTITY_PROVIDER_ID: 'identity-data-football',
-      GAMEWIRE_WEBHOOK_PATH: '/provider/webhook',
-      GAMEWIRE_BOOTSTRAP_FIXTURE_IDS: '1917,  1035065,1917',
-      GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK: 'true',
-      LOG_LEVEL: 'debug',
-    });
+    const config = loadConfig(
+      authEnv({
+        GAMEWIRE_WORKER_PORT: '9100',
+        GAME_SERVICE_URL: 'http://localhost:19090',
+        IDENTITY_SERVICE_URL: 'http://localhost:19091',
+        GAMEWIRE_PROVIDER_ID: 'fixture-provider',
+        GAMEWIRE_PROVIDER_KIND: 'fixture',
+        GAMEWIRE_PROVIDER_MODE: 'live',
+        GAMEWIRE_PROVIDER_BASE_URL: 'https://provider.example.test',
+        API_FOOTBALL_KEY: 'test-provider-key',
+        IDENTITY_PROVIDER_ID: 'identity-data-football',
+        GAMEWIRE_WEBHOOK_PATH: '/provider/webhook',
+        GAMEWIRE_BOOTSTRAP_FIXTURE_IDS: '1917,  1035065,1917',
+        GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK: 'true',
+        LOG_LEVEL: 'debug',
+      })
+    );
 
     expect(config).toMatchObject({
       port: 9100,
@@ -52,43 +62,36 @@ describe('gamewire-worker config', () => {
   });
 
   it('rejects invalid ports', () => {
-    expect(() => loadConfig({ GAMEWIRE_WORKER_PORT: '0' })).toThrow('Invalid gamewire-worker port');
+    expect(() => loadConfig(authEnv({ GAMEWIRE_WORKER_PORT: '0' }))).toThrow(
+      'Invalid gamewire-worker port'
+    );
   });
 
   it('rejects invalid provider modes', () => {
-    expect(() => loadConfig({ GAMEWIRE_PROVIDER_MODE: 'secret-live-mode' })).toThrow(
+    expect(() => loadConfig(authEnv({ GAMEWIRE_PROVIDER_MODE: 'secret-live-mode' }))).toThrow(
       'Invalid gamewire provider mode'
     );
   });
 
   it('rejects invalid immediate tick flags', () => {
-    expect(() => loadConfig({ GAMEWIRE_RUN_IMMEDIATE_TICK: 'sometimes' })).toThrow(
+    expect(() => loadConfig(authEnv({ GAMEWIRE_RUN_IMMEDIATE_TICK: 'sometimes' }))).toThrow(
       'Invalid gamewire ingestion immediate tick flag'
     );
   });
 
-  it('leaves auth-context config undefined when GAMEWIRE_AUTH_CONTEXT_JWKS_URL is unset', () => {
-    const cfg = loadConfig({});
-    expect(cfg.authContextJwksUrl).toBeUndefined();
-    expect(cfg.authContextIssuer).toBeUndefined();
-    expect(cfg.authContextAudience).toBeUndefined();
-    expect(cfg.authContextRequiredScope).toBeUndefined();
-  });
-
   it('loads the full btl-auth-context config when all four env vars are set', () => {
-    const cfg = loadConfig({
-      GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
-      GAMEWIRE_AUTH_CONTEXT_ISSUER: 'auth-service',
-      GAMEWIRE_AUTH_CONTEXT_AUDIENCE: 'gamewire-worker',
-      GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE: 'gamewire.workflow.invoke',
-    });
+    const cfg = loadConfig(authEnv());
     expect(cfg.authContextJwksUrl).toBe('https://auth.test/.well-known/jwks.json');
     expect(cfg.authContextIssuer).toBe('auth-service');
     expect(cfg.authContextAudience).toBe('gamewire-worker');
     expect(cfg.authContextRequiredScope).toBe('gamewire.workflow.invoke');
   });
 
-  it('refuses to start with a half-configured btl-auth-context block (issuer/audience/scope must accompany JWKS URL)', () => {
+  it('refuses to start when GAMEWIRE_AUTH_CONTEXT_JWKS_URL is missing', () => {
+    expect(() => loadConfig({})).toThrow(/GAMEWIRE_AUTH_CONTEXT_JWKS_URL.*required/);
+  });
+
+  it('refuses to start when any of the four auth-context env vars are missing', () => {
     expect(() =>
       loadConfig({
         GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
