@@ -1,0 +1,127 @@
+/**
+ * btl-auth-context verification glue for gamewire-worker.
+ *
+ * Bridges the `@breakingthelines/auth-sdk` server-side Verifier into the
+ * worker's HTTP gate so kernel-service (SP-token minter, step 4) can call
+ * `/workflows/*` with a signed Ed25519 token instead of an HMAC. This
+ * module owns three concerns:
+ *
+ *   1. Boot-time JWKS fetch: `createAuthContextVerifier` does a single
+ *      JWKS fetch when the worker starts. The resulting `Verifier`
+ *      instance holds a parsed `KeyObject` and is safe to reuse across
+ *      requests — we never refetch JWKS per request.
+ *
+ *   2. Header-level claims check: `verifyAuthContextHeader` runs the
+ *      cryptographic verification, then layers BTL-specific authorisation
+ *      checks on top (SERVICE subject, expected audience, required
+ *      scope). It returns a discriminated result instead of throwing so
+ *      the HTTP layer can log a verbose 401 reason without unwinding the
+ *      stack.
+ *
+ *   3. Defensive failure mode: every error path returns a short reason
+ *      string. The HTTP handler logs the reason and surfaces a generic
+ *      `bad_auth_context` to clients to avoid oracle-leaking which
+ *      specific claim failed.
+ *
+ * This module is dormant whenever `GAMEWIRE_AUTH_CONTEXT_JWKS_URL` is
+ * unset — in that case `createAuthContextVerifier` returns null and the
+ * worker stays HMAC-only.
+ */
+
+import {
+  AUTH_CONTEXT_HEADER,
+  Verifier,
+  type VerifiedAuthContext,
+} from '@breakingthelines/auth-sdk/server';
+
+import type { GamewireWorkerConfig } from './config.js';
+
+export { AUTH_CONTEXT_HEADER, Verifier };
+export type { VerifiedAuthContext };
+
+/**
+ * Construct a {@link Verifier} for inbound `btl-auth-context` tokens.
+ *
+ * Returns `null` when `cfg.authContextJwksUrl` is unset — that's the
+ * HMAC-only branch where the verifier is intentionally dormant.
+ *
+ * Performs exactly one JWKS fetch at boot. The returned instance is
+ * cached by the caller (typically `server.ts` module scope) so every
+ * request reuses the same parsed public key.
+ *
+ * The function rejects (rather than returning null) when the JWKS URL is
+ * configured but unreachable or malformed. The worker entrypoint is
+ * expected to catch and continue HMAC-only in that case so a bad
+ * staging config doesn't take the service down.
+ */
+export const createAuthContextVerifier = async (
+  cfg: GamewireWorkerConfig
+): Promise<Verifier | null> => {
+  if (!cfg.authContextJwksUrl) {
+    return null;
+  }
+  return Verifier.fromJWKSURL(cfg.authContextJwksUrl, { issuer: cfg.authContextIssuer });
+};
+
+/**
+ * Outcome of a `btl-auth-context` header verification.
+ *
+ * Either a verified context with the parsed claims, or an `error`
+ * reason that the HTTP layer logs but does not echo to the client.
+ */
+export type AuthContextVerifyResult =
+  | { ok: true; context: VerifiedAuthContext }
+  | { ok: false; error: string };
+
+const ok = (context: VerifiedAuthContext): AuthContextVerifyResult => ({ ok: true, context });
+const err = (error: string): AuthContextVerifyResult => ({ ok: false, error });
+
+/**
+ * Verify a raw `btl-auth-context` header value against the configured
+ * verifier, then check the BTL-specific service-principal authorisation
+ * claims (SUBJECT_TYPE_SERVICE, expected audience, required scope).
+ *
+ * Never throws — every failure mode returns a `{ ok: false, error }`
+ * with a short reason so the caller can log it. Pass `now` to override
+ * the clock for deterministic tests.
+ */
+export const verifyAuthContextHeader = (
+  verifier: Verifier,
+  headerValue: string | undefined,
+  requiredAudience: string,
+  requiredScope: string,
+  now?: Date
+): AuthContextVerifyResult => {
+  if (headerValue === undefined || headerValue.trim() === '') {
+    return err('missing_header');
+  }
+
+  let context: VerifiedAuthContext;
+  try {
+    context = verifier.verify(headerValue.trim(), { now });
+  } catch (verifyErr) {
+    return err(
+      `verify_failed:${verifyErr instanceof Error ? verifyErr.message : String(verifyErr)}`
+    );
+  }
+
+  if (context.subjectType !== 'SERVICE') {
+    return err(`wrong_subject_type:${context.subjectType}`);
+  }
+
+  const principal = context.servicePrincipal;
+  if (!principal) {
+    return err('missing_service_principal');
+  }
+
+  if (principal.audience !== requiredAudience) {
+    return err(`wrong_audience:${principal.audience ?? '<unset>'}`);
+  }
+
+  const scopes = principal.grantedScopes ?? [];
+  if (!scopes.includes(requiredScope)) {
+    return err(`missing_required_scope:${requiredScope}`);
+  }
+
+  return ok(context);
+};

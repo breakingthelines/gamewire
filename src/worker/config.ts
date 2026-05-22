@@ -29,12 +29,43 @@ export interface GamewireWorkerConfig {
   ingestionRunImmediateTick: boolean;
   /**
    * Shared secret used to HMAC-sign POSTs to the `/workflows/*` endpoints.
-   * Set via `GAMEWIRE_WORKFLOW_SECRET`. When unset the endpoints reject
-   * every request with 401 so a missing env var fails closed rather than
-   * leaving the surface open. Production deploys must set this; staging
-   * may leave it unset if the schedule layer is also unwired.
+   * Set via `GAMEWIRE_WORKFLOW_SECRET`. Retained for dual-mode operation:
+   * during the SP-token rollout the worker prefers a verified
+   * `btl-auth-context` header but still accepts HMAC-signed requests so
+   * backfill / legacy callers keep working. Once kernel-service is
+   * shipping `btl-auth-context` in staging this fallback (and the field
+   * itself) gets removed in a follow-up PR.
    */
   workflowSecret?: string;
+  /**
+   * URL of the auth-service JWKS endpoint
+   * (e.g. `https://auth.staging.breakingthelines.dev/.well-known/jwks.json`).
+   * Set via `GAMEWIRE_AUTH_CONTEXT_JWKS_URL`. When unset the worker runs
+   * HMAC-only and the btl-auth-context verification path is dormant. When
+   * set, `authContextIssuer`, `authContextAudience`, and
+   * `authContextRequiredScope` MUST also be set — `loadConfig` enforces
+   * this so a half-configured worker fails fast at boot.
+   */
+  authContextJwksUrl?: string;
+  /**
+   * Expected `iss` claim on inbound btl-auth-context tokens. Set via
+   * `GAMEWIRE_AUTH_CONTEXT_ISSUER`. Required when `authContextJwksUrl` is set.
+   */
+  authContextIssuer?: string;
+  /**
+   * Expected `service_principal.audience` claim on inbound
+   * btl-auth-context tokens (e.g. `gamewire-worker`). Set via
+   * `GAMEWIRE_AUTH_CONTEXT_AUDIENCE`. Required when `authContextJwksUrl`
+   * is set.
+   */
+  authContextAudience?: string;
+  /**
+   * Required scope inside `service_principal.granted_scopes` for
+   * `/workflows/*` invocations (e.g. `gamewire.workflow.invoke`). Set via
+   * `GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE`. Required when
+   * `authContextJwksUrl` is set.
+   */
+  authContextRequiredScope?: string;
 }
 
 export type GamewireWorkerEnv = Record<string, string | undefined>;
@@ -170,6 +201,59 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       env.GAMEWIRE_WORKFLOW_SECRET === undefined || env.GAMEWIRE_WORKFLOW_SECRET.trim() === ''
         ? undefined
         : env.GAMEWIRE_WORKFLOW_SECRET.trim(),
+    ...resolveAuthContextConfig(env),
+  };
+};
+
+const trimmedOrUndefined = (value: string | undefined): string | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed === '' ? undefined : trimmed;
+};
+
+interface AuthContextConfig {
+  authContextJwksUrl?: string;
+  authContextIssuer?: string;
+  authContextAudience?: string;
+  authContextRequiredScope?: string;
+}
+
+const resolveAuthContextConfig = (env: GamewireWorkerEnv): AuthContextConfig => {
+  const jwksUrl = trimmedOrUndefined(env.GAMEWIRE_AUTH_CONTEXT_JWKS_URL);
+  const issuer = trimmedOrUndefined(env.GAMEWIRE_AUTH_CONTEXT_ISSUER);
+  const audience = trimmedOrUndefined(env.GAMEWIRE_AUTH_CONTEXT_AUDIENCE);
+  const requiredScope = trimmedOrUndefined(env.GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE);
+
+  if (jwksUrl === undefined) {
+    // HMAC-only mode. None of the other auth-context fields take effect.
+    return {};
+  }
+
+  const missing: string[] = [];
+  if (issuer === undefined) {
+    missing.push('GAMEWIRE_AUTH_CONTEXT_ISSUER');
+  }
+  if (audience === undefined) {
+    missing.push('GAMEWIRE_AUTH_CONTEXT_AUDIENCE');
+  }
+  if (requiredScope === undefined) {
+    missing.push('GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE');
+  }
+  if (missing.length > 0) {
+    throw new Error(
+      `gamewire-worker auth-context misconfigured: GAMEWIRE_AUTH_CONTEXT_JWKS_URL is set but ${missing.join(
+        ', '
+      )} ${missing.length === 1 ? 'is' : 'are'} missing`
+    );
+  }
+
+  return {
+    authContextJwksUrl: jwksUrl,
+    authContextIssuer: issuer,
+    authContextAudience: audience,
+    authContextRequiredScope: requiredScope,
   };
 };
 
