@@ -17,11 +17,7 @@
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { isMatchdayWindow } from './competitions.js';
-import {
-  handleProviderOutage,
-  handleQuotaPosture,
-  mostRestrictive,
-} from './degrade.js';
+import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './degrade.js';
 import type {
   CompetitionEntry,
   CompetitionRunResult,

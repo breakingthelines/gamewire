@@ -42,9 +42,7 @@ describe('handleQuotaPosture', () => {
   });
 
   it('aborts on hard cap', () => {
-    const result = handleQuotaPosture(
-      quota({ posture: 'hard_cap_reached', calls: 70_000 })
-    );
+    const result = handleQuotaPosture(quota({ posture: 'hard_cap_reached', calls: 70_000 }));
     expect(result.action).toBe('abort');
     expect(result.flag?.trigger).toBe('hard-cap');
   });
@@ -52,15 +50,11 @@ describe('handleQuotaPosture', () => {
 
 describe('handleReepMissSpike', () => {
   it('continues with zero lookups', () => {
-    expect(
-      handleReepMissSpike({ totalLookups: 0, missedLookups: 0 }).action
-    ).toBe('continue');
+    expect(handleReepMissSpike({ totalLookups: 0, missedLookups: 0 }).action).toBe('continue');
   });
 
   it('continues below 25% threshold', () => {
-    expect(
-      handleReepMissSpike({ totalLookups: 100, missedLookups: 24 }).action
-    ).toBe('continue');
+    expect(handleReepMissSpike({ totalLookups: 100, missedLookups: 24 }).action).toBe('continue');
   });
 
   it('skips when miss rate crosses the threshold', () => {
@@ -88,9 +82,7 @@ describe('handleProvider5xx', () => {
 
 describe('handleWebhookStall', () => {
   it('continues without flag inside threshold', () => {
-    expect(
-      handleWebhookStall({ staleMs: 1_000, thresholdMs: 2_000 }).action
-    ).toBe('continue');
+    expect(handleWebhookStall({ staleMs: 1_000, thresholdMs: 2_000 }).action).toBe('continue');
   });
 
   it('continues with flag when stale exceeds threshold', () => {
@@ -126,9 +118,7 @@ describe('handleIdentityOutage', () => {
 
 describe('mostRestrictive', () => {
   it('returns abort over all others', () => {
-    expect(mostRestrictive(['continue', 'cached-only', 'abort', 'circuit-open'])).toBe(
-      'abort'
-    );
+    expect(mostRestrictive(['continue', 'cached-only', 'abort', 'circuit-open'])).toBe('abort');
   });
 
   it('returns circuit-open over cached-only', () => {
@@ -136,9 +126,7 @@ describe('mostRestrictive', () => {
   });
 
   it('returns cached-only over skip-non-essential and continue', () => {
-    expect(mostRestrictive(['continue', 'skip-non-essential', 'cached-only'])).toBe(
-      'cached-only'
-    );
+    expect(mostRestrictive(['continue', 'skip-non-essential', 'cached-only'])).toBe('cached-only');
   });
 
   it('returns skip-non-essential over continue', () => {

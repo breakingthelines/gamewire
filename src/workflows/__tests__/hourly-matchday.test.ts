@@ -78,10 +78,7 @@ describe('hourlyMatchdayWorkflow', () => {
       fetchWorkload: vi.fn(),
     };
     const deps = buildDeps(ingestion, [outOfWindowComp]);
-    const result = await hourlyMatchdayWorkflow(
-      { nowUtc: MONDAY_03UTC.toISOString() },
-      deps
-    );
+    const result = await hourlyMatchdayWorkflow({ nowUtc: MONDAY_03UTC.toISOString() }, deps);
 
     expect(result.inWindow).toEqual([]);
     expect(result.skipped).toEqual(['out-of-window']);
@@ -99,10 +96,7 @@ describe('hourlyMatchdayWorkflow', () => {
       }),
     };
     const deps = buildDeps(ingestion, [inWindowComp, outOfWindowComp]);
-    const result = await hourlyMatchdayWorkflow(
-      { nowUtc: SATURDAY_15UTC.toISOString() },
-      deps
-    );
+    const result = await hourlyMatchdayWorkflow({ nowUtc: SATURDAY_15UTC.toISOString() }, deps);
 
     expect(result.inWindow).toEqual(['in-window']);
     expect(result.skipped).toEqual(['out-of-window']);
@@ -129,10 +123,7 @@ describe('hourlyMatchdayWorkflow', () => {
     };
     const second: CompetitionEntry = { ...inWindowComp, key: 'second', apiFootballLeagueId: 78 };
     const deps = buildDeps(ingestion, [inWindowComp, second]);
-    const result = await hourlyMatchdayWorkflow(
-      { nowUtc: SATURDAY_15UTC.toISOString() },
-      deps
-    );
+    const result = await hourlyMatchdayWorkflow({ nowUtc: SATURDAY_15UTC.toISOString() }, deps);
 
     expect(count).toBeGreaterThan(0);
     expect(result.competitions).toHaveLength(1);
@@ -146,15 +137,14 @@ describe('hourlyMatchdayWorkflow', () => {
           return buildResult(options.workload, options.resourceId, { data: { response: [] } });
         }
         return buildResult(options.workload, options.resourceId, {
-          data: { response: [{ fixture: { id: 1 } }, { fixture: { id: 2 } }, { fixture: { id: 3 } }] },
+          data: {
+            response: [{ fixture: { id: 1 } }, { fixture: { id: 2 } }, { fixture: { id: 3 } }],
+          },
         });
       }),
     };
     const deps = buildDeps(ingestion, [inWindowComp]);
-    const result = await hourlyMatchdayWorkflow(
-      { nowUtc: SATURDAY_15UTC.toISOString() },
-      deps
-    );
+    const result = await hourlyMatchdayWorkflow({ nowUtc: SATURDAY_15UTC.toISOString() }, deps);
     expect(result.fixturesIngested).toBe(3);
   });
 });

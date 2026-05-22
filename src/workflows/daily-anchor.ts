@@ -23,11 +23,7 @@ import { apiFootballFixturePath } from '../adapters/api-football/index.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { isMatchdayWindow } from './competitions.js';
-import {
-  handleProviderOutage,
-  handleQuotaPosture,
-  mostRestrictive,
-} from './degrade.js';
+import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './degrade.js';
 import type {
   CompetitionEntry,
   CompetitionRunResult,
@@ -205,7 +201,13 @@ const sweepCompetition = async (
   mode = accumulate(fixturesResult, FIXTURES_WORKLOAD, fixturesResource, mode);
 
   if (mode === 'abort') {
-    return finalSweep(competition, summary(competition, callsBudgeted, callsUsed, fixturesIngested, errors, fetches), flags, lastQuota, mode);
+    return finalSweep(
+      competition,
+      summary(competition, callsBudgeted, callsUsed, fixturesIngested, errors, fetches),
+      flags,
+      lastQuota,
+      mode
+    );
   }
 
   // Step 2: standings — same workload key reuses the cache TTL but a
@@ -219,7 +221,13 @@ const sweepCompetition = async (
   mode = accumulate(standingsResult, STANDINGS_WORKLOAD, standingsResource, mode);
 
   if (mode === 'abort') {
-    return finalSweep(competition, summary(competition, callsBudgeted, callsUsed, fixturesIngested, errors, fetches), flags, lastQuota, mode);
+    return finalSweep(
+      competition,
+      summary(competition, callsBudgeted, callsUsed, fixturesIngested, errors, fetches),
+      flags,
+      lastQuota,
+      mode
+    );
   }
 
   // Step 3: extract fixture list, walk each unfinished + post-FT
@@ -341,7 +349,6 @@ const finalSweep = (
   action: mode,
   finalQuota,
 });
-
 
 const extractFixtureItems = (data: unknown): readonly FixtureListItem[] => {
   if (!isRecord(data) || !Array.isArray(data.response)) {

@@ -73,9 +73,7 @@ const verifyWorkflowHmac = (
   return timingSafeEqual(a, b);
 };
 
-const buildWorkflowDeps = (
-  options: WorkerHttpHandlerOptions
-): WorkflowDeps | undefined => {
+const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | undefined => {
   if (!options.ingestion) {
     return undefined;
   }

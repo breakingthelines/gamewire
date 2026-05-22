@@ -149,9 +149,7 @@ export const handleProviderOutage = (input: {
  * crosswalk lookups. game-service still receives raw provider
  * payloads via the bridge.
  */
-export const handleIdentityOutage = (input: {
-  readonly identityErrors: number;
-}): DegradeResult => {
+export const handleIdentityOutage = (input: { readonly identityErrors: number }): DegradeResult => {
   if (input.identityErrors === 0) {
     return CONTINUE;
   }

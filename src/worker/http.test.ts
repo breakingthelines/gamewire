@@ -179,7 +179,10 @@ describe('gamewire-worker workflow endpoints', () => {
       { ingestion: buildIngestion(), competitions: [COMPETITION] }
     );
     expect(response.status).toBe(401);
-    expect(response.body).toMatchObject({ status: 'unauthorized', reason: 'workflow_secret_unset' });
+    expect(response.body).toMatchObject({
+      status: 'unauthorized',
+      reason: 'workflow_secret_unset',
+    });
   });
 
   it('rejects /workflows/* when the HMAC header is missing', async () => {

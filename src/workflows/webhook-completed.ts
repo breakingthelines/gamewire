@@ -127,7 +127,8 @@ export const webhookCompletedWorkflow = async (
   mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, mode);
 
   const allFailed = fetches.every(
-    (result) => result.status === 'failed' || result.status === 'denied' || result.status === 'skipped'
+    (result) =>
+      result.status === 'failed' || result.status === 'denied' || result.status === 'skipped'
   );
   const status: WebhookCompletedOutput['status'] = allFailed ? 'failed' : 'completed';
   const reason = allFailed ? errors.join('; ') || 'all fetches failed' : undefined;
