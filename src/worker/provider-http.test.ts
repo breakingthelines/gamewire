@@ -20,6 +20,10 @@ const baseConfig: GamewireWorkerConfig = {
   ingestionEnabled: false,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: false,
+  authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',
+  authContextIssuer: 'auth-service-test',
+  authContextAudience: 'gamewire-worker',
+  authContextRequiredScope: 'gamewire.workflow.invoke',
 };
 
 describe('API-Football provider HTTP boundary', () => {

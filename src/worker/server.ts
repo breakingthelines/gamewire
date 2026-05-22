@@ -15,7 +15,7 @@ import {
   type FootballGameBridgeClient,
   type GameServiceRecordRatingClient,
 } from './clients/game-service.js';
-import { createAuthContextVerifier, type Verifier } from './auth-context.js';
+import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
@@ -302,35 +302,15 @@ export { matchConcludedPublisher };
 
 // btl-auth-context verifier. Constructed once at boot — the JWKS fetch
 // happens here and the parsed key is cached on the Verifier instance for
-// the lifetime of the process. When `GAMEWIRE_AUTH_CONTEXT_JWKS_URL` is
-// unset this resolves to null and the worker stays HMAC-only. If JWKS
-// fetch fails we log the reason and continue HMAC-only — dual-mode means
-// a transient auth-service outage at boot must not take the worker down.
-let authContextVerifier: Verifier | undefined;
-try {
-  const v = await createAuthContextVerifier(config);
-  authContextVerifier = v ?? undefined;
-  if (authContextVerifier) {
-    console.log(
-      `[gamewire-worker] btl-auth-context verifier ready ` +
-        `(jwks=${config.authContextJwksUrl} issuer=${config.authContextIssuer ?? '<unset>'} ` +
-        `audience=${config.authContextAudience ?? '<unset>'} scope=${config.authContextRequiredScope ?? '<unset>'})`
-    );
-  } else {
-    console.log(
-      '[gamewire-worker] btl-auth-context verifier disabled (GAMEWIRE_AUTH_CONTEXT_JWKS_URL unset); ' +
-        'workflow endpoints accept HMAC only'
-    );
-  }
-} catch (err) {
-  // Boot must not fail just because the JWKS fetch failed — the HMAC
-  // fallback still serves traffic. Surface the reason loudly so ops
-  // notices the misconfiguration on the next deploy.
-  console.log(
-    `[gamewire-worker] btl-auth-context verifier failed to start: ` +
-      `${err instanceof Error ? err.message : String(err)}; falling back to HMAC-only`
-  );
-}
+// the lifetime of the process. There is no fallback credential: if the
+// JWKS fetch fails the process exits and Dokploy's healthcheck restarts
+// us, which is the right behaviour for a security-critical dependency.
+const authContextVerifier = await createAuthContextVerifier(config);
+console.log(
+  `[gamewire-worker] btl-auth-context verifier ready ` +
+    `(jwks=${config.authContextJwksUrl} issuer=${config.authContextIssuer} ` +
+    `audience=${config.authContextAudience} scope=${config.authContextRequiredScope})`
+);
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
@@ -364,19 +344,9 @@ server.listen(config.port, '0.0.0.0', () => {
   console.log(`[gamewire-worker] GameService target: ${config.gameServiceUrl}`);
   console.log(`[gamewire-worker] Identity target: ${config.identityServiceUrl}`);
   console.log(`[gamewire-worker] Webhook path: ${config.webhookPath}`);
-  const authModes: string[] = [];
-  if (authContextVerifier) {
-    authModes.push('btl-auth-context');
-  }
-  if (config.workflowSecret) {
-    authModes.push('HMAC');
-  }
   console.log(
-    `[gamewire-worker] Workflow endpoints: ${
-      authModes.length === 0
-        ? 'DISABLED (no auth method configured)'
-        : `accepts ${authModes.join(' + ')} (/workflows/{daily-anchor,hourly-matchday,webhook-completed})`
-    }`
+    `[gamewire-worker] Workflow endpoints accept btl-auth-context ` +
+      `(/workflows/{daily-anchor,hourly-matchday,webhook-completed})`
   );
 });
 

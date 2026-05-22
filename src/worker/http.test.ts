@@ -1,4 +1,4 @@
-import { createHmac, generateKeyPairSync, sign as ed25519Sign, type KeyObject } from 'node:crypto';
+import { generateKeyPairSync, sign as ed25519Sign, type KeyObject } from 'node:crypto';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -29,6 +29,10 @@ const config: GamewireWorkerConfig = {
   ingestionEnabled: false,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: false,
+  authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',
+  authContextIssuer: 'auth-service-test',
+  authContextAudience: 'gamewire-worker',
+  authContextRequiredScope: 'gamewire.workflow.invoke',
 };
 
 describe('gamewire-worker HTTP handler', () => {
@@ -127,206 +131,14 @@ describe('gamewire-worker HTTP handler', () => {
   });
 });
 
-describe('gamewire-worker workflow endpoints', () => {
-  const SECRET = 'unit-test-secret';
-  const sign = (rawBody: string): string =>
-    createHmac('sha256', SECRET).update(rawBody, 'utf8').digest('hex');
-
-  const baseQuota = (): ProviderQuotaSnapshot => ({
-    provider: 'api-football',
-    window: '2026-05-22',
-    calls: 100,
-    softCap: 60_000,
-    hardCap: 70_000,
-    cachedOnlyMode: false,
-    posture: 'normal',
-  });
-
-  const buildResult = (options: IngestionFetchOptions): IngestionFetchResult => ({
-    status: 'fetched',
-    workload: options.workload,
-    resourceId: options.resourceId,
-    cacheKey: `${options.workload}:${options.resourceId}`,
-    cacheHit: false,
-    cachedOnlyMode: false,
-    quota: baseQuota(),
-    data: { response: [] },
-  });
-
-  const buildIngestion = (): ApiFootballIngestionLoop =>
-    ({
-      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => buildResult(options)),
-    }) as unknown as ApiFootballIngestionLoop;
-
-  const COMPETITION: CompetitionEntry = {
-    key: 'unit-test',
-    label: 'Unit Test League',
-    apiFootballLeagueId: 9999,
-    season: 2025,
-    calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-    tier: 'domestic',
-  };
-
-  it('rejects /workflows/* when GAMEWIRE_WORKFLOW_SECRET is unset', async () => {
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/daily-anchor',
-        body: {},
-        rawBody: '{}',
-        headers: { 'x-gamewire-workflow-hmac': sign('{}') },
-      },
-      config,
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(401);
-    expect(response.body).toMatchObject({
-      status: 'unauthorized',
-      reason: 'workflow_secret_unset',
-    });
-  });
-
-  it('rejects /workflows/* with no_credentials when no auth headers are present', async () => {
-    // Dual-mode behaviour: with workflowSecret configured but no header
-    // sent, the request fails closed with no_credentials. We deliberately
-    // do not return bad_hmac here — HMAC is one of two acceptable proofs
-    // and an absent header tells us the caller didn't pick either, which
-    // is a different operational signal (missing client config) than
-    // "your signature doesn't match" (a corrupt or stale signer).
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/daily-anchor',
-        body: {},
-        rawBody: '{}',
-        headers: {},
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(401);
-    expect(response.body).toMatchObject({ status: 'unauthorized', reason: 'no_credentials' });
-  });
-
-  it('rejects /workflows/* when the HMAC header does not match', async () => {
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/daily-anchor',
-        body: {},
-        rawBody: '{}',
-        headers: { 'x-gamewire-workflow-hmac': 'deadbeef' },
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(401);
-  });
-
-  it('runs daily-anchor when HMAC is valid', async () => {
-    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] });
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/daily-anchor',
-        body: JSON.parse(rawBody),
-        rawBody,
-        headers: { 'x-gamewire-workflow-hmac': sign(rawBody) },
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      status: 'ok',
-      result: {
-        competitions: [{ competition: 'unit-test' }],
-      },
-    });
-  });
-
-  it('runs hourly-matchday when HMAC is valid', async () => {
-    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T15:00:00Z' });
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/hourly-matchday',
-        body: JSON.parse(rawBody),
-        rawBody,
-        headers: { 'x-gamewire-workflow-hmac': sign(rawBody) },
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      status: 'ok',
-      result: { inWindow: ['unit-test'] },
-    });
-  });
-
-  it('runs webhook-completed when HMAC is valid', async () => {
-    const rawBody = JSON.stringify({ providerId: 'api-football', fixtureId: '12345' });
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/webhook-completed',
-        body: JSON.parse(rawBody),
-        rawBody,
-        headers: { 'x-gamewire-workflow-hmac': sign(rawBody) },
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
-      status: 'ok',
-      result: { fixtureId: '12345', status: 'completed' },
-    });
-  });
-
-  it('returns 400 when webhook-completed body is missing required fields', async () => {
-    const rawBody = JSON.stringify({});
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/webhook-completed',
-        body: JSON.parse(rawBody),
-        rawBody,
-        headers: { 'x-gamewire-workflow-hmac': sign(rawBody) },
-      },
-      { ...config, workflowSecret: SECRET },
-      { ingestion: buildIngestion(), competitions: [COMPETITION] }
-    );
-    expect(response.status).toBe(400);
-  });
-
-  it('returns 503 when ingestion is not started', async () => {
-    const rawBody = '{}';
-    const response = await handleWorkerRequest(
-      {
-        method: 'POST',
-        pathname: '/workflows/daily-anchor',
-        body: {},
-        rawBody,
-        headers: { 'x-gamewire-workflow-hmac': sign(rawBody) },
-      },
-      { ...config, workflowSecret: SECRET },
-      {}
-    );
-    expect(response.status).toBe(503);
-  });
-});
-
-describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () => {
+describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
   // Crib of the keypair + token-build helpers from auth-sdk/server.test.ts.
   // We don't depend on the sdk's test fixtures because they're not
   // shipped in the published package; reconstructing them locally keeps
   // the gamewire tests self-contained.
-  const ISSUER = 'auth-service-test';
-  const AUDIENCE = 'gamewire-worker';
-  const SCOPE = 'gamewire.workflow.invoke';
-  const SECRET = 'unit-test-secret';
+  const ISSUER = config.authContextIssuer;
+  const AUDIENCE = config.authContextAudience;
+  const SCOPE = config.authContextRequiredScope;
 
   const base64Url = (input: Buffer | string): string => {
     const buf = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
@@ -385,9 +197,6 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
     };
   };
 
-  const hmacSign = (rawBody: string): string =>
-    createHmac('sha256', SECRET).update(rawBody, 'utf8').digest('hex');
-
   const baseQuota = (): ProviderQuotaSnapshot => ({
     provider: 'api-football',
     window: '2026-05-22',
@@ -423,22 +232,14 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
     tier: 'domestic',
   };
 
-  const authContextConfig = (
-    overrides: Partial<GamewireWorkerConfig> = {}
-  ): GamewireWorkerConfig => ({
-    ...config,
-    authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',
-    authContextIssuer: ISSUER,
-    authContextAudience: AUDIENCE,
-    authContextRequiredScope: SCOPE,
-    ...overrides,
-  });
-
-  it('accepts a valid btl-auth-context header', async () => {
+  const makeVerifier = (): { verifier: Verifier; privateKey: KeyObject } => {
     const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
-    const token = signToken(privateKey, defaultServicePayload());
+    return { verifier: new Verifier({ publicKey, issuer: ISSUER }), privateKey };
+  };
 
+  it('runs daily-anchor when btl-auth-context is valid', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
     const rawBody = JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] });
     const response = await handleWorkerRequest(
       {
@@ -448,7 +249,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
         rawBody,
         headers: { 'btl-auth-context': token },
       },
-      authContextConfig(),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -462,20 +263,19 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
     });
   });
 
-  it('falls back to HMAC when no btl-auth-context header is present', async () => {
-    const { publicKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
-
-    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] });
+  it('runs hourly-matchday when btl-auth-context is valid', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T15:00:00Z' });
     const response = await handleWorkerRequest(
       {
         method: 'POST',
-        pathname: '/workflows/daily-anchor',
+        pathname: '/workflows/hourly-matchday',
         body: JSON.parse(rawBody),
         rawBody,
-        headers: { 'x-gamewire-workflow-hmac': hmacSign(rawBody) },
+        headers: { 'btl-auth-context': token },
       },
-      authContextConfig({ workflowSecret: SECRET }),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -483,32 +283,112 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ status: 'ok' });
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      result: { inWindow: ['unit-test'] },
+    });
   });
 
-  it('rejects invalid btl-auth-context even when HMAC is valid (no fallback after present-but-bad token)', async () => {
-    // Sign with a *different* keypair so the verifier rejects the token.
-    // HMAC header is also valid — confirming the rule: a present
-    // btl-auth-context header is the authoritative credential and we
-    // must not silently fall through to HMAC if it fails.
-    const { publicKey } = generateKeyPairSync('ed25519');
-    const attackerKeys = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
-    const forgedToken = signToken(attackerKeys.privateKey, defaultServicePayload());
+  it('runs webhook-completed when btl-auth-context is valid', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const rawBody = JSON.stringify({ providerId: 'api-football', fixtureId: '12345' });
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/webhook-completed',
+        body: JSON.parse(rawBody),
+        rawBody,
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      result: { fixtureId: '12345', status: 'completed' },
+    });
+  });
 
-    const rawBody = JSON.stringify({});
+  it('returns 400 when webhook-completed body is missing required fields', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/webhook-completed',
+        body: {},
+        rawBody: '{}',
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it('returns 503 when ingestion is not started', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
     const response = await handleWorkerRequest(
       {
         method: 'POST',
         pathname: '/workflows/daily-anchor',
         body: {},
-        rawBody,
-        headers: {
-          'btl-auth-context': forgedToken,
-          'x-gamewire-workflow-hmac': hmacSign(rawBody),
-        },
+        rawBody: '{}',
+        headers: { 'btl-auth-context': token },
       },
-      authContextConfig({ workflowSecret: SECRET }),
+      config,
+      { authContextVerifier: verifier }
+    );
+    expect(response.status).toBe(503);
+  });
+
+  it('rejects with verifier_not_configured when no verifier is wired in', async () => {
+    // Single-mode boot guarantees the verifier is always present in prod
+    // (boot fails otherwise). This test pins the defensive HTTP-layer
+    // behaviour for the case where the handler is invoked without an
+    // `authContextVerifier` option — e.g. by a future caller that forgets
+    // to pass it. The client gets a 401 with the same shape as a bad
+    // token; only the verbose log carries `verifier_not_configured`.
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: {},
+        rawBody: '{}',
+        headers: {},
+      },
+      config,
+      { ingestion: buildIngestion(), competitions: [COMPETITION] }
+    );
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({
+      status: 'unauthorized',
+      reason: 'verifier_not_configured',
+    });
+  });
+
+  it('rejects with bad_auth_context when the btl-auth-context header is missing', async () => {
+    const { verifier } = makeVerifier();
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: {},
+        rawBody: '{}',
+        headers: {},
+      },
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -522,19 +402,19 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
     });
   });
 
-  it('rejects with no_credentials when neither header is sent', async () => {
-    const { publicKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
-
+  it('rejects a btl-auth-context signed by an untrusted key', async () => {
+    const { verifier } = makeVerifier();
+    const attackerKeys = generateKeyPairSync('ed25519');
+    const forgedToken = signToken(attackerKeys.privateKey, defaultServicePayload());
     const response = await handleWorkerRequest(
       {
         method: 'POST',
         pathname: '/workflows/daily-anchor',
         body: {},
         rawBody: '{}',
-        headers: {},
+        headers: { 'btl-auth-context': forgedToken },
       },
-      authContextConfig({ workflowSecret: SECRET }),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -544,13 +424,12 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
     expect(response.status).toBe(401);
     expect(response.body).toMatchObject({
       status: 'unauthorized',
-      reason: 'no_credentials',
+      reason: 'bad_auth_context',
     });
   });
 
   it('rejects btl-auth-context with the wrong audience', async () => {
-    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
+    const { verifier, privateKey } = makeVerifier();
     const token = signToken(
       privateKey,
       defaultServicePayload({
@@ -570,7 +449,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
         rawBody: '{}',
         headers: { 'btl-auth-context': token },
       },
-      authContextConfig(),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -585,8 +464,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
   });
 
   it('rejects btl-auth-context that is missing the required scope', async () => {
-    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
+    const { verifier, privateKey } = makeVerifier();
     const token = signToken(
       privateKey,
       defaultServicePayload({
@@ -606,7 +484,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
         rawBody: '{}',
         headers: { 'btl-auth-context': token },
       },
-      authContextConfig(),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -621,8 +499,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
   });
 
   it('rejects a USER btl-auth-context (only SERVICE subjects allowed)', async () => {
-    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
+    const { verifier, privateKey } = makeVerifier();
     const userToken = signToken(privateKey, defaultUserPayload());
 
     const response = await handleWorkerRequest(
@@ -633,7 +510,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
         rawBody: '{}',
         headers: { 'btl-auth-context': userToken },
       },
-      authContextConfig(),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],
@@ -648,9 +525,8 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
   });
 
   it('logs the verbose verifier reason via workflowLogger on 401', async () => {
-    const { publicKey } = generateKeyPairSync('ed25519');
+    const { verifier } = makeVerifier();
     const attackerKeys = generateKeyPairSync('ed25519');
-    const verifier = new Verifier({ publicKey, issuer: ISSUER });
     const forgedToken = signToken(attackerKeys.privateKey, defaultServicePayload());
 
     const workflowLogger = vi.fn();
@@ -663,7 +539,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context dual-mode)', () =
         rawBody: '{}',
         headers: { 'btl-auth-context': forgedToken },
       },
-      authContextConfig(),
+      config,
       {
         ingestion: buildIngestion(),
         competitions: [COMPETITION],

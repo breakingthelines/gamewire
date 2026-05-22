@@ -2,14 +2,15 @@
  * btl-auth-context verification glue for gamewire-worker.
  *
  * Bridges the `@breakingthelines/auth-sdk` server-side Verifier into the
- * worker's HTTP gate so kernel-service (SP-token minter, step 4) can call
- * `/workflows/*` with a signed Ed25519 token instead of an HMAC. This
- * module owns three concerns:
+ * worker's HTTP gate. kernel-service mints a signed Ed25519 token via
+ * `authcontext.Minter` for every `/workflows/*` call and the worker
+ * verifies it here. This module owns three concerns:
  *
  *   1. Boot-time JWKS fetch: `createAuthContextVerifier` does a single
  *      JWKS fetch when the worker starts. The resulting `Verifier`
  *      instance holds a parsed `KeyObject` and is safe to reuse across
- *      requests — we never refetch JWKS per request.
+ *      requests — we never refetch JWKS per request. If the JWKS URL is
+ *      unreachable, boot fails — there is no fallback credential.
  *
  *   2. Header-level claims check: `verifyAuthContextHeader` runs the
  *      cryptographic verification, then layers BTL-specific authorisation
@@ -22,10 +23,6 @@
  *      string. The HTTP handler logs the reason and surfaces a generic
  *      `bad_auth_context` to clients to avoid oracle-leaking which
  *      specific claim failed.
- *
- * This module is dormant whenever `GAMEWIRE_AUTH_CONTEXT_JWKS_URL` is
- * unset — in that case `createAuthContextVerifier` returns null and the
- * worker stays HMAC-only.
  */
 
 import {
@@ -42,26 +39,14 @@ export type { VerifiedAuthContext };
 /**
  * Construct a {@link Verifier} for inbound `btl-auth-context` tokens.
  *
- * Returns `null` when `cfg.authContextJwksUrl` is unset — that's the
- * HMAC-only branch where the verifier is intentionally dormant.
- *
  * Performs exactly one JWKS fetch at boot. The returned instance is
  * cached by the caller (typically `server.ts` module scope) so every
- * request reuses the same parsed public key.
- *
- * The function rejects (rather than returning null) when the JWKS URL is
- * configured but unreachable or malformed. The worker entrypoint is
- * expected to catch and continue HMAC-only in that case so a bad
- * staging config doesn't take the service down.
+ * request reuses the same parsed public key. Rejects when the JWKS URL
+ * is unreachable or malformed — boot is expected to fail in that case
+ * since there is no fallback credential.
  */
-export const createAuthContextVerifier = async (
-  cfg: GamewireWorkerConfig
-): Promise<Verifier | null> => {
-  if (!cfg.authContextJwksUrl) {
-    return null;
-  }
-  return Verifier.fromJWKSURL(cfg.authContextJwksUrl, { issuer: cfg.authContextIssuer });
-};
+export const createAuthContextVerifier = async (cfg: GamewireWorkerConfig): Promise<Verifier> =>
+  Verifier.fromJWKSURL(cfg.authContextJwksUrl, { issuer: cfg.authContextIssuer });
 
 /**
  * Outcome of a `btl-auth-context` header verification.

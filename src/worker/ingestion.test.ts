@@ -32,6 +32,10 @@ const baseConfig: GamewireWorkerConfig = {
   ingestionEnabled: true,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: true,
+  authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',
+  authContextIssuer: 'auth-service-test',
+  authContextAudience: 'gamewire-worker',
+  authContextRequiredScope: 'gamewire.workflow.invoke',
 };
 
 const replayConfig: GamewireWorkerConfig = {
