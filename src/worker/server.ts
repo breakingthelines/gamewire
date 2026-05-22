@@ -33,8 +33,14 @@ import {
   createBunRedisStreamClient,
   type BunRedisLike,
 } from './redis-stream-consumer.js';
+import { PHASE_A_COMPETITIONS } from '../workflows/index.js';
 
-const readBody = async (request: IncomingMessage): Promise<unknown> => {
+interface ReadBodyResult {
+  readonly body: unknown;
+  readonly rawBody: string;
+}
+
+const readBody = async (request: IncomingMessage): Promise<ReadBodyResult> => {
   const chunks: Buffer[] = [];
 
   for await (const chunk of request) {
@@ -42,19 +48,31 @@ const readBody = async (request: IncomingMessage): Promise<unknown> => {
   }
 
   if (chunks.length === 0) {
-    return undefined;
+    return { body: undefined, rawBody: '' };
   }
 
   const raw = Buffer.concat(chunks).toString('utf8');
   if (!raw) {
-    return undefined;
+    return { body: undefined, rawBody: '' };
   }
 
   try {
-    return JSON.parse(raw);
+    return { body: JSON.parse(raw), rawBody: raw };
   } catch {
-    return raw;
+    return { body: raw, rawBody: raw };
   }
+};
+
+const flattenHeaders = (request: IncomingMessage): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(request.headers)) {
+    if (Array.isArray(value)) {
+      out[key.toLowerCase()] = value.join(', ');
+    } else if (typeof value === 'string') {
+      out[key.toLowerCase()] = value;
+    }
+  }
+  return out;
 };
 
 // The ingestion loop is constructed alongside the HTTP server. The default
@@ -283,15 +301,24 @@ export { matchConcludedPublisher };
 
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
+  const { body, rawBody } = await readBody(request);
   const workerResponse = await handleWorkerRequest(
     {
       method: request.method ?? 'GET',
       pathname: url.pathname,
       query: Object.fromEntries(url.searchParams.entries()),
-      body: await readBody(request),
+      body,
+      rawBody,
+      headers: flattenHeaders(request),
     },
     config,
-    { ingestion }
+    {
+      ingestion,
+      competitions: PHASE_A_COMPETITIONS,
+      workflowLogger: (entry) => {
+        console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
+      },
+    }
   );
 
   response.writeHead(workerResponse.status, workerResponse.headers);
@@ -303,6 +330,13 @@ server.listen(config.port, '0.0.0.0', () => {
   console.log(`[gamewire-worker] GameService target: ${config.gameServiceUrl}`);
   console.log(`[gamewire-worker] Identity target: ${config.identityServiceUrl}`);
   console.log(`[gamewire-worker] Webhook path: ${config.webhookPath}`);
+  console.log(
+    `[gamewire-worker] Workflow endpoints: ${
+      config.workflowSecret
+        ? 'HMAC-protected (/workflows/{daily-anchor,hourly-matchday,webhook-completed})'
+        : 'DISABLED (GAMEWIRE_WORKFLOW_SECRET unset)'
+    }`
+  );
 });
 
 const shutdown = (signal: NodeJS.Signals): void => {

@@ -27,6 +27,14 @@ export interface GamewireWorkerConfig {
   bootstrapFixtureIds: readonly string[];
   /** Run one polling tick at boot instead of waiting for the first interval. */
   ingestionRunImmediateTick: boolean;
+  /**
+   * Shared secret used to HMAC-sign POSTs to the `/workflows/*` endpoints.
+   * Set via `GAMEWIRE_WORKFLOW_SECRET`. When unset the endpoints reject
+   * every request with 401 so a missing env var fails closed rather than
+   * leaving the surface open. Production deploys must set this; staging
+   * may leave it unset if the schedule layer is also unwired.
+   */
+  workflowSecret?: string;
 }
 
 export type GamewireWorkerEnv = Record<string, string | undefined>;
@@ -158,6 +166,10 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       providerMode === 'live',
       'gamewire ingestion immediate tick flag'
     ),
+    workflowSecret:
+      env.GAMEWIRE_WORKFLOW_SECRET === undefined || env.GAMEWIRE_WORKFLOW_SECRET.trim() === ''
+        ? undefined
+        : env.GAMEWIRE_WORKFLOW_SECRET.trim(),
   };
 };
 
