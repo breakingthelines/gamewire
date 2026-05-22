@@ -137,6 +137,14 @@ export {
   type WorkerHttpResponse,
 } from './http.js';
 export {
+  AUTH_CONTEXT_HEADER,
+  createAuthContextVerifier,
+  verifyAuthContextHeader,
+  type AuthContextVerifyResult,
+  type VerifiedAuthContext,
+  type Verifier,
+} from './auth-context.js';
+export {
   InMemoryProviderCache,
   RedisProviderCache,
   type ProviderCache,

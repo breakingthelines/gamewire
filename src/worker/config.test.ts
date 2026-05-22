@@ -66,4 +66,36 @@ describe('gamewire-worker config', () => {
       'Invalid gamewire ingestion immediate tick flag'
     );
   });
+
+  it('leaves auth-context config undefined when GAMEWIRE_AUTH_CONTEXT_JWKS_URL is unset', () => {
+    const cfg = loadConfig({});
+    expect(cfg.authContextJwksUrl).toBeUndefined();
+    expect(cfg.authContextIssuer).toBeUndefined();
+    expect(cfg.authContextAudience).toBeUndefined();
+    expect(cfg.authContextRequiredScope).toBeUndefined();
+  });
+
+  it('loads the full btl-auth-context config when all four env vars are set', () => {
+    const cfg = loadConfig({
+      GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
+      GAMEWIRE_AUTH_CONTEXT_ISSUER: 'auth-service',
+      GAMEWIRE_AUTH_CONTEXT_AUDIENCE: 'gamewire-worker',
+      GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE: 'gamewire.workflow.invoke',
+    });
+    expect(cfg.authContextJwksUrl).toBe('https://auth.test/.well-known/jwks.json');
+    expect(cfg.authContextIssuer).toBe('auth-service');
+    expect(cfg.authContextAudience).toBe('gamewire-worker');
+    expect(cfg.authContextRequiredScope).toBe('gamewire.workflow.invoke');
+  });
+
+  it('refuses to start with a half-configured btl-auth-context block (issuer/audience/scope must accompany JWKS URL)', () => {
+    expect(() =>
+      loadConfig({
+        GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
+        GAMEWIRE_AUTH_CONTEXT_ISSUER: 'auth-service',
+      })
+    ).toThrow(
+      /auth-context misconfigured.*GAMEWIRE_AUTH_CONTEXT_AUDIENCE.*GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE/
+    );
+  });
 });

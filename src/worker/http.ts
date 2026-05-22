@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 
+import { AUTH_CONTEXT_HEADER, verifyAuthContextHeader, type Verifier } from './auth-context.js';
 import type { GamewireWorkerConfig } from './config.js';
 import { config as defaultConfig } from './config.js';
 import { apiFootballFixturePath, apiFootballStatusPath } from '../adapters/api-football/index.js';
@@ -51,6 +52,13 @@ export interface WorkerHttpHandlerOptions {
   readonly ingestion?: ApiFootballIngestionLoop;
   readonly competitions?: readonly CompetitionEntry[];
   readonly workflowLogger?: WorkflowLogger;
+  /**
+   * btl-auth-context verifier built at boot via
+   * {@link createAuthContextVerifier}. When supplied alongside an
+   * inbound `btl-auth-context` header, this path takes precedence over
+   * the HMAC fallback. When absent the worker is HMAC-only.
+   */
+  readonly authContextVerifier?: Verifier;
 }
 
 const HMAC_HEADER = 'x-gamewire-workflow-hmac';
@@ -71,6 +79,135 @@ const verifyWorkflowHmac = (
     return false;
   }
   return timingSafeEqual(a, b);
+};
+
+const readHeader = (
+  headers: Record<string, string | undefined> | undefined,
+  name: string
+): string | undefined => {
+  if (!headers) {
+    return undefined;
+  }
+  return headers[name] ?? headers[name.toLowerCase()];
+};
+
+interface WorkflowAuthOutcome {
+  readonly authorised: boolean;
+  readonly response?: WorkerHttpResponse;
+  readonly reasonForLog?: string;
+}
+
+/**
+ * Authorise a `/workflows/*` POST request.
+ *
+ * Dual-mode acceptor: prefers a verified `btl-auth-context` header when
+ * one is present and the verifier is configured; otherwise falls back
+ * to the existing HMAC path. Returns the 401 response inline when
+ * neither credential is acceptable. The `reasonForLog` is the verbose
+ * verifier-side reason — the body returned to the client carries only
+ * the generic short code so we don't leak which claim failed.
+ *
+ * Critical security rule: if the `btl-auth-context` header is present
+ * but verification fails, we DO NOT also try HMAC. That would let a
+ * stolen HMAC bypass a present-but-bad token.
+ */
+const authoriseWorkflowRequest = (
+  cfg: GamewireWorkerConfig,
+  rawBody: string,
+  headers: Record<string, string | undefined> | undefined,
+  authContextVerifier: Verifier | undefined
+): WorkflowAuthOutcome => {
+  const authContextHeader = readHeader(headers, AUTH_CONTEXT_HEADER);
+  const hmacHeader = readHeader(headers, HMAC_HEADER);
+  const hasAuthContext = authContextHeader !== undefined && authContextHeader.trim() !== '';
+  const hasHmac = hmacHeader !== undefined && hmacHeader.trim() !== '';
+
+  // Path 1: btl-auth-context wins when both the header and a verifier
+  // are present. Failures here MUST NOT fall back to HMAC.
+  if (hasAuthContext && authContextVerifier) {
+    if (!cfg.authContextAudience || !cfg.authContextRequiredScope) {
+      // Belt-and-braces: createAuthContextVerifier only returns a
+      // verifier when loadConfig has already validated that audience +
+      // scope are present, so this branch should be unreachable. Log
+      // and reject loudly if we ever get here.
+      return {
+        authorised: false,
+        reasonForLog: 'auth_context_misconfigured',
+        response: jsonResponse(401, {
+          status: 'unauthorized',
+          reason: 'bad_auth_context',
+        }),
+      };
+    }
+    const result = verifyAuthContextHeader(
+      authContextVerifier,
+      authContextHeader,
+      cfg.authContextAudience,
+      cfg.authContextRequiredScope
+    );
+    if (result.ok) {
+      return { authorised: true };
+    }
+    return {
+      authorised: false,
+      reasonForLog: `auth_context:${result.error}`,
+      response: jsonResponse(401, {
+        status: 'unauthorized',
+        reason: 'bad_auth_context',
+      }),
+    };
+  }
+
+  // Path 2: HMAC fallback. Only attempted when no btl-auth-context
+  // header is present at all. Preserves existing kernel-service /
+  // backfill caller behaviour during the SP-token rollout.
+  if (hasHmac && cfg.workflowSecret) {
+    if (verifyWorkflowHmac(rawBody, hmacHeader, cfg.workflowSecret)) {
+      return { authorised: true };
+    }
+    return {
+      authorised: false,
+      reasonForLog: 'hmac:invalid',
+      response: jsonResponse(401, {
+        status: 'unauthorized',
+        reason: 'bad_hmac',
+      }),
+    };
+  }
+
+  // Path 3: nothing presentable. If neither credential is configured at
+  // all, surface that explicitly so ops can spot a missing env var; if
+  // the caller just forgot to send any header, surface no_credentials.
+  if (!authContextVerifier && !cfg.workflowSecret) {
+    return {
+      authorised: false,
+      reasonForLog: 'no_credentials_configured',
+      response: jsonResponse(401, {
+        status: 'unauthorized',
+        reason: 'workflow_secret_unset',
+      }),
+    };
+  }
+  return {
+    authorised: false,
+    reasonForLog: 'no_credentials',
+    response: jsonResponse(401, {
+      status: 'unauthorized',
+      reason: 'no_credentials',
+    }),
+  };
+};
+
+const workflowNameFromPath = (
+  pathname: string
+): 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' => {
+  if (pathname === '/workflows/hourly-matchday') {
+    return 'hourly-matchday';
+  }
+  if (pathname === '/workflows/webhook-completed') {
+    return 'webhook-completed';
+  }
+  return 'daily-anchor';
 };
 
 const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | undefined => {
@@ -215,20 +352,25 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/hourly-matchday' ||
       request.pathname === '/workflows/webhook-completed')
   ) {
-    if (!cfg.workflowSecret) {
-      return jsonResponse(401, {
-        status: 'unauthorized',
-        reason: 'workflow_secret_unset',
-      });
-    }
     const rawBody = request.rawBody ?? '';
-    const headerValue =
-      request.headers?.[HMAC_HEADER] ?? request.headers?.[HMAC_HEADER.toLowerCase()];
-    if (!verifyWorkflowHmac(rawBody, headerValue, cfg.workflowSecret)) {
-      return jsonResponse(401, {
-        status: 'unauthorized',
-        reason: 'bad_hmac',
-      });
+    const auth = authoriseWorkflowRequest(
+      cfg,
+      rawBody,
+      request.headers,
+      options.authContextVerifier
+    );
+    if (!auth.authorised) {
+      if (options.workflowLogger && auth.reasonForLog) {
+        // Log the verbose reason so ops can debug 401s without leaking
+        // claim-level detail back to the caller.
+        options.workflowLogger({
+          event: 'workflow-auth-rejected',
+          workflow: workflowNameFromPath(request.pathname),
+          reason: auth.reasonForLog,
+          message: `gamewire-worker workflow auth rejected: ${auth.reasonForLog}`,
+        });
+      }
+      return auth.response ?? jsonResponse(401, { status: 'unauthorized' });
     }
     const deps = buildWorkflowDeps(options);
     if (!deps) {

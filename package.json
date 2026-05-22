@@ -53,6 +53,7 @@
     "test": "vitest"
   },
   "dependencies": {
+    "@breakingthelines/auth-sdk": "0.0.19",
     "@breakingthelines/protos": "^0.11.3",
     "@bufbuild/protobuf": "^2.0.0",
     "@connectrpc/connect": "^2.1.1",
