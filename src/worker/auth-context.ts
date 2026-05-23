@@ -33,6 +33,17 @@ import {
 
 import type { GamewireWorkerConfig } from './config.js';
 
+/**
+ * Downstream header injected by auth-service ext_authz when it inline-mints
+ * a service-principal `btl-auth-context` for a SPIFFE mesh caller (see
+ * auth-service `extauthz_mesh.go::downstreamAuthContextHeader`). Mesh
+ * consumers must read this header — user-flow consumers read
+ * {@link AUTH_CONTEXT_HEADER}. gamewire-worker is mesh-only, so prefer
+ * this header and fall back to {@link AUTH_CONTEXT_HEADER} for
+ * defence-in-depth (e.g. legacy callers that still mint client-side).
+ */
+export const MESH_AUTH_CONTEXT_HEADER = 'x-btl-auth-context' as const;
+
 export { AUTH_CONTEXT_HEADER, Verifier };
 export type { VerifiedAuthContext };
 
