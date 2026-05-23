@@ -1,4 +1,4 @@
-import { createClient } from '@connectrpc/connect';
+import { createClient, type Interceptor } from '@connectrpc/connect';
 import { createGrpcTransport } from '@connectrpc/connect-node';
 
 import {
@@ -92,6 +92,16 @@ export interface FetchFootballGameLookupClientOptions {
   readonly baseUrl: string;
   /** Hard request timeout in ms. Defaults to 5 seconds. */
   readonly timeoutMs?: number;
+  /**
+   * Optional Connect interceptors applied to the transport. Production wires
+   * zero interceptors so the client ships a bare gRPC call: the mesh
+   * (Envoy + auth-service ext_authz) is responsible for stamping
+   * `btl-auth-context` on the user-service inbound listener. This hook
+   * exists so tests can install a capture interceptor that asserts no
+   * client-side auth headers (`authorization`, `btl-auth-context`,
+   * `x-spiffe-id`, or any `btl-*` key) ever leave the worker.
+   */
+  readonly interceptors?: readonly Interceptor[];
 }
 
 const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
@@ -100,13 +110,23 @@ const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
  * Build a `FootballGameLookupClient` backed by a real gRPC transport.
  * game-service exposes native gRPC on the mesh port, not Connect-over-HTTP,
  * so the worker must use `createGrpcTransport` here.
+ *
+ * The client is intentionally bare: it never attaches `authorization`,
+ * `btl-auth-context`, `x-spiffe-id`, or any other auth metadata. SP-tokens
+ * for cross-service auth are minted INLINE by auth-service's ext_authz
+ * Envoy extension on the user-service inbound listener; the gamewire-worker
+ * does not mint, sign, or attach anything client-side. The interceptors
+ * hook on the options is reserved for test capture, not for production
+ * auth wiring.
  */
 export const createFetchFootballGameLookupClient = (
   options: FetchFootballGameLookupClientOptions
 ): FootballGameBridgeClient => {
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
+  const interceptors = options.interceptors;
   const transport = createGrpcTransport({
     baseUrl: stripTrailingSlash(options.baseUrl),
+    ...(interceptors && interceptors.length > 0 ? { interceptors: [...interceptors] } : {}),
   });
   const client = createClient(GameService, transport);
 
