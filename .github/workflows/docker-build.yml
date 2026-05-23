@@ -54,12 +54,251 @@ jobs:
           cache-to: type=gha,mode=max
 
   deploy-staging:
-    name: Deploy to Staging
+    # gamewire is a public AGPL-3.0 repo. GitHub Actions does not allow public
+    # repos to call reusable workflows in private repos, so we cannot reuse
+    # breakingthelines/infrastructure/.github/workflows/deploy-staging.yml.
+    # The Dokploy redeploy + polling flow is inlined here. The body matches
+    # infrastructure/.github/workflows/deploy-staging.yml; keep them in sync
+    # when that script changes materially.
+    name: Deploy gamewire-worker to Staging
     needs: build-and-push
     if: github.ref == 'refs/heads/main'
-    uses: breakingthelines/infrastructure/.github/workflows/deploy-staging.yml@main
-    with:
-      service-name: gamewire-worker
-    secrets:
-      DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
-      DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+    runs-on: ubuntu-latest
+    env:
+      # Dokploy compose ID for gamewire-worker. Matches the SERVICE_MAP entry
+      # in infrastructure/.github/workflows/deploy-staging.yml.
+      COMPOSE_ID: 7yohxa_uSxAtnAUSTCxnH
+      COMPOSE_NAME: gamewire-worker
+    steps:
+      - name: Validate Dokploy secrets
+        env:
+          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+        run: |
+          if [ -z "$DOKPLOY_URL" ]; then
+            echo "::error::Missing DOKPLOY_URL secret"
+            exit 1
+          fi
+
+          if [ -z "$DOKPLOY_API_KEY" ]; then
+            echo "::error::Missing DOKPLOY_API_KEY secret"
+            exit 1
+          fi
+
+      - name: Write Dokploy rollout helper
+        run: |
+          cat > /tmp/dokploy-compose-rollout.sh <<'EOF'
+          #!/usr/bin/env bash
+
+          set -euo pipefail
+
+          : "${DOKPLOY_URL:?DOKPLOY_URL must be set}"
+          : "${DOKPLOY_API_KEY:?DOKPLOY_API_KEY must be set}"
+          : "${COMPOSE_ID:?COMPOSE_ID must be set}"
+
+          DOKPLOY_URL="${DOKPLOY_URL%/}"
+          COMPOSE_ACTION="${COMPOSE_ACTION:-redeploy}"
+          COMPOSE_NAME="${COMPOSE_NAME:-compose}"
+          DEPLOY_TITLE="${DEPLOY_TITLE:-}"
+          DEPLOY_DESCRIPTION="${DEPLOY_DESCRIPTION:-}"
+          POLL_TIMEOUT_SECONDS="${POLL_TIMEOUT_SECONDS:-300}"
+          POLL_INTERVAL_SECONDS="${POLL_INTERVAL_SECONDS:-5}"
+
+          BEFORE_IDS_FILE=/tmp/dokploy-before-ids.txt
+          : > "${BEFORE_IDS_FILE}"
+          curl -sS -o /tmp/dokploy-deployments-before.json \
+            "${DOKPLOY_URL}/api/deployment.allByCompose?composeId=${COMPOSE_ID}" \
+            -H "x-api-key: ${DOKPLOY_API_KEY}" || true
+
+          python3 - <<'PY' > "${BEFORE_IDS_FILE}"
+          import json
+          from pathlib import Path
+
+          try:
+              data = json.loads(Path("/tmp/dokploy-deployments-before.json").read_text())
+          except Exception:
+              raise SystemExit(0)
+
+          seen = set()
+
+          def walk(node):
+              if isinstance(node, dict):
+                  dep_id = node.get("deploymentId")
+                  if dep_id:
+                      seen.add(dep_id)
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+
+          walk(data)
+          for dep_id in sorted(seen):
+              print(dep_id)
+          PY
+
+          echo "Snapshot: $(wc -l < "${BEFORE_IDS_FILE}" | tr -d ' ') existing deployment(s) for ${COMPOSE_NAME}"
+
+          export COMPOSE_ID DEPLOY_TITLE DEPLOY_DESCRIPTION
+
+          python3 - <<'PY' > /tmp/dokploy-compose-payload.json
+          import json
+          import os
+
+          payload = {"composeId": os.environ["COMPOSE_ID"]}
+          title = os.environ.get("DEPLOY_TITLE")
+          description = os.environ.get("DEPLOY_DESCRIPTION")
+
+          if title:
+              payload["title"] = title
+          if description:
+              payload["description"] = description
+
+          print(json.dumps(payload))
+          PY
+
+          TRIGGER_HTTP_CODE="$(curl -sS -o /tmp/dokploy-trigger-response.json -w "%{http_code}" \
+            -X POST "${DOKPLOY_URL}/api/compose.${COMPOSE_ACTION}" \
+            -H "Content-Type: application/json" \
+            -H "x-api-key: ${DOKPLOY_API_KEY}" \
+            --data @/tmp/dokploy-compose-payload.json)"
+
+          echo "Dokploy ${COMPOSE_ACTION} HTTP status: ${TRIGGER_HTTP_CODE}"
+          cat /tmp/dokploy-trigger-response.json
+          echo
+
+          if [ "${TRIGGER_HTTP_CODE}" -lt 200 ] || [ "${TRIGGER_HTTP_CODE}" -ge 300 ]; then
+            echo "::error::Dokploy ${COMPOSE_ACTION} failed for ${COMPOSE_NAME} (${COMPOSE_ID}) with HTTP ${TRIGGER_HTTP_CODE}"
+            exit 1
+          fi
+
+          python3 - <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+
+          path = Path("/tmp/dokploy-trigger-response.json")
+          text = path.read_text().strip()
+          if not text:
+              sys.exit(0)
+
+          try:
+              data = json.loads(text)
+          except json.JSONDecodeError:
+              sys.exit(0)
+
+          errors = []
+
+          def walk(node):
+              if isinstance(node, dict):
+                  message = str(node.get("message", "")).lower()
+                  code = str(node.get("code", "")).upper()
+                  if message == "unauthorized" or code in {"UNAUTHORIZED", "FORBIDDEN"}:
+                      errors.append(node)
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+
+          walk(data)
+
+          if errors:
+              print("Dokploy accepted the request but returned an authorization error payload.", file=sys.stderr)
+              print(json.dumps(errors, indent=2), file=sys.stderr)
+              sys.exit(1)
+          PY
+
+          DEADLINE=$((SECONDS + POLL_TIMEOUT_SECONDS))
+          export BEFORE_IDS_FILE
+
+          while [ "${SECONDS}" -lt "${DEADLINE}" ]; do
+            STATUS_HTTP_CODE="$(curl -sS -o /tmp/dokploy-deployments-response.json -w "%{http_code}" \
+              "${DOKPLOY_URL}/api/deployment.allByCompose?composeId=${COMPOSE_ID}" \
+              -H "x-api-key: ${DOKPLOY_API_KEY}")"
+
+            if [ "${STATUS_HTTP_CODE}" -lt 200 ] || [ "${STATUS_HTTP_CODE}" -ge 300 ]; then
+              echo "::error::Dokploy deployment status lookup failed for ${COMPOSE_NAME} (${COMPOSE_ID}) with HTTP ${STATUS_HTTP_CODE}"
+              cat /tmp/dokploy-deployments-response.json
+              exit 1
+            fi
+
+            # Find the single deploymentId that didn't exist before the trigger.
+            # That's the one we just created; poll its status until terminal.
+            NEW_DEPLOYMENT="$(
+              python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          try:
+              data = json.loads(Path("/tmp/dokploy-deployments-response.json").read_text())
+          except Exception:
+              print("NONE")
+              raise SystemExit(0)
+
+          before = set(Path(os.environ["BEFORE_IDS_FILE"]).read_text().split())
+          records = []
+
+          def walk(node):
+              if isinstance(node, dict):
+                  dep_id = node.get("deploymentId")
+                  if dep_id and dep_id not in before:
+                      records.append(node)
+                  for value in node.values():
+                      walk(value)
+              elif isinstance(node, list):
+                  for value in node:
+                      walk(value)
+
+          walk(data)
+
+          if not records:
+              print("NONE")
+              raise SystemExit(0)
+
+          # Pick one (there should only ever be one novel id per trigger).
+          latest = records[0]
+          print(f"{latest.get('deploymentId', '')}\t{latest.get('status', '')}")
+          PY
+            )"
+
+            if [ "${NEW_DEPLOYMENT}" = "NONE" ]; then
+              echo "Waiting for Dokploy to register the new deployment for ${COMPOSE_NAME}..."
+              sleep "${POLL_INTERVAL_SECONDS}"
+              continue
+            fi
+
+            IFS=$'\t' read -r DEPLOYMENT_ID DEPLOYMENT_STATUS <<< "${NEW_DEPLOYMENT}"
+            echo "Dokploy deployment ${DEPLOYMENT_ID} for ${COMPOSE_NAME} is ${DEPLOYMENT_STATUS}"
+
+            case "${DEPLOYMENT_STATUS}" in
+              done|success|completed)
+                exit 0
+                ;;
+              error|failed|cancelled|canceled)
+                echo "::error::Dokploy deployment ${DEPLOYMENT_ID} failed for ${COMPOSE_NAME}"
+                cat /tmp/dokploy-deployments-response.json
+                exit 1
+                ;;
+            esac
+
+            sleep "${POLL_INTERVAL_SECONDS}"
+          done
+
+          echo "::error::Timed out waiting for Dokploy to finish ${COMPOSE_ACTION} for ${COMPOSE_NAME} (${COMPOSE_ID})"
+          cat /tmp/dokploy-deployments-response.json
+          exit 1
+          EOF
+
+          chmod +x /tmp/dokploy-compose-rollout.sh
+
+      - name: Trigger Dokploy redeploy and verify rollout
+        env:
+          DOKPLOY_URL: ${{ secrets.DOKPLOY_URL }}
+          DOKPLOY_API_KEY: ${{ secrets.DOKPLOY_API_KEY }}
+          COMPOSE_ACTION: redeploy
+          DEPLOY_TITLE: GitHub Actions redeploy - gamewire-worker
+          DEPLOY_DESCRIPTION: ${{ github.repository }}@${{ github.sha }}
+        run: |
+          bash /tmp/dokploy-compose-rollout.sh
