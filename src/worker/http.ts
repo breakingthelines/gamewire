@@ -1,4 +1,9 @@
-import { AUTH_CONTEXT_HEADER, verifyAuthContextHeader, type Verifier } from './auth-context.js';
+import {
+  AUTH_CONTEXT_HEADER,
+  MESH_AUTH_CONTEXT_HEADER,
+  verifyAuthContextHeader,
+  type Verifier,
+} from './auth-context.js';
 import type { GamewireWorkerConfig } from './config.js';
 import { config as defaultConfig } from './config.js';
 import { apiFootballFixturePath, apiFootballStatusPath } from '../adapters/api-football/index.js';
@@ -77,13 +82,31 @@ interface WorkflowAuthOutcome {
 /**
  * Authorise a `/workflows/*` POST request.
  *
- * The only accepted credential is a verified `btl-auth-context` header
- * that satisfies the configured audience + required scope claims and
- * is signed by an Ed25519 key in the trusted JWKS set. The verifier is
- * built once at boot; absence here is a misconfiguration and surfaces
- * as 401. The `reasonForLog` is the verbose verifier-side reason — the
- * body returned to the client carries only `bad_auth_context` so we
- * don't oracle-leak which claim failed.
+ * The only accepted credential is a verified service-principal
+ * auth-context header that satisfies the configured audience + required
+ * scope claims and is signed by an Ed25519 key in the trusted JWKS set.
+ * The verifier is built once at boot; absence here is a misconfiguration
+ * and surfaces as 401.
+ *
+ * Two header names are recognised, in order of preference:
+ *
+ *   1. `x-btl-auth-context` — the canonical mesh header. auth-service
+ *      ext_authz inline-mints this header from the SPIFFE peer identity
+ *      and Envoy injects it on the downstream request (see
+ *      auth-service `extauthz_mesh.go`). gamewire-worker is a pure mesh
+ *      consumer (kernel → mesh → gamewire-worker) so this is the
+ *      expected source of truth.
+ *
+ *   2. `btl-auth-context` — the user-flow header. Accepted as a
+ *      defence-in-depth fallback so deployments still in transition
+ *      (e.g. a caller that mints client-side) keep working. The
+ *      service-principal verifier still requires SERVICE subject + the
+ *      audience/scope claims, so a leaked user `btl-auth-context` cannot
+ *      authorise a workflow.
+ *
+ * The `reasonForLog` is the verbose verifier-side reason — the body
+ * returned to the client carries only `bad_auth_context` so we don't
+ * oracle-leak which claim failed.
  */
 const authoriseWorkflowRequest = (
   cfg: GamewireWorkerConfig,
@@ -101,7 +124,8 @@ const authoriseWorkflowRequest = (
     };
   }
 
-  const authContextHeader = readHeader(headers, AUTH_CONTEXT_HEADER);
+  const authContextHeader =
+    readHeader(headers, MESH_AUTH_CONTEXT_HEADER) ?? readHeader(headers, AUTH_CONTEXT_HEADER);
   const result = verifyAuthContextHeader(
     authContextVerifier,
     authContextHeader,

@@ -2,7 +2,7 @@ import { generateKeyPairSync, sign as ed25519Sign, type KeyObject } from 'node:c
 
 import { describe, expect, it, vi } from 'vitest';
 
-import { Verifier } from './auth-context.js';
+import { MESH_AUTH_CONTEXT_HEADER, Verifier } from './auth-context.js';
 import type { GamewireWorkerConfig } from './config.js';
 import { activityNames, handleWorkerRequest } from './http.js';
 import type {
@@ -260,6 +260,99 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(response.body).toMatchObject({
       status: 'ok',
       result: { competitions: [{ competition: 'unit-test' }] },
+    });
+  });
+
+  it('runs daily-anchor when x-btl-auth-context (mesh-mint) is valid', async () => {
+    // auth-service ext_authz inline-mints btl-auth-context for SPIFFE
+    // mesh callers and Envoy forwards it as the downstream
+    // x-btl-auth-context header. gamewire-worker is mesh-only so this is
+    // the canonical authorisation path on staging/prod.
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] });
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: JSON.parse(rawBody),
+        rawBody,
+        headers: { [MESH_AUTH_CONTEXT_HEADER]: token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      status: 'ok',
+      result: { competitions: [{ competition: 'unit-test' }] },
+    });
+  });
+
+  it('prefers x-btl-auth-context over btl-auth-context when both are set', async () => {
+    // Belt-and-braces: in practice auth-service mesh-mint skips when an
+    // existing btl-auth-context is present, so both headers won't normally
+    // appear together. If they do, the mesh header is authoritative
+    // because it carries the verified SPIFFE-derived identity from the
+    // current hop, whereas btl-auth-context may have travelled further
+    // and be more stale.
+    const { verifier, privateKey } = makeVerifier();
+    const meshToken = signToken(privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({
+          nowUtc: '2026-05-23T02:00:00Z',
+          competitions: ['unit-test'],
+        }),
+        headers: {
+          [MESH_AUTH_CONTEXT_HEADER]: meshToken,
+          'btl-auth-context': 'definitely-not-a-valid-token',
+        },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({ status: 'ok' });
+  });
+
+  it('rejects when x-btl-auth-context is signed by an untrusted key', async () => {
+    // Mirror of the existing btl-auth-context untrusted-signer test, but
+    // exercises the mesh header path so a typo in the new MESH_AUTH_CONTEXT_HEADER
+    // wiring would surface as a 200 here.
+    const { verifier } = makeVerifier();
+    const attackerKeys = generateKeyPairSync('ed25519');
+    const forgedToken = signToken(attackerKeys.privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: {},
+        rawBody: '{}',
+        headers: { [MESH_AUTH_CONTEXT_HEADER]: forgedToken },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({
+      status: 'unauthorized',
+      reason: 'bad_auth_context',
     });
   });
 
