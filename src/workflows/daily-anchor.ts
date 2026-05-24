@@ -2,8 +2,9 @@
  * Daily 02:00 UTC anchor sweep.
  *
  * Per competition, in catalogue order:
- *   1. `fixtures-next-7d` — pulls the next week of fixtures so the
- *      ingestion cache stays warm for prematch panels.
+ *   1. `fixtures-next-7d` — pulls fixtures within a -1d/+7d window so
+ *      the ingestion cache stays warm for prematch panels and recent
+ *      finals are reconciled.
  *   2. `team-metadata` for any team that appears in the fixture list
  *      and is not yet cached (heuristic: missed cache last 24h).
  *   3. `events-post-final` + `lineups-post-confirm` for any fixture
@@ -36,9 +37,17 @@ import type {
 type SweepMode = 'continue' | 'cached-only' | 'abort';
 
 const FIXTURE_FALLBACK_MIN_AGE_MS = 30 * 60 * 1000;
+const ANCHOR_BACKWARD_DAYS = 1;
+const ANCHOR_FORWARD_DAYS = 7;
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
-const FIXTURES_NEXT_7D_PATH = (competition: CompetitionEntry): string =>
-  `/fixtures?league=${competition.apiFootballLeagueId}&season=${competition.season}`;
+const formatYmd = (date: Date): string => date.toISOString().slice(0, 10);
+
+const FIXTURES_ANCHOR_WINDOW_PATH = (competition: CompetitionEntry, anchorAt: Date): string => {
+  const from = formatYmd(new Date(anchorAt.getTime() - ANCHOR_BACKWARD_DAYS * MS_PER_DAY));
+  const to = formatYmd(new Date(anchorAt.getTime() + ANCHOR_FORWARD_DAYS * MS_PER_DAY));
+  return `/fixtures?league=${competition.apiFootballLeagueId}&season=${competition.season}&from=${from}&to=${to}`;
+};
 
 const STANDINGS_PATH = (competition: CompetitionEntry): string =>
   `/standings?league=${competition.apiFootballLeagueId}&season=${competition.season}`;
@@ -191,12 +200,16 @@ const sweepCompetition = async (
     return 'continue';
   };
 
-  // Step 1: fixtures-next-7d for this competition.
-  const fixturesResource = `league-${competition.apiFootballLeagueId}-season-${competition.season}`;
+  // Step 1: fixtures within the anchor window (yesterday → 7 days out).
+  // Bounded window is essential: an unbounded /fixtures?league&season query
+  // returns the whole season (~380 fixtures per top-five league) and the
+  // per-fixture FT reconciliation below would balloon a 30m sweep budget.
+  const anchorYmd = formatYmd(startedAt);
+  const fixturesResource = `league-${competition.apiFootballLeagueId}-season-${competition.season}-anchor-${anchorYmd}`;
   const fixturesResult = await deps.ingestion.fetchWorkload({
     workload: FIXTURES_WORKLOAD,
     resourceId: fixturesResource,
-    path: FIXTURES_NEXT_7D_PATH(competition),
+    path: FIXTURES_ANCHOR_WINDOW_PATH(competition, startedAt),
   });
   mode = accumulate(fixturesResult, FIXTURES_WORKLOAD, fixturesResource, mode);
 
