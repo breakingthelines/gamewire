@@ -356,9 +356,7 @@ const server = createServer(async (request, response) => {
       }
     } catch (err) {
       console.log(
-        `[gamewire-worker] stream-write failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`
+        `[gamewire-worker] stream-write failed: ${err instanceof Error ? err.message : String(err)}`
       );
     } finally {
       if (!response.writableEnded) {

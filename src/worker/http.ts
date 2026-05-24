@@ -199,9 +199,7 @@ const startWorkflowStream = <T>(args: {
   return queue;
 };
 
-const streamingResponse = (
-  stream: AsyncIterable<Record<string, unknown>>
-): WorkerHttpResponse => ({
+const streamingResponse = (stream: AsyncIterable<Record<string, unknown>>): WorkerHttpResponse => ({
   status: 200,
   headers: {
     'content-type': 'application/x-ndjson; charset=utf-8',

@@ -255,15 +255,11 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     return out;
   };
 
-  const finalCompleted = async (
-    response: WorkerHttpResponse
-  ): Promise<Record<string, unknown>> => {
+  const finalCompleted = async (response: WorkerHttpResponse): Promise<Record<string, unknown>> => {
     const lines = await collectStream(response);
     const completed = lines.findLast((line) => line.event === 'completed');
     if (!completed) {
-      throw new Error(
-        `workflow stream ended without a 'completed' line: ${JSON.stringify(lines)}`
-      );
+      throw new Error(`workflow stream ended without a 'completed' line: ${JSON.stringify(lines)}`);
     }
     return completed;
   };
