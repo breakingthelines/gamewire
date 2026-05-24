@@ -336,7 +336,36 @@ const server = createServer(async (request, response) => {
   );
 
   response.writeHead(workerResponse.status, workerResponse.headers);
-  response.end(JSON.stringify(workerResponse.body));
+  if (workerResponse.stream) {
+    // NDJSON streaming response. Each iteration yields a single object; we
+    // serialise and write it as a chunk so node:http frames it via
+    // Transfer-Encoding: chunked. Each chunk resets the upstream Envoy
+    // HCM stream_idle_timeout (default 5m), letting long-running workflows
+    // run to completion without the mesh tearing the connection down.
+    //
+    // The async iterator is owned by the handler (see startWorkflowStream
+    // in http.ts) and is guaranteed to terminate — either via a workflow
+    // resolve/reject pushing a final `completed` line, or via the heartbeat
+    // continuing to fire if the workflow is somehow stuck (in which case
+    // the kernel-side HTTP client deadline cuts first).
+    try {
+      for await (const line of workerResponse.stream) {
+        if (!response.writableEnded) {
+          response.write(`${JSON.stringify(line)}\n`);
+        }
+      }
+    } catch (err) {
+      console.log(
+        `[gamewire-worker] stream-write failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      if (!response.writableEnded) {
+        response.end();
+      }
+    }
+  } else {
+    response.end(JSON.stringify(workerResponse.body));
+  }
 });
 
 server.listen(config.port, '0.0.0.0', () => {
