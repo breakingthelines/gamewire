@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { MESH_AUTH_CONTEXT_HEADER, Verifier } from './auth-context.js';
 import type { GamewireWorkerConfig } from './config.js';
-import { activityNames, handleWorkerRequest } from './http.js';
+import { activityNames, handleWorkerRequest, type WorkerHttpResponse } from './http.js';
 import type {
   ApiFootballIngestionLoop,
   IngestionFetchOptions,
@@ -237,6 +237,37 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     return { verifier: new Verifier({ publicKey, issuer: ISSUER }), privateKey };
   };
 
+  // Workflow endpoints stream their progress as NDJSON (one JSON object per
+  // line) so each chunk resets Envoy's HCM stream_idle_timeout during long
+  // workflow legs. The stream ends with a single `event: 'completed'` line
+  // that carries the workflow outcome. These helpers consume the stream
+  // synchronously in tests where the mocked ingestion resolves immediately.
+  const collectStream = async (
+    response: WorkerHttpResponse
+  ): Promise<Record<string, unknown>[]> => {
+    if (!response.stream) {
+      return [];
+    }
+    const out: Record<string, unknown>[] = [];
+    for await (const line of response.stream) {
+      out.push(line);
+    }
+    return out;
+  };
+
+  const finalCompleted = async (
+    response: WorkerHttpResponse
+  ): Promise<Record<string, unknown>> => {
+    const lines = await collectStream(response);
+    const completed = lines.findLast((line) => line.event === 'completed');
+    if (!completed) {
+      throw new Error(
+        `workflow stream ended without a 'completed' line: ${JSON.stringify(lines)}`
+      );
+    }
+    return completed;
+  };
+
   it('runs daily-anchor when btl-auth-context is valid', async () => {
     const { verifier, privateKey } = makeVerifier();
     const token = signToken(privateKey, defaultServicePayload());
@@ -257,10 +288,150 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
+    expect(response.headers['content-type']).toBe('application/x-ndjson; charset=utf-8');
+    expect(await finalCompleted(response)).toMatchObject({
+      event: 'completed',
+      workflow: 'daily-anchor',
       status: 'ok',
       result: { competitions: [{ competition: 'unit-test' }] },
     });
+  });
+
+  it('streams workflow logger events as NDJSON before the completed line', async () => {
+    // The whole point of the streaming response is real-time progress so the
+    // upstream Envoy HCM stream_idle_timeout (default 5m) cannot fire while
+    // the workflow is making progress. This test pins the contract:
+    //
+    //   1. Response is 200 with application/x-ndjson content-type.
+    //   2. Each WorkflowLogger entry appears as its own line in the stream.
+    //   3. A single `event: 'completed'` line ends the stream and carries the
+    //      workflow result.
+    //
+    // Regressions in any of those three would re-expose the 5m-cutoff bug
+    // even though the unit test would still see a "successful" workflow.
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({
+          nowUtc: '2026-05-23T02:00:00Z',
+          competitions: ['unit-test'],
+        }),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/x-ndjson; charset=utf-8');
+    expect(response.stream).toBeDefined();
+
+    const lines = await collectStream(response);
+
+    // daily-anchor.ts emits started → finished (and conditionally aborted)
+    // before completing. The exact intermediate set is fragile to track —
+    // pin only that started and finished show up before the completed line.
+    const eventNames = lines.map((line) => line.event);
+    expect(eventNames).toContain('daily_anchor.started');
+    expect(eventNames).toContain('daily_anchor.finished');
+    expect(eventNames[eventNames.length - 1]).toBe('completed');
+
+    const completed = lines[lines.length - 1]!;
+    expect(completed).toMatchObject({
+      event: 'completed',
+      workflow: 'daily-anchor',
+      status: 'ok',
+    });
+  });
+
+  it('still forwards workflow logger events to the base logger while streaming', async () => {
+    // The base workflowLogger (wired in server.ts to console.log structured
+    // events) must keep receiving every entry — otherwise we lose the
+    // ops-visible stdout trail that observability scrapes today. The stream
+    // is the wire format; the base logger is the persistent record.
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const workflowLogger = vi.fn();
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({
+          nowUtc: '2026-05-23T02:00:00Z',
+          competitions: ['unit-test'],
+        }),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+        workflowLogger,
+      }
+    );
+    // Drain the stream so the workflow runs to completion.
+    await collectStream(response);
+
+    const baseEvents = workflowLogger.mock.calls.map(
+      (call) => (call[0] as { event: string }).event
+    );
+    expect(baseEvents).toContain('daily_anchor.started');
+    expect(baseEvents).toContain('daily_anchor.finished');
+    // The synthetic stream-only events (`heartbeat`, `completed`) must NOT
+    // leak into the base logger — they are wire-level framing, not domain
+    // events worth persisting to structured logs.
+    expect(baseEvents).not.toContain('heartbeat');
+    expect(baseEvents).not.toContain('completed');
+  });
+
+  it('surfaces workflow exceptions as a status:error completed line', async () => {
+    // Pre-streaming, a workflow throw bubbled out as HTTP 500 with the
+    // message in the body. Streaming responds 200 (because the response
+    // status is committed before the workflow finishes), and the kernel-side
+    // activity reads the trailing `status: 'error'` line as a retryable
+    // failure. This test pins the on-wire shape.
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const exploding = {
+      fetchWorkload: vi.fn(async () => {
+        throw new Error('synthetic ingestion failure');
+      }),
+    } as unknown as ApiFootballIngestionLoop;
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({
+          nowUtc: '2026-05-23T02:00:00Z',
+          competitions: ['unit-test'],
+        }),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: exploding,
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    const completed = await finalCompleted(response);
+    expect(completed).toMatchObject({
+      event: 'completed',
+      workflow: 'daily-anchor',
+      status: 'error',
+    });
+    expect(String(completed.reason)).toContain('synthetic ingestion failure');
   });
 
   it('runs daily-anchor when x-btl-auth-context (mesh-mint) is valid', async () => {
@@ -287,7 +458,8 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
+    expect(await finalCompleted(response)).toMatchObject({
+      event: 'completed',
       status: 'ok',
       result: { competitions: [{ competition: 'unit-test' }] },
     });
@@ -324,7 +496,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ status: 'ok' });
+    expect(await finalCompleted(response)).toMatchObject({ status: 'ok' });
   });
 
   it('rejects when x-btl-auth-context is signed by an untrusted key', async () => {
@@ -376,7 +548,9 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
+    expect(await finalCompleted(response)).toMatchObject({
+      event: 'completed',
+      workflow: 'hourly-matchday',
       status: 'ok',
       result: { inWindow: ['unit-test'] },
     });
@@ -402,7 +576,9 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       }
     );
     expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({
+    expect(await finalCompleted(response)).toMatchObject({
+      event: 'completed',
+      workflow: 'webhook-completed',
       status: 'ok',
       result: { fixtureId: '12345', status: 'completed' },
     });

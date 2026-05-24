@@ -40,6 +40,15 @@ export interface WorkerHttpResponse {
   status: number;
   headers: Record<string, string>;
   body: Record<string, unknown>;
+  /**
+   * When set, the response body is streamed as NDJSON: one JSON object per
+   * line, written via Transfer-Encoding: chunked. Used by `/workflows/*`
+   * endpoints so each chunk resets the upstream Envoy HCM
+   * `stream_idle_timeout` (default 5m) during long-running workflows. See
+   * {@link startWorkflowStream} for the event shape; the final line always
+   * has `event: 'completed'` and carries `{status, result?, reason?}`.
+   */
+  stream?: AsyncIterable<Record<string, unknown>>;
 }
 
 const jsonResponse = (status: number, body: Record<string, unknown>): WorkerHttpResponse => ({
@@ -48,6 +57,160 @@ const jsonResponse = (status: number, body: Record<string, unknown>): WorkerHttp
     'content-type': 'application/json; charset=utf-8',
   },
   body,
+});
+
+/**
+ * Heartbeat cadence for `/workflows/*` NDJSON streams. The Envoy HCM
+ * `stream_idle_timeout` default is 300s and Consul Connect does not expose it
+ * via service-resolver / service-defaults (the property-override Envoy
+ * extension cannot index into the repeated HCM filter array, see
+ * infrastructure PRs #24/#26). A pre-stream synchronous response would
+ * therefore be cut at 5m even when the workflow is making progress. By
+ * emitting a heartbeat line every 30s — well under any reasonable proxy
+ * idle timer and an order of magnitude under Envoy's default — every layer
+ * between gamewire-worker and the kernel HTTP client sees continuous
+ * activity for the lifetime of the workflow.
+ */
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+/**
+ * Bounded async queue used by {@link startWorkflowStream} to bridge the
+ * synchronous {@link WorkflowLogger} callback (called from inside the
+ * workflow) and the asynchronous NDJSON iterator (consumed by the HTTP
+ * server). Push never blocks; iterator next() blocks only when the queue
+ * is empty and the producer has not yet closed it.
+ */
+class WorkflowStreamQueue implements AsyncIterable<Record<string, unknown>> {
+  private readonly queue: Record<string, unknown>[] = [];
+  private waiter: (() => void) | null = null;
+  private closed = false;
+
+  push(item: Record<string, unknown>): void {
+    if (this.closed) {
+      return;
+    }
+    this.queue.push(item);
+    this.wake();
+  }
+
+  close(): void {
+    if (this.closed) {
+      return;
+    }
+    this.closed = true;
+    this.wake();
+  }
+
+  private wake(): void {
+    if (this.waiter) {
+      const w = this.waiter;
+      this.waiter = null;
+      w();
+    }
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<Record<string, unknown>> {
+    return {
+      next: async (): Promise<IteratorResult<Record<string, unknown>>> => {
+        while (this.queue.length === 0 && !this.closed) {
+          await new Promise<void>((resolve) => {
+            this.waiter = resolve;
+          });
+        }
+        if (this.queue.length > 0) {
+          return { value: this.queue.shift()!, done: false };
+        }
+        return { value: undefined as never, done: true };
+      },
+    };
+  }
+}
+
+type WorkflowName = 'daily-anchor' | 'hourly-matchday' | 'webhook-completed';
+
+/**
+ * Run a workflow in the background and expose its progress as an NDJSON
+ * AsyncIterable. Each line on the wire is either:
+ *
+ *   - a {@link WorkflowLogEntry} forwarded verbatim from the workflow
+ *   - a `{event: 'heartbeat', workflow, ts}` keepalive every 30s
+ *   - a single `{event: 'completed', workflow, status: 'ok'|'error', result?,
+ *     reason?}` line that always closes the stream
+ *
+ * The handler still returns 200 even when the workflow throws; the error is
+ * carried in the trailing `completed` line so the HTTP status reflects "the
+ * stream was established" rather than "the workflow result". Kernel-side
+ * activity logic in `internal/activityimpl/game_backfill.go` reads the
+ * trailing line and treats `status: 'error'` as a retryable failure, which
+ * matches the pre-streaming 500-with-body behaviour.
+ */
+const startWorkflowStream = <T>(args: {
+  workflow: WorkflowName;
+  baseLogger: WorkflowLogger | undefined;
+  run: (logger: WorkflowLogger) => Promise<T>;
+}): AsyncIterable<Record<string, unknown>> => {
+  const queue = new WorkflowStreamQueue();
+
+  const streamLogger: WorkflowLogger = (entry) => {
+    if (args.baseLogger) {
+      try {
+        args.baseLogger(entry);
+      } catch {
+        // Never let a downstream logger failure break workflow execution.
+      }
+    }
+    queue.push({ ...entry });
+  };
+
+  const heartbeat = setInterval(() => {
+    queue.push({
+      event: 'heartbeat',
+      workflow: args.workflow,
+      ts: new Date().toISOString(),
+    });
+  }, HEARTBEAT_INTERVAL_MS);
+  if (typeof heartbeat.unref === 'function') {
+    heartbeat.unref();
+  }
+
+  void args
+    .run(streamLogger)
+    .then((result) => {
+      queue.push({
+        event: 'completed',
+        workflow: args.workflow,
+        status: 'ok',
+        result: result as Record<string, unknown>,
+      });
+    })
+    .catch((err: unknown) => {
+      queue.push({
+        event: 'completed',
+        workflow: args.workflow,
+        status: 'error',
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    })
+    .finally(() => {
+      clearInterval(heartbeat);
+      queue.close();
+    });
+
+  return queue;
+};
+
+const streamingResponse = (
+  stream: AsyncIterable<Record<string, unknown>>
+): WorkerHttpResponse => ({
+  status: 200,
+  headers: {
+    'content-type': 'application/x-ndjson; charset=utf-8',
+    'cache-control': 'no-cache',
+    // node:http sets Transfer-Encoding: chunked automatically when we
+    // omit Content-Length and call response.write() before response.end().
+  },
+  body: {},
+  stream,
 });
 
 export interface WorkerHttpHandlerOptions {
@@ -313,24 +476,16 @@ export const handleWorkerRequest = async (
       }
       return auth.response ?? jsonResponse(401, { status: 'unauthorized' });
     }
-    const deps = buildWorkflowDeps(options);
-    if (!deps) {
+    const baseDeps = buildWorkflowDeps(options);
+    if (!baseDeps) {
       return jsonResponse(503, {
         status: 'unavailable',
         reason: 'ingestion_not_started',
       });
     }
-    try {
-      if (request.pathname === '/workflows/daily-anchor') {
-        const input = parseDailyAnchorInput(request.body);
-        const result = await dailyAnchorWorkflow(input, deps);
-        return jsonResponse(200, { status: 'ok', result });
-      }
-      if (request.pathname === '/workflows/hourly-matchday') {
-        const input = parseHourlyMatchdayInput(request.body);
-        const result = await hourlyMatchdayWorkflow(input, deps);
-        return jsonResponse(200, { status: 'ok', result });
-      }
+    const workflowName = workflowNameFromPath(request.pathname);
+
+    if (request.pathname === '/workflows/webhook-completed') {
       const input = parseWebhookCompletedInput(request.body);
       if (!input) {
         return jsonResponse(400, {
@@ -338,14 +493,35 @@ export const handleWorkerRequest = async (
           reason: 'missing_fixture_id_or_provider_id',
         });
       }
-      const result = await webhookCompletedWorkflow(input, deps);
-      return jsonResponse(200, { status: 'ok', result });
-    } catch (err) {
-      return jsonResponse(500, {
-        status: 'error',
-        reason: err instanceof Error ? err.message : String(err),
-      });
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => webhookCompletedWorkflow(input, { ...baseDeps, logger }),
+        })
+      );
     }
+
+    if (request.pathname === '/workflows/hourly-matchday') {
+      const input = parseHourlyMatchdayInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => hourlyMatchdayWorkflow(input, { ...baseDeps, logger }),
+        })
+      );
+    }
+
+    // daily-anchor
+    const input = parseDailyAnchorInput(request.body);
+    return streamingResponse(
+      startWorkflowStream({
+        workflow: workflowName,
+        baseLogger: options.workflowLogger,
+        run: (logger) => dailyAnchorWorkflow(input, { ...baseDeps, logger }),
+      })
+    );
   }
 
   if (request.method === 'POST' && request.pathname === cfg.webhookPath) {
