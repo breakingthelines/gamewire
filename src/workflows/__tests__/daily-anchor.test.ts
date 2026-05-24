@@ -182,6 +182,24 @@ describe('dailyAnchorWorkflow', () => {
     expect(calls.every((c) => !c.includes('999'))).toBe(true);
   });
 
+  it('scopes the fixtures path to a -1d/+7d window around the anchor time', async () => {
+    const calls: IngestionFetchOptions[] = [];
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
+        calls.push(options);
+        return buildResult(options.workload, options.resourceId, { data: { response: [] } });
+      }),
+    };
+    const deps = buildDeps(ingestion, [COMPETITION_A]);
+    await dailyAnchorWorkflow({ nowUtc: '2026-05-24T02:00:00Z' }, deps);
+
+    const fixturesCall = calls.find((c) => c.path?.startsWith('/fixtures?'));
+    expect(fixturesCall?.path).toBe(
+      '/fixtures?league=999&season=2025&from=2026-05-23&to=2026-05-31'
+    );
+    expect(fixturesCall?.resourceId).toBe('league-999-season-2025-anchor-2026-05-24');
+  });
+
   it('emits structured log events via logger', async () => {
     const ingestion: MockIngestion = {
       fetchWorkload: vi.fn(async (options: IngestionFetchOptions) =>
