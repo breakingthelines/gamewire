@@ -11,20 +11,29 @@ export {
 export type {
   CompetitionEntry,
   CompetitionRunResult,
+  CompetitionRunSummary,
   DailyAnchorInput,
   DailyAnchorOutput,
+  DailyAnchorWireResult,
   DegradeAction,
   DegradeFlag,
   HourlyMatchdayInput,
   HourlyMatchdayOutput,
+  HourlyMatchdayWireResult,
   MatchdayCalendar,
   MatchdayWindow,
   WebhookCompletedInput,
   WebhookCompletedOutput,
+  WebhookCompletedWireResult,
   WorkflowDeps,
   WorkflowLogEntry,
   WorkflowLogger,
 } from './types.js';
+export {
+  dailyAnchorToWire,
+  hourlyMatchdayToWire,
+  webhookCompletedToWire,
+} from './wire.js';
 export {
   handleIdentityOutage,
   handleProvider5xx,
