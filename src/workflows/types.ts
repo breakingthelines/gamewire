@@ -153,3 +153,74 @@ export interface WebhookCompletedOutput {
   readonly reason?: string;
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
 }
+
+/**
+ * Wire-facing summary of a single competition run. Drops `fetches`
+ * (raw `IngestionFetchResult` array carrying provider responses) which
+ * is in-process debug detail; kernel-service only needs the totals and
+ * the competition key. See `workflows/wire.ts` for the projection.
+ */
+export interface CompetitionRunSummary {
+  readonly competition: string;
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly fixturesIngested: number;
+  readonly errors: readonly string[];
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the daily-anchor workflow.
+ *
+ * The full {@link DailyAnchorOutput} embeds per-competition `fetches`
+ * arrays whose entries carry raw provider responses (`data`/`fetch`,
+ * hundreds of KB each on cold-cache). Aggregated across a Phase A
+ * sweep (15 competitions) the single trailing wire line otherwise
+ * exceeds kernel-side `bufio.Scanner.MaxScanTokenSize` and fails the
+ * activity deterministically. The wire type strips that detail at the
+ * workflow boundary; kernel sees only the summary it actually
+ * consumes. Per-fetch detail remains available via gamewire-worker
+ * logger events (themselves streamed as individual NDJSON lines, each
+ * bounded in size).
+ */
+export interface DailyAnchorWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly fixturesIngested: number;
+  readonly competitions: readonly CompetitionRunSummary[];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the hourly-matchday
+ * workflow. Same trimming rationale as {@link DailyAnchorWireResult};
+ * the in-window/skipped lists and totals are preserved.
+ */
+export interface HourlyMatchdayWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly inWindow: readonly string[];
+  readonly skipped: readonly string[];
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly fixturesIngested: number;
+  readonly competitions: readonly CompetitionRunSummary[];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the webhook-completed
+ * workflow. Drops the top-level `fetches` array; everything else on
+ * {@link WebhookCompletedOutput} is summary-shaped and remains.
+ */
+export interface WebhookCompletedWireResult {
+  readonly fixtureId: string;
+  readonly providerId: string;
+  readonly status: 'completed' | 'skipped' | 'failed';
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly reason?: string;
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}

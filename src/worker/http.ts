@@ -15,9 +15,12 @@ import {
   type ProviderJsonFetchResult,
 } from './provider-http.js';
 import {
+  dailyAnchorToWire,
   dailyAnchorWorkflow,
+  hourlyMatchdayToWire,
   hourlyMatchdayWorkflow,
   PHASE_A_COMPETITIONS,
+  webhookCompletedToWire,
   webhookCompletedWorkflow,
   type CompetitionEntry,
   type DailyAnchorInput,
@@ -144,10 +147,23 @@ type WorkflowName = 'daily-anchor' | 'hourly-matchday' | 'webhook-completed';
  * trailing line and treats `status: 'error'` as a retryable failure, which
  * matches the pre-streaming 500-with-body behaviour.
  */
-const startWorkflowStream = <T>(args: {
+const startWorkflowStream = <T, W>(args: {
   workflow: WorkflowName;
   baseLogger: WorkflowLogger | undefined;
   run: (logger: WorkflowLogger) => Promise<T>;
+  /**
+   * Project the in-process workflow output to its wire shape. The
+   * workflow's full output type may include provider-specific debug
+   * payloads (raw `IngestionFetchResult` arrays, etc.) that must not
+   * cross the NDJSON wire — a single completed line that includes them
+   * can exceed kernel-side `bufio.Scanner.MaxScanTokenSize` and fail
+   * the activity deterministically (observed 2026-05-25, workflow run
+   * 019e57ec-…). Each workflow declares its own wire projection in
+   * `workflows/wire.ts` so the wire boundary is explicit per workflow
+   * rather than relying on string-keyed stripping, which doesn't scale
+   * as new providers with different result shapes land.
+   */
+  toWire: (result: T) => W;
 }): AsyncIterable<Record<string, unknown>> => {
   const queue = new WorkflowStreamQueue();
 
@@ -180,7 +196,7 @@ const startWorkflowStream = <T>(args: {
         event: 'completed',
         workflow: args.workflow,
         status: 'ok',
-        result: result as Record<string, unknown>,
+        result: args.toWire(result) as Record<string, unknown>,
       });
     })
     .catch((err: unknown) => {
@@ -496,6 +512,7 @@ export const handleWorkerRequest = async (
           workflow: workflowName,
           baseLogger: options.workflowLogger,
           run: (logger) => webhookCompletedWorkflow(input, { ...baseDeps, logger }),
+          toWire: webhookCompletedToWire,
         })
       );
     }
@@ -507,6 +524,7 @@ export const handleWorkerRequest = async (
           workflow: workflowName,
           baseLogger: options.workflowLogger,
           run: (logger) => hourlyMatchdayWorkflow(input, { ...baseDeps, logger }),
+          toWire: hourlyMatchdayToWire,
         })
       );
     }
@@ -518,6 +536,7 @@ export const handleWorkerRequest = async (
         workflow: workflowName,
         baseLogger: options.workflowLogger,
         run: (logger) => dailyAnchorWorkflow(input, { ...baseDeps, logger }),
+        toWire: dailyAnchorToWire,
       })
     );
   }

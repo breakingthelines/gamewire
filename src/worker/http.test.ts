@@ -395,6 +395,108 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(baseEvents).not.toContain('completed');
   });
 
+  it('strips per-fetch debug detail from the daily-anchor wire result', async () => {
+    // Provider-specific raw response data (IngestionFetchResult.data /
+    // .fetch) must not cross the NDJSON wire. On 2026-05-25 a Phase A
+    // cold-cache daily-anchor sweep produced a completed line over
+    // kernel-side bufio.Scanner.MaxScanTokenSize, failing the activity
+    // deterministically. The fix is dailyAnchorToWire in workflows/wire.ts;
+    // this test pins the contract so future workflow output additions
+    // don't accidentally re-leak heavy fields onto the wire.
+    //
+    // We embed a uniquely-identifiable provider blob in the mocked
+    // ingestion result and assert (a) the completed line's per-competition
+    // entry has no `fetches` key, and (b) the marker string appears
+    // nowhere in the serialised completed payload.
+    const HEAVY_MARKER = 'HEAVY_PROVIDER_PAYLOAD_MUST_NOT_REACH_WIRE';
+    const heavyIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => ({
+        ...buildResult(options),
+        data: { response: [{ id: 1, debug: HEAVY_MARKER }] },
+      })),
+    } as unknown as ApiFootballIngestionLoop;
+
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({
+          nowUtc: '2026-05-23T02:00:00Z',
+          competitions: ['unit-test'],
+        }),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: heavyIngestion,
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const completed = await finalCompleted(response);
+    const result = completed.result as Record<string, unknown> | undefined;
+    expect(result).toBeDefined();
+
+    const competitions = (result?.competitions ?? []) as readonly Record<string, unknown>[];
+    expect(competitions.length).toBeGreaterThan(0);
+    for (const competition of competitions) {
+      expect(competition).not.toHaveProperty('fetches');
+      expect(competition).toHaveProperty('competition');
+      expect(competition).toHaveProperty('callsUsed');
+      expect(competition).toHaveProperty('callsBudgeted');
+    }
+
+    // Defence in depth: the marker must not have travelled through any
+    // other field in the completed line either (covers future additions
+    // like fetches-by-other-name or recursive nesting).
+    expect(JSON.stringify(completed)).not.toContain(HEAVY_MARKER);
+  });
+
+  it('strips fetches from the webhook-completed wire result', async () => {
+    // webhook-completed has fetches at the top level of its output
+    // (one webhook = one fixture so there is no per-competition
+    // nesting). Pin the same wire contract as daily-anchor.
+    const HEAVY_MARKER = 'WEBHOOK_FIXTURE_PAYLOAD_MUST_NOT_REACH_WIRE';
+    const heavyIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => ({
+        ...buildResult(options),
+        data: { response: [{ fixture: 'x', debug: HEAVY_MARKER }] },
+      })),
+    } as unknown as ApiFootballIngestionLoop;
+
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/webhook-completed',
+        body: { providerId: 'api-football', fixtureId: '12345' },
+        rawBody: JSON.stringify({ providerId: 'api-football', fixtureId: '12345' }),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: heavyIngestion,
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+
+    const completed = await finalCompleted(response);
+    const result = completed.result as Record<string, unknown> | undefined;
+    expect(result).toBeDefined();
+    expect(result).not.toHaveProperty('fetches');
+    expect(result).toHaveProperty('fixtureId', '12345');
+    expect(result).toHaveProperty('providerId', 'api-football');
+    expect(JSON.stringify(completed)).not.toContain(HEAVY_MARKER);
+  });
+
   it('surfaces workflow exceptions as a status:error completed line', async () => {
     // Pre-streaming, a workflow throw bubbled out as HTTP 500 with the
     // message in the body. Streaming responds 200 (because the response
