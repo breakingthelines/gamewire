@@ -29,11 +29,7 @@ export type {
   WorkflowLogEntry,
   WorkflowLogger,
 } from './types.js';
-export {
-  dailyAnchorToWire,
-  hourlyMatchdayToWire,
-  webhookCompletedToWire,
-} from './wire.js';
+export { dailyAnchorToWire, hourlyMatchdayToWire, webhookCompletedToWire } from './wire.js';
 export {
   handleIdentityOutage,
   handleProvider5xx,

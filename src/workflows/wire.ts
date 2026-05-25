@@ -28,9 +28,7 @@ import type {
   WebhookCompletedWireResult,
 } from './types.js';
 
-const toCompetitionRunSummary = (
-  competition: CompetitionRunResult
-): CompetitionRunSummary => ({
+const toCompetitionRunSummary = (competition: CompetitionRunResult): CompetitionRunSummary => ({
   competition: competition.competition,
   callsBudgeted: competition.callsBudgeted,
   callsUsed: competition.callsUsed,
@@ -38,9 +36,7 @@ const toCompetitionRunSummary = (
   errors: competition.errors,
 });
 
-export const dailyAnchorToWire = (
-  output: DailyAnchorOutput
-): DailyAnchorWireResult => ({
+export const dailyAnchorToWire = (output: DailyAnchorOutput): DailyAnchorWireResult => ({
   startedAt: output.startedAt,
   finishedAt: output.finishedAt,
   callsBudgeted: output.callsBudgeted,
@@ -51,9 +47,7 @@ export const dailyAnchorToWire = (
   finalQuota: output.finalQuota,
 });
 
-export const hourlyMatchdayToWire = (
-  output: HourlyMatchdayOutput
-): HourlyMatchdayWireResult => ({
+export const hourlyMatchdayToWire = (output: HourlyMatchdayOutput): HourlyMatchdayWireResult => ({
   startedAt: output.startedAt,
   finishedAt: output.finishedAt,
   inWindow: output.inWindow,
