@@ -280,10 +280,7 @@ const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
 // precedence by order (env first, catalogue second); duplicates are
 // dropped by `normaliseResourceIds` inside `ingestion.start`.
 const verifiedFixtureSeed = phaseAVerifiedFixtureIds();
-const seededFixtureIds: readonly string[] = [
-  ...config.bootstrapFixtureIds,
-  ...verifiedFixtureSeed,
-];
+const seededFixtureIds: readonly string[] = [...config.bootstrapFixtureIds, ...verifiedFixtureSeed];
 
 let stopIngestion: (() => void) | undefined;
 if (config.ingestionEnabled) {
