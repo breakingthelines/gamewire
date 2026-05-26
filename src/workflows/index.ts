@@ -7,6 +7,7 @@ export {
   PHASE_A_COMPETITIONS,
   PHASE_A_COMPETITIONS_BY_KEY,
   isMatchdayWindow,
+  phaseAVerifiedFixtureIds,
 } from './competitions.js';
 export type {
   CompetitionEntry,
