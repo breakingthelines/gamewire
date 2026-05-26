@@ -34,7 +34,7 @@ import {
   createBunRedisStreamClient,
   type BunRedisLike,
 } from './redis-stream-consumer.js';
-import { PHASE_A_COMPETITIONS } from '../workflows/index.js';
+import { PHASE_A_COMPETITIONS, phaseAVerifiedFixtureIds } from '../workflows/index.js';
 
 interface ReadBodyResult {
   readonly body: unknown;
@@ -273,21 +273,35 @@ if (onFixtureFetched) {
 
 const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
 
+// Verified-rotation seed: merge operator-supplied env IDs with the
+// catalogue's `verifiedFixtureIds` so staging smoke always covers the
+// known-good launch-competition fixtures even when
+// `GAMEWIRE_BOOTSTRAP_FIXTURE_IDS` is unset. Operator overrides take
+// precedence by order (env first, catalogue second); duplicates are
+// dropped by `normaliseResourceIds` inside `ingestion.start`.
+const verifiedFixtureSeed = phaseAVerifiedFixtureIds();
+const seededFixtureIds: readonly string[] = [
+  ...config.bootstrapFixtureIds,
+  ...verifiedFixtureSeed,
+];
+
 let stopIngestion: (() => void) | undefined;
 if (config.ingestionEnabled) {
   stopIngestion = ingestion.start({
-    bootstrapFixtureIds: config.bootstrapFixtureIds,
+    bootstrapFixtureIds: seededFixtureIds,
     runImmediately: config.ingestionRunImmediateTick,
   });
   console.log(
     `[gamewire-worker] ingestion loop started provider=${config.providerId} ` +
       `hardCap=${config.providerHardCap} softCap=${config.providerSoftCap} ` +
-      `bootstrapFixtures=${config.bootstrapFixtureIds.length} ` +
+      `bootstrapFixtures=${seededFixtureIds.length} ` +
+      `verifiedRotation=${verifiedFixtureSeed.length} ` +
       `runImmediateTick=${config.ingestionRunImmediateTick}`
   );
 } else {
   console.log(
     `[gamewire-worker] ingestion loop disabled (providerMode=${config.providerMode}). ` +
+      `verifiedRotation=${verifiedFixtureSeed.length} fixtures staged for next boot. ` +
       'Set GAMEWIRE_INGESTION_ENABLED=true to override.'
   );
 }

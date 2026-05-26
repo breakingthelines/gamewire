@@ -37,6 +37,19 @@ export interface CompetitionEntry {
   readonly season: number;
   readonly calendar: MatchdayCalendar;
   readonly tier: 'domestic' | 'international';
+  /**
+   * Provider fixture IDs known to be safe for the verified-rotation
+   * bootstrap. The worker seeds these into its ingestion loop on boot
+   * (alongside any `GAMEWIRE_BOOTSTRAP_FIXTURE_IDS` overrides) so
+   * staging smoke tests touch the full launch-competition set without
+   * waiting for the next /fixtures discovery tick.
+   *
+   * Today only Premier League has an anchor (`1538961`); the rest of
+   * the launch set is staged here as empty arrays so operators can
+   * curate one verified fixture per competition as IDs are recorded
+   * against live data without touching workflow code.
+   */
+  readonly verifiedFixtureIds?: readonly string[];
 }
 
 export type DegradeAction =

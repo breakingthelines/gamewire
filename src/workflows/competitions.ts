@@ -58,6 +58,11 @@ export const PHASE_A_COMPETITIONS: readonly CompetitionEntry[] = [
     season: 2025,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic',
+    // Baseline verified fixture for the rotation. Used by adapter and
+    // match-concluded-bridge tests, and seeded into the worker's
+    // ingestion bootstrap so staging smoke covers a known-good
+    // Premier League match end-to-end on boot.
+    verifiedFixtureIds: ['1538961'],
   },
   {
     key: 'efl-championship',
@@ -189,4 +194,30 @@ export const isMatchdayWindow = (nowUtc: Date, calendar: MatchdayCalendar): bool
     (window) =>
       window.utcWeekday === weekday && hour >= window.utcHourStart && hour < window.utcHourEnd
   );
+};
+
+/**
+ * Returns the flattened, de-duplicated list of `verifiedFixtureIds`
+ * declared across the Phase A catalogue (or any other competition
+ * list supplied by the caller). Used by `worker/server.ts` to seed
+ * the ingestion loop's `bootstrapFixtureIds` so staging smoke covers
+ * the verified rotation without operator action.
+ *
+ * Empty entries are skipped, preserving the catalogue-as-source-of-
+ * truth invariant: a competition without a verified id contributes
+ * nothing and does not block the rotation.
+ */
+export const phaseAVerifiedFixtureIds = (
+  competitions: readonly CompetitionEntry[] = PHASE_A_COMPETITIONS
+): readonly string[] => {
+  const seen = new Set<string>();
+  for (const competition of competitions) {
+    for (const id of competition.verifiedFixtureIds ?? []) {
+      const trimmed = id.trim();
+      if (trimmed !== '') {
+        seen.add(trimmed);
+      }
+    }
+  }
+  return [...seen];
 };
