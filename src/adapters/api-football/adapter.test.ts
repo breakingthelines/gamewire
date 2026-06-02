@@ -350,7 +350,11 @@ describe('API-Football match-stats mapping', () => {
   const teamStatisticsEnvelope = () => ({
     response: [
       {
-        team: { id: 42, name: 'Arsenal', logo: 'https://media.api-sports.io/football/teams/42.png' },
+        team: {
+          id: 42,
+          name: 'Arsenal',
+          logo: 'https://media.api-sports.io/football/teams/42.png',
+        },
         statistics: [
           { type: 'Shots on Goal', value: 7 },
           { type: 'Shots off Goal', value: 4 },
