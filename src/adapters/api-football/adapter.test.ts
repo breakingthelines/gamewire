@@ -1,14 +1,25 @@
+import { toBinary } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
+
+import {
+  IngestPlayerMatchStatsRequestSchema,
+  IngestTeamMatchStatsRequestSchema,
+} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
+import { GameParticipantRole } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
 
 import {
   API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_REPLAY_FIXTURE_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
+  apiFootballFixturePlayersPath,
+  apiFootballFixtureStatisticsPath,
   apiFootballFixtureSyncPaths,
   apiFootballIngestGamesRequestFromFixtures,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballIngestPlayerMatchStatsRequestFromPlayers,
   apiFootballIngestSquadListRequestFromSquads,
+  apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballLivePath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
@@ -332,5 +343,311 @@ describe('API-Football adapter', () => {
       'provider:api-football:player:123'
     );
     expect(request.squadLists[0]?.teams[0]?.players[0]?.positionCode).toBe('Attacker');
+  });
+});
+
+describe('API-Football match-stats mapping', () => {
+  const teamStatisticsEnvelope = () => ({
+    response: [
+      {
+        team: { id: 42, name: 'Arsenal', logo: 'https://media.api-sports.io/football/teams/42.png' },
+        statistics: [
+          { type: 'Shots on Goal', value: 7 },
+          { type: 'Shots off Goal', value: 4 },
+          { type: 'Total Shots', value: 14 },
+          { type: 'Blocked Shots', value: 3 },
+          { type: 'Fouls', value: 9 },
+          { type: 'Corner Kicks', value: 6 },
+          { type: 'Offsides', value: 2 },
+          { type: 'Ball Possession', value: '58%' },
+          { type: 'Yellow Cards', value: 1 },
+          // Red Cards present but zero — must still emit a provenance entry so
+          // a real 0 is distinguishable from "not reported".
+          { type: 'Red Cards', value: 0 },
+          { type: 'Goalkeeper Saves', value: 4 },
+          { type: 'Total passes', value: 520 },
+          { type: 'Passes accurate', value: 470 },
+          { type: 'Passes %', value: '90%' },
+          { type: 'expected_goals', value: '1.84' },
+          // Unknown metric — preserved in extra_stats, not dropped.
+          { type: 'Goals Prevented', value: 0.4 },
+          // Genuinely not-reported metric — null leaves no field + no provenance.
+          { type: 'Passes Through', value: null },
+        ],
+      },
+      {
+        team: { id: 49, name: 'Chelsea' },
+        statistics: [{ type: 'Ball Possession', value: '42%' }],
+      },
+    ],
+  });
+
+  it('maps /fixtures/statistics into canonical TeamMatchStats with resolved ids + roles', () => {
+    const request = apiFootballIngestTeamMatchStatsRequestFromStatistics({
+      replayId: 'live:team-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      homeTeamProviderId: '42',
+      awayTeamProviderId: '49',
+      entityResolutions: {
+        teams: {
+          '42': { entityId: 'btl_football_team_t8596499a', label: 'Arsenal F.C.' },
+        },
+      },
+      envelope: teamStatisticsEnvelope(),
+    });
+
+    expect(request.metadata?.rawPayloadRef).toBe(
+      'provider://api-football/fixtures/statistics/1917'
+    );
+    expect(request.metadata?.provider).toBe('api-football');
+    expect(request.teamStats).toHaveLength(2);
+
+    const home = request.teamStats[0];
+    expect(home?.gameId).toBe('btl_football_game_g1917');
+    // Resolved team → canonical SubjectRef populated + RESOLVED resolution ref.
+    expect(home?.team?.id).toBe('btl_football_team_t8596499a');
+    expect(home?.teamResolution?.entityId).toBe('btl_football_team_t8596499a');
+    expect(home?.role).toBe(GameParticipantRole.HOME);
+    // Game resolution carries the provider fixture id + canonical game id.
+    expect(home?.gameResolution?.providerRef?.providerId).toBe('1917');
+    expect(home?.gameResolution?.entityId).toBe('btl_football_game_g1917');
+    // Headline metrics.
+    expect(home?.shotsOnTarget).toBe(7);
+    expect(home?.shotsOffTarget).toBe(4);
+    expect(home?.shots).toBe(14);
+    expect(home?.shotsBlocked).toBe(3);
+    expect(home?.corners).toBe(6);
+    expect(home?.fouls).toBe(9);
+    expect(home?.offsides).toBe(2);
+    expect(home?.possessionPct).toBeCloseTo(58);
+    expect(home?.passes).toBe(520);
+    expect(home?.passesCompleted).toBe(470);
+    expect(home?.passCompletionPct).toBeCloseTo(90);
+    expect(home?.expectedGoals).toBeCloseTo(1.84);
+    expect(home?.yellowCards).toBe(1);
+    expect(home?.redCards).toBe(0);
+    expect(home?.saves).toBe(4);
+    // Unknown provider metric preserved (slugged) in extra_stats.
+    expect(home?.extraStats['goals-prevented']).toBeCloseTo(0.4);
+    // Source attribution is the API-Football provider.
+    expect(home?.source?.provider).toBe('api-football');
+    // Provenance: one entry per SUPPLIED field. Red Cards (=0) is present,
+    // but the null "Passes Through" metric is not.
+    const provenanceFields = home?.provenance.map((p) => p.fieldName) ?? [];
+    expect(provenanceFields).toContain('redCards');
+    expect(provenanceFields).toContain('possessionPct');
+    expect(provenanceFields).not.toContain('passesThrough');
+    expect(home?.provenance.every((p) => p.provider === 'api-football')).toBe(true);
+    expect(home?.provenance.every((p) => p.isAuthoritative)).toBe(true);
+
+    // Away team unresolved → no canonical subject, provider ref preserved,
+    // and role still set from the away provider id.
+    const away = request.teamStats[1];
+    expect(away?.team).toBeUndefined();
+    expect(away?.teamResolution?.providerRef?.providerId).toBe('49');
+    expect(away?.role).toBe(GameParticipantRole.AWAY);
+    expect(away?.possessionPct).toBeCloseTo(42);
+  });
+
+  it('leaves GameParticipantRole UNSPECIFIED when home/away ids are unknown', () => {
+    const request = apiFootballIngestTeamMatchStatsRequestFromStatistics({
+      replayId: 'live:team-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      envelope: teamStatisticsEnvelope(),
+    });
+    expect(request.teamStats[0]?.role).toBe(GameParticipantRole.UNSPECIFIED);
+  });
+
+  const playersEnvelope = () => ({
+    response: [
+      {
+        team: { id: 42, name: 'Arsenal' },
+        players: [
+          {
+            player: {
+              id: 1460,
+              name: 'Bukayo Saka',
+              photo: 'https://media.api-sports.io/football/players/1460.png',
+            },
+            statistics: [
+              {
+                games: {
+                  minutes: 90,
+                  number: 7,
+                  position: 'F',
+                  rating: '8.4',
+                  captain: false,
+                  substitute: false,
+                },
+                offsides: 1,
+                shots: { total: 4, on: 2 },
+                goals: { total: 1, conceded: 0, assists: 1, saves: null },
+                passes: { total: 58, key: 3, accuracy: '88' },
+                tackles: { total: 2, blocks: 0, interceptions: 1 },
+                duels: { total: 9, won: 6 },
+                dribbles: { attempts: 7, success: 5, past: null },
+                fouls: { drawn: 3, committed: 1 },
+                cards: { yellow: 0, red: 0 },
+                penalty: { won: null, committed: null, scored: null, missed: null, saved: null },
+                expected_goals: '0.62',
+                expected_assists: '0.31',
+              },
+            ],
+          },
+          {
+            // Unused substitute: substitute=true, 0 minutes → role UNUSED.
+            player: { id: 999, name: 'Unused Sub' },
+            statistics: [
+              {
+                games: { minutes: 0, number: 30, position: 'M', rating: null, substitute: true },
+                goals: { total: 0, assists: 0 },
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  });
+
+  it('maps /fixtures/players into canonical PlayerMatchStats across the squad', () => {
+    const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+      replayId: 'live:player-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      entityResolutions: {
+        players: {
+          '1460': { entityId: 'btl_football_player_psaka', label: 'Bukayo Saka' },
+        },
+      },
+      envelope: playersEnvelope(),
+    });
+
+    expect(request.metadata?.rawPayloadRef).toBe('provider://api-football/fixtures/players/1917');
+    expect(request.playerStats).toHaveLength(2);
+
+    const saka = request.playerStats[0];
+    expect(saka?.gameId).toBe('btl_football_game_g1917');
+    expect(saka?.player?.id).toBe('btl_football_player_psaka');
+    expect(saka?.playerResolution?.entityId).toBe('btl_football_player_psaka');
+    // Team unresolved → provider ref preserved on team_resolution.
+    expect(saka?.team).toBeUndefined();
+    expect(saka?.teamResolution?.providerRef?.providerId).toBe('42');
+    expect(saka?.role).toBe('STARTER');
+    expect(saka?.isStarter).toBe(true);
+    expect(saka?.minutes).toBe(90);
+    expect(saka?.shirtNumber).toBe(7);
+    expect(saka?.goals).toBe(1);
+    expect(saka?.assists).toBe(1);
+    expect(saka?.shots).toBe(4);
+    expect(saka?.shotsOnTarget).toBe(2);
+    expect(saka?.keyPasses).toBe(3);
+    expect(saka?.passes).toBe(58);
+    expect(saka?.passCompletionPct).toBeCloseTo(88);
+    expect(saka?.tackles).toBe(2);
+    expect(saka?.interceptions).toBe(1);
+    expect(saka?.dribbles).toBe(7);
+    expect(saka?.dribblesCompleted).toBe(5);
+    expect(saka?.duels).toBe(9);
+    expect(saka?.duelsWon).toBe(6);
+    expect(saka?.foulsDrawn).toBe(3);
+    expect(saka?.foulsCommitted).toBe(1);
+    expect(saka?.offsides).toBe(1);
+    expect(saka?.rating).toBeCloseTo(8.4);
+    expect(saka?.expectedGoals).toBeCloseTo(0.62);
+    expect(saka?.expectedAssists).toBeCloseTo(0.31);
+    expect(saka?.gameResolution?.providerRef?.providerId).toBe('1917');
+    expect(saka?.source?.provider).toBe('api-football');
+    // Provenance: cards.yellow/red are 0 but present → provenance entries.
+    const fields = saka?.provenance.map((p) => p.fieldName) ?? [];
+    expect(fields).toContain('goals');
+    expect(fields).toContain('yellowCards');
+    // saves is null for an outfielder → no field, no provenance.
+    expect(fields).not.toContain('saves');
+
+    const sub = request.playerStats[1];
+    expect(sub?.role).toBe('UNUSED');
+    expect(sub?.isStarter).toBe(false);
+    expect(sub?.minutes).toBe(0);
+  });
+
+  it('skips player entries with no statistics block', () => {
+    const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+      replayId: 'live:player-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      envelope: {
+        response: [
+          {
+            team: { id: 42, name: 'Arsenal' },
+            players: [{ player: { id: 1460, name: 'Bukayo Saka' }, statistics: [] }],
+          },
+        ],
+      },
+    });
+    expect(request.playerStats).toHaveLength(0);
+  });
+
+  it('returns empty stats batches for malformed or empty envelopes', () => {
+    for (const bad of [undefined, null, {}, { response: 'nope' }, { response: [] }]) {
+      expect(
+        apiFootballIngestTeamMatchStatsRequestFromStatistics({
+          replayId: 'r',
+          resourceId: '1',
+          gameId: 'g',
+          envelope: bad,
+        }).teamStats
+      ).toHaveLength(0);
+      expect(
+        apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+          replayId: 'r',
+          resourceId: '1',
+          gameId: 'g',
+          envelope: bad,
+        }).playerStats
+      ).toHaveLength(0);
+    }
+  });
+
+  it('is idempotent: the same envelope maps to byte-identical ingest requests', () => {
+    const fetchedAtMs = Date.parse('2026-05-21T12:00:00Z');
+    const teamArgs = {
+      replayId: 'live:team-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      fetchedAtMs,
+      homeTeamProviderId: '42',
+      awayTeamProviderId: '49',
+      envelope: teamStatisticsEnvelope(),
+    } as const;
+    const teamA = apiFootballIngestTeamMatchStatsRequestFromStatistics(teamArgs);
+    const teamB = apiFootballIngestTeamMatchStatsRequestFromStatistics(teamArgs);
+    expect(toBinary(IngestTeamMatchStatsRequestSchema, teamB)).toEqual(
+      toBinary(IngestTeamMatchStatsRequestSchema, teamA)
+    );
+    // Idempotency key is stable across runs (game-service upserts on it).
+    expect(teamA.metadata?.idempotencyKey).toBe(teamB.metadata?.idempotencyKey);
+
+    const playerArgs = {
+      replayId: 'live:player-match-stats:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      fetchedAtMs,
+      envelope: playersEnvelope(),
+    } as const;
+    const playerA = apiFootballIngestPlayerMatchStatsRequestFromPlayers(playerArgs);
+    const playerB = apiFootballIngestPlayerMatchStatsRequestFromPlayers(playerArgs);
+    expect(toBinary(IngestPlayerMatchStatsRequestSchema, playerB)).toEqual(
+      toBinary(IngestPlayerMatchStatsRequestSchema, playerA)
+    );
+    expect(playerA.metadata?.idempotencyKey).toBe(playerB.metadata?.idempotencyKey);
+  });
+
+  it('derives the provider stat paths', () => {
+    expect(apiFootballFixtureStatisticsPath('1917')).toBe('/fixtures/statistics?fixture=1917');
+    expect(apiFootballFixturePlayersPath('1917')).toBe('/fixtures/players?fixture=1917');
   });
 });

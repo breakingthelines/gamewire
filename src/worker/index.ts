@@ -26,9 +26,13 @@ export {
   apiFootballCompetitionKey,
   apiFootballEventPath,
   apiFootballFixturePath,
+  apiFootballFixturePlayersPath,
+  apiFootballFixtureStatisticsPath,
   apiFootballFixtureSyncPaths,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballIngestPlayerMatchStatsRequestFromPlayers,
+  apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballLineupPath,
   apiFootballLivePath,
   apiFootballSeasonProviderId,
@@ -38,7 +42,9 @@ export {
   type ApiFootballEntityKind,
   type ApiFootballEntityResolutionMap,
   type ApiFootballEnvelope,
+  type ApiFootballPlayersResponse,
   type ApiFootballResolvedEntity,
+  type ApiFootballStatisticsResponse,
 } from '../adapters/api-football/index.js';
 export {
   config,

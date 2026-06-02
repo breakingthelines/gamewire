@@ -47,6 +47,8 @@
 import {
   apiFootballEventPath,
   apiFootballFixturePath,
+  apiFootballFixturePlayersPath,
+  apiFootballFixtureStatisticsPath,
   apiFootballLineupPath,
 } from '../adapters/api-football/index.js';
 import type { ProviderCache } from '../worker/cache.js';
@@ -85,6 +87,8 @@ const CURSOR_TTL_SECONDS = 7 * 24 * 60 * 60;
 const FIXTURE_DETAIL_WORKLOAD: IngestionWorkload = 'fixture-detail-fullTime';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
 const LINEUPS_WORKLOAD: IngestionWorkload = 'lineups-post-confirm';
+const TEAM_STATS_WORKLOAD: IngestionWorkload = 'team-match-stats';
+const PLAYER_STATS_WORKLOAD: IngestionWorkload = 'player-match-stats';
 const STANDINGS_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 const SEASON_FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 
@@ -494,10 +498,14 @@ interface ProcessFixtureArgs {
 }
 
 /**
- * Pull the three fixture-scoped workloads for one finalised fixture.
- * Identical workload sequence to {@link webhookCompletedWorkflow} so the
- * bridge resolves + ingests + emits the same way; the only difference is
- * the driving loop (a season cursor vs a single webhook fixture id).
+ * Pull the five fixture-scoped workloads for one finalised fixture:
+ * detail → events → lineups → team stats → player stats. Identical
+ * workload sequence to {@link webhookCompletedWorkflow} so the bridge
+ * resolves + ingests + emits the same way; the only difference is the
+ * driving loop (a season cursor vs a single webhook fixture id). Every
+ * fetch flows through `fetchWorkload`, so the quota counter, 70k hard cap,
+ * soft-cap PROVIDER_OUTAGE flip, cache TTLs, and singleflight all apply to
+ * the stats pulls exactly as they do to detail/events/lineups.
  */
 const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> => {
   const { fixtureId, deps, accumulate } = args;
@@ -529,6 +537,26 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
     path: apiFootballLineupPath(fixtureId),
   });
   mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, fixtureId, mode);
+  if (mode === 'abort') {
+    return mode;
+  }
+
+  const teamStatsResult = await deps.ingestion.fetchWorkload({
+    workload: TEAM_STATS_WORKLOAD,
+    resourceId: fixtureId,
+    path: apiFootballFixtureStatisticsPath(fixtureId),
+  });
+  mode = accumulate(teamStatsResult, TEAM_STATS_WORKLOAD, fixtureId, mode);
+  if (mode === 'abort') {
+    return mode;
+  }
+
+  const playerStatsResult = await deps.ingestion.fetchWorkload({
+    workload: PLAYER_STATS_WORKLOAD,
+    resourceId: fixtureId,
+    path: apiFootballFixturePlayersPath(fixtureId),
+  });
+  mode = accumulate(playerStatsResult, PLAYER_STATS_WORKLOAD, fixtureId, mode);
 
   return mode;
 };

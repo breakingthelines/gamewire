@@ -9,6 +9,8 @@ import {
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
+  type IngestPlayerMatchStatsRequest,
+  type IngestTeamMatchStatsRequest,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
   type LookupGameByFixtureRequest,
@@ -25,6 +27,8 @@ export interface GameServiceIngestClient {
   ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
   ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse>;
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
+  ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
+  ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
   listProviderConfigs(request: ListProviderConfigsRequest): Promise<ListProviderConfigsResponse>;
   reportProviderHealth(request: ReportProviderHealthRequest): Promise<ReportProviderHealthResponse>;
 }
@@ -83,6 +87,8 @@ export interface FootballGameIngestClient {
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
   ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
+  ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
+  ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
@@ -144,6 +150,12 @@ export const createFetchFootballGameLookupClient = (
       request: IngestFootballSquadListsRequest
     ): Promise<IngestBatchResponse> {
       return client.ingestFootballSquadLists(request, { timeoutMs });
+    },
+    ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse> {
+      return client.ingestTeamMatchStats(request, { timeoutMs });
+    },
+    ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse> {
+      return client.ingestPlayerMatchStats(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

@@ -50,7 +50,9 @@ import {
   apiFootballIngestGamesRequestFromFixtures,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
+  apiFootballIngestPlayerMatchStatsRequestFromPlayers,
   apiFootballIngestSquadListRequestFromSquads,
+  apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballSeasonProviderId,
   type ApiFootballEntityKind,
   type ApiFootballEntityResolutionMap,
@@ -58,7 +60,9 @@ import {
   type ApiFootballEventResponse,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
+  type ApiFootballPlayersResponse,
   type ApiFootballSquadResponse,
+  type ApiFootballStatisticsResponse,
   type ApiFootballTeamRef,
 } from '../adapters/api-football/index.js';
 import type { FootballGameBridgeClient } from './clients/game-service.js';
@@ -118,6 +122,8 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
 const EVENT_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['events-post-final']);
 const LINEUP_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['lineups-post-confirm']);
 const SQUAD_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['squad-list-fallback']);
+const TEAM_STATS_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['team-match-stats']);
+const PLAYER_STATS_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['player-match-stats']);
 const GAME_LOOKUP_RETRY_DELAYS_MS = [100, 500, 1_000] as const;
 
 export const isFixtureDetailWorkload = (workload: IngestionWorkload): boolean =>
@@ -200,6 +206,36 @@ export const createMatchConcludedBridge = (
 
     if (SQUAD_WORKLOADS.has(workload)) {
       await ingestSquadList({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+        gameLookupRetryDelaysMs,
+      });
+      return;
+    }
+
+    if (TEAM_STATS_WORKLOADS.has(workload)) {
+      await ingestTeamStats({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+        gameLookupRetryDelaysMs,
+      });
+      return;
+    }
+
+    if (PLAYER_STATS_WORKLOADS.has(workload)) {
+      await ingestPlayerStats({
         workload,
         resourceId,
         data,
@@ -582,6 +618,157 @@ const ingestSquadList = async (input: ProviderResourceBridgeInput): Promise<void
   }
 };
 
+const ingestTeamStats = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const statistics = decodeStatisticsEnvelope(input.data);
+  if (statistics.length === 0) {
+    input.log({
+      event: 'bridge_team_stats_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'empty_provider_response',
+    });
+    return;
+  }
+  const gameId = await lookupGameId(input);
+  if (!gameId) {
+    return;
+  }
+  const entityResolutions = await resolveTeamStatsEntities(
+    input.identity,
+    input.providerId,
+    statistics,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+    }
+  );
+  // API-Football returns the statistics array in [home, away] team order;
+  // pass the provider team ids through so the mapper can stamp
+  // GameParticipantRole without a second fixture-detail fetch.
+  const request = apiFootballIngestTeamMatchStatsRequestFromStatistics({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    gameId,
+    envelope: input.data,
+    entityResolutions,
+    homeTeamProviderId: statistics[0] ? String(statistics[0].team.id) : undefined,
+    awayTeamProviderId: statistics[1] ? String(statistics[1].team.id) : undefined,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.teamStats.length === 0) {
+    input.log({
+      event: 'bridge_team_stats_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_normalized_team_stats',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestTeamMatchStats(request);
+    input.log({
+      event: 'bridge_team_stats_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_team_stats_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+const ingestPlayerStats = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const players = decodePlayersEnvelope(input.data);
+  if (players.length === 0) {
+    input.log({
+      event: 'bridge_player_stats_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'empty_provider_response',
+    });
+    return;
+  }
+  const gameId = await lookupGameId(input);
+  if (!gameId) {
+    return;
+  }
+  const entityResolutions = await resolvePlayerStatsEntities(
+    input.identity,
+    input.providerId,
+    players,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+    }
+  );
+  const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    gameId,
+    envelope: input.data,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.playerStats.length === 0) {
+    input.log({
+      event: 'bridge_player_stats_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_normalized_player_stats',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestPlayerMatchStats(request);
+    input.log({
+      event: 'bridge_player_stats_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_player_stats_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.resourceId,
+      providerId: input.providerId,
+      gameId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
 const lookupGameId = async (input: ProviderResourceBridgeInput): Promise<string> => {
   for (let attempt = 0; ; attempt += 1) {
     let lookupResponse: LookupGameByFixtureResponse;
@@ -728,6 +915,26 @@ const decodeSquadEnvelope = (data: unknown): readonly ApiFootballSquadResponse[]
   });
 };
 
+const decodeStatisticsEnvelope = (data: unknown): readonly ApiFootballStatisticsResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballStatisticsResponse => {
+    if (!isRecord(item) || !isRecord(item.team) || !Array.isArray(item.statistics)) {
+      return false;
+    }
+    return Number.isFinite((item.team as { id?: unknown }).id);
+  });
+};
+
+const decodePlayersEnvelope = (data: unknown): readonly ApiFootballPlayersResponse[] => {
+  const response = responseArray(data);
+  return response.filter((item): item is ApiFootballPlayersResponse => {
+    if (!isRecord(item) || !isRecord(item.team) || !Array.isArray(item.players)) {
+      return false;
+    }
+    return Number.isFinite((item.team as { id?: unknown }).id);
+  });
+};
+
 const responseArray = (data: unknown): readonly unknown[] => {
   if (!isRecord(data)) {
     return [];
@@ -840,6 +1047,37 @@ const resolveSquadEntities = async (
     await addResolvedTeam(identity, providerId, resolutions, squad.team, log, context);
     for (const player of squad.players) {
       await addResolvedPlayer(identity, providerId, resolutions, player, log, context);
+    }
+  }
+  return resolutions;
+};
+
+const resolveTeamStatsEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  statistics: readonly ApiFootballStatisticsResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const entry of statistics) {
+    await addResolvedTeam(identity, providerId, resolutions, entry.team, log, context);
+  }
+  return resolutions;
+};
+
+const resolvePlayerStatsEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  players: readonly ApiFootballPlayersResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const teamEntry of players) {
+    await addResolvedTeam(identity, providerId, resolutions, teamEntry.team, log, context);
+    for (const playerEntry of teamEntry.players) {
+      await addResolvedPlayer(identity, providerId, resolutions, playerEntry.player, log, context);
     }
   }
   return resolutions;

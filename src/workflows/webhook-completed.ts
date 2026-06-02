@@ -10,14 +10,22 @@
  *   1. `fixture-detail-fullTime`  → status + scoreline.
  *   2. `events-post-final`        → goals/cards/subs timeline.
  *   3. `lineups-post-confirm`     → starting XI + substitutions.
+ *   4. `team-match-stats`         → per-team `/fixtures/statistics`.
+ *   5. `player-match-stats`       → per-player `/fixtures/players`.
  *
  * The ingestion loop's internal bridge wiring (`OnFixtureFetched`)
  * does the resolve + ingest + emit automatically when these
  * workloads land. Idempotency is owned by `RedisEmittedFixtureStore`
- * inside the publisher, so re-runs are safe — they'll either short
- * the bridge at the emit-once gate or no-op via the cache.
+ * inside the publisher (for the match-concluded fact) and by the
+ * game-service `Ingest*` upserts (for games/timeline/lineups/stats),
+ * so re-runs are safe — they'll either short the bridge at the
+ * emit-once gate or no-op via the cache.
  */
-import { apiFootballFixturePath } from '../adapters/api-football/index.js';
+import {
+  apiFootballFixturePath,
+  apiFootballFixturePlayersPath,
+  apiFootballFixtureStatisticsPath,
+} from '../adapters/api-football/index.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './degrade.js';
@@ -32,6 +40,8 @@ import type {
 const FIXTURE_DETAIL_WORKLOAD: IngestionWorkload = 'fixture-detail-fullTime';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
 const LINEUPS_WORKLOAD: IngestionWorkload = 'lineups-post-confirm';
+const TEAM_STATS_WORKLOAD: IngestionWorkload = 'team-match-stats';
+const PLAYER_STATS_WORKLOAD: IngestionWorkload = 'player-match-stats';
 
 export const webhookCompletedWorkflow = async (
   input: WebhookCompletedInput,
@@ -125,6 +135,30 @@ export const webhookCompletedWorkflow = async (
     resourceId: input.fixtureId,
   });
   mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, mode);
+
+  if (mode === 'abort') {
+    return finalize(input, fetches, flags, 'failed', lastQuota, 'aborted at lineups');
+  }
+
+  // Team match statistics (/fixtures/statistics).
+  const teamStatsResult = await deps.ingestion.fetchWorkload({
+    workload: TEAM_STATS_WORKLOAD,
+    resourceId: input.fixtureId,
+    path: apiFootballFixtureStatisticsPath(input.fixtureId),
+  });
+  mode = accumulate(teamStatsResult, TEAM_STATS_WORKLOAD, mode);
+
+  if (mode === 'abort') {
+    return finalize(input, fetches, flags, 'failed', lastQuota, 'aborted at team stats');
+  }
+
+  // Player match statistics (/fixtures/players).
+  const playerStatsResult = await deps.ingestion.fetchWorkload({
+    workload: PLAYER_STATS_WORKLOAD,
+    resourceId: input.fixtureId,
+    path: apiFootballFixturePlayersPath(input.fixtureId),
+  });
+  mode = accumulate(playerStatsResult, PLAYER_STATS_WORKLOAD, mode);
 
   const allFailed = fetches.every(
     (result) =>

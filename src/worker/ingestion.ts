@@ -19,6 +19,8 @@ import {
   API_FOOTBALL_PROVIDER_ID,
   apiFootballEventPath,
   apiFootballFixturePath,
+  apiFootballFixturePlayersPath,
+  apiFootballFixtureStatisticsPath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
   apiFootballSquadPath,
@@ -47,6 +49,8 @@ export type IngestionWorkload =
   | 'fixture-detail-fullTime'
   | 'events-post-final'
   | 'lineups-post-confirm'
+  | 'team-match-stats'
+  | 'player-match-stats'
   | 'squad-list-fallback'
   | 'team-metadata'
   | 'player-metadata';
@@ -63,6 +67,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'fixture-detail-fullTime': 6 * 60 * 60,
   'events-post-final': 6 * 60 * 60,
   'lineups-post-confirm': 60 * 60,
+  // Team + player match stats settle alongside the post-final timeline; the
+  // same 6h TTL keeps a finalised fixture's stats warm without re-spending
+  // provider budget on a settled scoreline.
+  'team-match-stats': 6 * 60 * 60,
+  'player-match-stats': 6 * 60 * 60,
   'squad-list-fallback': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
   'player-metadata': 24 * 60 * 60,
@@ -80,6 +89,12 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'fixture-detail-fullTime': 30 * 60 * 1000, // every 30 min after FT
   'events-post-final': 30 * 60 * 1000, // timeline events settle after FT
   'lineups-post-confirm': 10 * 60 * 1000, // every 10 min after lineups confirmed
+  // Match stats are NOT on the steady-state polling cron: they are pulled
+  // on-demand by the webhook-completed (post-final) and season-backfill
+  // workflows once a fixture is finalised. A 0 interval keeps `enqueueTick`
+  // from ever scheduling them so the steady-state cadence is unchanged.
+  'team-match-stats': 0,
+  'player-match-stats': 0,
   'squad-list-fallback': 6 * 60 * 60 * 1000,
   'team-metadata': 6 * 60 * 60 * 1000,
   'player-metadata': 6 * 60 * 60 * 1000,
@@ -682,6 +697,8 @@ const BRIDGE_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   ...FIXTURE_DETAIL_WORKLOADS,
   'events-post-final',
   'lineups-post-confirm',
+  'team-match-stats',
+  'player-match-stats',
   'squad-list-fallback',
 ]);
 
@@ -702,6 +719,10 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       return apiFootballEventPath(resourceId);
     case 'lineups-post-confirm':
       return apiFootballLineupPath(resourceId);
+    case 'team-match-stats':
+      return apiFootballFixtureStatisticsPath(resourceId);
+    case 'player-match-stats':
+      return apiFootballFixturePlayersPath(resourceId);
     case 'squad-list-fallback':
       return apiFootballSquadPath(teamIdFromSquadListResourceId(resourceId));
     case 'team-metadata':
