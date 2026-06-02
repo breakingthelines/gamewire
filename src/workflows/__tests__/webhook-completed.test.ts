@@ -49,7 +49,7 @@ const buildDeps = (ingestion: MockIngestion): WorkflowDeps => ({
 });
 
 describe('webhookCompletedWorkflow', () => {
-  it('fetches fixture-detail + events + lineups for the fixture id', async () => {
+  it('fetches fixture-detail + events + lineups + team/player stats for the fixture id', async () => {
     const calls: IngestionFetchOptions[] = [];
     const ingestion: MockIngestion = {
       fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
@@ -68,7 +68,18 @@ describe('webhookCompletedWorkflow', () => {
       'fixture-detail-fullTime',
       'events-post-final',
       'lineups-post-confirm',
+      'team-match-stats',
+      'player-match-stats',
     ]);
+    // The stats workloads must carry their explicit provider paths so the
+    // loop hits /fixtures/statistics + /fixtures/players (not the default
+    // /fixtures?id= path).
+    expect(calls.find((c) => c.workload === 'team-match-stats')?.path).toBe(
+      '/fixtures/statistics?fixture=12345'
+    );
+    expect(calls.find((c) => c.workload === 'player-match-stats')?.path).toBe(
+      '/fixtures/players?fixture=12345'
+    );
     expect(calls.every((c) => c.resourceId === '12345')).toBe(true);
     expect(result.status).toBe('completed');
     expect(result.fixtureId).toBe('12345');

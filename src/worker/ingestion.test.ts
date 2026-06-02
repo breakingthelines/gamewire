@@ -74,11 +74,18 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'fixture-detail-fullTime': 6 * 60 * 60,
       'events-post-final': 6 * 60 * 60,
       'lineups-post-confirm': 60 * 60,
+      'team-match-stats': 6 * 60 * 60,
+      'player-match-stats': 6 * 60 * 60,
       'squad-list-fallback': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
+    // Match-stats workloads are pulled on-demand (post-final + backfill), not
+    // on the steady-state cron — a 0 interval keeps `enqueueTick` from
+    // scheduling them so the cron cadence is unchanged.
+    expect(INGESTION_TICK_INTERVAL_MS['team-match-stats']).toBe(0);
+    expect(INGESTION_TICK_INTERVAL_MS['player-match-stats']).toBe(0);
   });
 
   it('fetches once on miss and caches under provider:workload:resource', async () => {

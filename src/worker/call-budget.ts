@@ -71,6 +71,18 @@ export function estimateMatchdayCallBudget(
         period: 'match',
       },
       {
+        workload: 'team-match-stats',
+        strategy: '/fixtures/statistics post-final fetch, then 6h cache',
+        estimatedCalls: 1,
+        period: 'match',
+      },
+      {
+        workload: 'player-match-stats',
+        strategy: '/fixtures/players post-final fetch, then 6h cache',
+        estimatedCalls: 1,
+        period: 'match',
+      },
+      {
         workload: 'rich-actions',
         strategy: 'selected fixtures and replay/post-match backfills only',
         estimatedCalls: 1,

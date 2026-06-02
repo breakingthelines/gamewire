@@ -110,6 +110,112 @@ export interface ApiFootballSquadPlayer {
   readonly photo?: string | null;
 }
 
+/**
+ * `/fixtures/statistics?fixture=<id>` response item. One entry per team.
+ * `statistics` is a flat list of `{ type, value }` pairs; `value` is a
+ * number, a percentage string (e.g. `"54%"`), or `null` when the provider
+ * did not report the metric for that team. See {@link API_FOOTBALL_TEAM_STAT_TYPES}
+ * for the canonical type-string → field mapping.
+ */
+export interface ApiFootballStatisticsResponse {
+  readonly team: ApiFootballTeamRef;
+  readonly statistics: readonly ApiFootballStatisticEntry[];
+}
+
+export interface ApiFootballStatisticEntry {
+  readonly type: string;
+  readonly value: number | string | null;
+}
+
+/**
+ * `/fixtures/players?fixture=<id>` response item. One entry per team, each
+ * carrying that team's per-player stat lines under `players`.
+ */
+export interface ApiFootballPlayersResponse {
+  readonly team: ApiFootballTeamRef;
+  readonly players: readonly ApiFootballPlayerStatsEntry[];
+}
+
+export interface ApiFootballPlayerStatsEntry {
+  readonly player: {
+    readonly id: number;
+    readonly name: string;
+    readonly photo?: string | null;
+  };
+  /**
+   * API-Football nests each player's match line in a single-element
+   * `statistics` array (the per-fixture endpoint never returns more than
+   * one element here, but it is modelled as a list for parity with the
+   * season endpoints).
+   */
+  readonly statistics: readonly ApiFootballPlayerStatistics[];
+}
+
+/**
+ * One player's per-match statistics block as returned by
+ * `/fixtures/players`. Every leaf is optional/nullable — providers omit
+ * metrics they do not record (e.g. goalkeeper-only fields for outfielders),
+ * and the mapper only emits a `FieldProvenance` entry for the leaves that
+ * are actually present.
+ */
+export interface ApiFootballPlayerStatistics {
+  readonly games?: {
+    readonly minutes?: number | null;
+    readonly number?: number | null;
+    readonly position?: string | null;
+    readonly rating?: string | number | null;
+    readonly captain?: boolean | null;
+    readonly substitute?: boolean | null;
+  } | null;
+  readonly offsides?: number | null;
+  readonly shots?: {
+    readonly total?: number | null;
+    readonly on?: number | null;
+  } | null;
+  readonly goals?: {
+    readonly total?: number | null;
+    readonly conceded?: number | null;
+    readonly assists?: number | null;
+    readonly saves?: number | null;
+  } | null;
+  readonly passes?: {
+    readonly total?: number | null;
+    readonly key?: number | null;
+    readonly accuracy?: number | string | null;
+  } | null;
+  readonly tackles?: {
+    readonly total?: number | null;
+    readonly blocks?: number | null;
+    readonly interceptions?: number | null;
+  } | null;
+  readonly duels?: {
+    readonly total?: number | null;
+    readonly won?: number | null;
+  } | null;
+  readonly dribbles?: {
+    readonly attempts?: number | null;
+    readonly success?: number | null;
+    readonly past?: number | null;
+  } | null;
+  readonly fouls?: {
+    readonly drawn?: number | null;
+    readonly committed?: number | null;
+  } | null;
+  readonly cards?: {
+    readonly yellow?: number | null;
+    readonly red?: number | null;
+  } | null;
+  readonly penalty?: {
+    readonly won?: number | null;
+    readonly committed?: number | null;
+    readonly scored?: number | null;
+    readonly missed?: number | null;
+    readonly saved?: number | null;
+  } | null;
+  readonly expected_goals?: number | string | null;
+  readonly expected_assists?: number | string | null;
+}
+
 export interface ApiFootballStandingResponse {
   readonly league: ApiFootballLeagueRef & {
     readonly standings: readonly (readonly ApiFootballStandingEntry[])[];

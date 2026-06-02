@@ -8,12 +8,16 @@ import {
   IngestGameOccurrencesRequestSchema,
   IngestGamesRequestSchema,
   IngestMetadataSchema,
+  IngestPlayerMatchStatsRequestSchema,
+  IngestTeamMatchStatsRequestSchema,
   type GameFilter,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
+  type IngestPlayerMatchStatsRequest,
+  type IngestTeamMatchStatsRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import {
   Sport,
@@ -21,6 +25,7 @@ import {
   SubjectType,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
+  FieldProvenanceSchema,
   GameClockSchema,
   GameOccurrenceKind,
   GameOccurrenceSchema,
@@ -39,6 +44,10 @@ import {
   ResolutionState,
   SportActionPayloadSchema,
 } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import {
+  PlayerMatchStatsSchema,
+  TeamMatchStatsSchema,
+} from '@breakingthelines/protos/btl/game/v1/types/stats_pb';
 import {
   FootballActionPayloadSchema,
   FootballActionType,
@@ -69,8 +78,13 @@ import {
   type ApiFootballCompetitionPlan,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
+  type ApiFootballPlayerStatistics,
+  type ApiFootballPlayerStatsEntry,
+  type ApiFootballPlayersResponse,
   type ApiFootballSquadPlayer,
   type ApiFootballSquadResponse,
+  type ApiFootballStatisticEntry,
+  type ApiFootballStatisticsResponse,
   type ApiFootballTeamRef,
 } from './types.js';
 
@@ -155,6 +169,14 @@ export function apiFootballSquadPath(teamId: string): string {
 
 export function apiFootballEventPath(fixtureId: string): string {
   return `/fixtures/events?fixture=${encodeURIComponent(fixtureId)}`;
+}
+
+export function apiFootballFixtureStatisticsPath(fixtureId: string): string {
+  return `/fixtures/statistics?fixture=${encodeURIComponent(fixtureId)}`;
+}
+
+export function apiFootballFixturePlayersPath(fixtureId: string): string {
+  return `/fixtures/players?fixture=${encodeURIComponent(fixtureId)}`;
 }
 
 export function apiFootballReplayFixturesRequest(options: {
@@ -441,6 +463,103 @@ export function apiFootballIngestSquadListRequestFromSquads(options: {
   });
 }
 
+/**
+ * Map an API-Football `/fixtures/statistics?fixture=<id>` envelope to a
+ * canonical {@link IngestTeamMatchStatsRequest}. One {@link TeamMatchStats}
+ * line per team, keyed by the BTL `game_id` plus the team's canonical
+ * SubjectRef (when identity resolved it) or its provider ref via
+ * `team_resolution`. Each populated canonical metric also gets a
+ * {@link FieldProvenance} entry so a real 0 is distinguishable from "not
+ * reported" downstream. Home/away role is taken from `homeTeamProviderId`
+ * when the caller knows it (from the fixture detail), defaulting to
+ * UNSPECIFIED otherwise — game-service can backfill it from the canonical
+ * participant order.
+ */
+export function apiFootballIngestTeamMatchStatsRequestFromStatistics(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly gameId: string;
+  readonly envelope: ApiFootballEnvelope<readonly ApiFootballStatisticsResponse[]> | unknown;
+  readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  /** Provider team id of the home side, when known, to set GameParticipantRole. */
+  readonly homeTeamProviderId?: string;
+  /** Provider team id of the away side, when known, to set GameParticipantRole. */
+  readonly awayTeamProviderId?: string;
+  readonly fetchedAtMs?: number;
+}): IngestTeamMatchStatsRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const fetchedAtMs = options.fetchedAtMs ?? Date.now();
+  const teamStats = apiFootballStatisticsFromEnvelope(options.envelope).map((entry) =>
+    teamMatchStatsFromStatistics(entry, {
+      providerId,
+      gameId: options.gameId,
+      providerFixtureId: options.resourceId,
+      entityResolutions: options.entityResolutions,
+      homeTeamProviderId: options.homeTeamProviderId,
+      awayTeamProviderId: options.awayTeamProviderId,
+      fetchedAtMs,
+    })
+  );
+
+  return create(IngestTeamMatchStatsRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'team-match-stats',
+      options.resourceId,
+      `provider://${providerId}/fixtures/statistics/${options.resourceId}`
+    ),
+    teamStats,
+  });
+}
+
+/**
+ * Map an API-Football `/fixtures/players?fixture=<id>` envelope to a
+ * canonical {@link IngestPlayerMatchStatsRequest}. One
+ * {@link PlayerMatchStats} line per player across both teams, keyed by the
+ * BTL `game_id` plus the player's canonical SubjectRef (or its provider ref
+ * via `player_resolution`); the player's team is carried the same way via
+ * `team_resolution`. Only metrics the provider actually supplied emit a
+ * {@link FieldProvenance} entry.
+ */
+export function apiFootballIngestPlayerMatchStatsRequestFromPlayers(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly gameId: string;
+  readonly envelope: ApiFootballEnvelope<readonly ApiFootballPlayersResponse[]> | unknown;
+  readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  readonly fetchedAtMs?: number;
+}): IngestPlayerMatchStatsRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const fetchedAtMs = options.fetchedAtMs ?? Date.now();
+  const playerStats = apiFootballPlayersFromEnvelope(options.envelope).flatMap((teamEntry) =>
+    teamEntry.players
+      .map((playerEntry) =>
+        playerMatchStatsFromEntry(playerEntry, teamEntry.team, {
+          providerId,
+          gameId: options.gameId,
+          providerFixtureId: options.resourceId,
+          entityResolutions: options.entityResolutions,
+          fetchedAtMs,
+        })
+      )
+      .filter((line): line is NonNullable<typeof line> => line !== null)
+  );
+
+  return create(IngestPlayerMatchStatsRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'player-match-stats',
+      options.resourceId,
+      `provider://${providerId}/fixtures/players/${options.resourceId}`
+    ),
+    playerStats,
+  });
+}
+
 export function apiFootballReplayStandingsRequest(options: {
   readonly provider?: string;
   readonly replayId: string;
@@ -593,6 +712,50 @@ function isApiFootballSquadPlayer(value: unknown): value is ApiFootballSquadPlay
     Number.isFinite((value as { id?: unknown }).id) &&
     typeof (value as { name?: unknown }).name === 'string'
   );
+}
+
+function apiFootballStatisticsFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballStatisticsResponse[]> | unknown
+): readonly ApiFootballStatisticsResponse[] {
+  if (!isRecord(envelope)) {
+    return [];
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  return response.filter(isApiFootballStatisticsResponse);
+}
+
+function apiFootballPlayersFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballPlayersResponse[]> | unknown
+): readonly ApiFootballPlayersResponse[] {
+  if (!isRecord(envelope)) {
+    return [];
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  return response.filter(isApiFootballPlayersResponse);
+}
+
+function isApiFootballStatisticsResponse(value: unknown): value is ApiFootballStatisticsResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const team = (value as { team?: unknown }).team;
+  const statistics = (value as { statistics?: unknown }).statistics;
+  return isRecord(team) && Number.isFinite((team as { id?: unknown }).id) && Array.isArray(statistics);
+}
+
+function isApiFootballPlayersResponse(value: unknown): value is ApiFootballPlayersResponse {
+  if (!isRecord(value)) {
+    return false;
+  }
+  const team = (value as { team?: unknown }).team;
+  const players = (value as { players?: unknown }).players;
+  return isRecord(team) && Number.isFinite((team as { id?: unknown }).id) && Array.isArray(players);
 }
 
 function liveGame(
@@ -927,6 +1090,379 @@ function lineupsPlayer(
     isStarter: options.isStarter,
     isCaptain: false,
   });
+}
+
+interface StatsMappingOptions {
+  readonly providerId: string;
+  readonly gameId: string;
+  readonly providerFixtureId: string;
+  readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  readonly fetchedAtMs: number;
+}
+
+function teamMatchStatsFromStatistics(
+  entry: ApiFootballStatisticsResponse,
+  options: StatsMappingOptions & {
+    readonly homeTeamProviderId?: string;
+    readonly awayTeamProviderId?: string;
+  }
+) {
+  const providerTeamId = String(entry.team.id);
+  const team = resolvedSubject(
+    'team',
+    options.providerId,
+    providerTeamId,
+    SubjectType.TEAM,
+    entry.team.name,
+    options.entityResolutions,
+    teamSnapshot(entry.team)
+  );
+
+  const stats = indexTeamStatistics(entry.statistics);
+  const provenance: ReturnType<typeof fieldProvenance>[] = [];
+  const fields: Record<string, number> = {};
+  const setStat = (field: string, value: number | undefined): void => {
+    if (value === undefined) {
+      return;
+    }
+    fields[field] = value;
+    provenance.push(fieldProvenance(field, options.providerId, options.fetchedAtMs));
+  };
+
+  setStat('possessionPct', stats.possessionPct);
+  setStat('shots', stats.shots);
+  setStat('shotsOnTarget', stats.shotsOnTarget);
+  setStat('shotsOffTarget', stats.shotsOffTarget);
+  setStat('shotsBlocked', stats.shotsBlocked);
+  setStat('corners', stats.corners);
+  setStat('fouls', stats.fouls);
+  setStat('offsides', stats.offsides);
+  setStat('passes', stats.passes);
+  setStat('passesCompleted', stats.passesCompleted);
+  setStat('passCompletionPct', stats.passCompletionPct);
+  setStat('expectedGoals', stats.expectedGoals);
+  setStat('yellowCards', stats.yellowCards);
+  setStat('redCards', stats.redCards);
+  setStat('saves', stats.saves);
+
+  const role =
+    providerTeamId === options.homeTeamProviderId
+      ? GameParticipantRole.HOME
+      : providerTeamId === options.awayTeamProviderId
+        ? GameParticipantRole.AWAY
+        : GameParticipantRole.UNSPECIFIED;
+
+  return create(TeamMatchStatsSchema, {
+    gameId: options.gameId,
+    team: team.subject,
+    role,
+    possessionPct: fields.possessionPct ?? 0,
+    shots: fields.shots ?? 0,
+    shotsOnTarget: fields.shotsOnTarget ?? 0,
+    corners: fields.corners ?? 0,
+    fouls: fields.fouls ?? 0,
+    offsides: fields.offsides ?? 0,
+    passes: fields.passes ?? 0,
+    passCompletionPct: fields.passCompletionPct ?? 0,
+    expectedGoals: fields.expectedGoals ?? 0,
+    yellowCards: fields.yellowCards ?? 0,
+    redCards: fields.redCards ?? 0,
+    passesCompleted: fields.passesCompleted ?? 0,
+    shotsOffTarget: fields.shotsOffTarget ?? 0,
+    shotsBlocked: fields.shotsBlocked ?? 0,
+    saves: fields.saves ?? 0,
+    extraStats: stats.extra,
+    source: providerAttribution(options.providerId),
+    provenance,
+    teamResolution: team.resolutionRef,
+    gameResolution: gameResolutionRef(options.providerId, options.providerFixtureId, options.gameId),
+    updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
+  });
+}
+
+function playerMatchStatsFromEntry(
+  entry: ApiFootballPlayerStatsEntry,
+  team: ApiFootballTeamRef,
+  options: StatsMappingOptions
+) {
+  const stat = entry.statistics[0];
+  if (!stat) {
+    return null;
+  }
+  const providerPlayerId = String(entry.player.id);
+  const playerSubject = resolvedSubject(
+    'player',
+    options.providerId,
+    providerPlayerId,
+    SubjectType.PLAYER,
+    entry.player.name,
+    options.entityResolutions,
+    providerEntitySnapshot({
+      label: entry.player.name,
+      imageUrl: stringOrEmpty(entry.player.photo),
+    })
+  );
+  const providerTeamId = String(team.id);
+  const teamSubject = resolvedSubject(
+    'team',
+    options.providerId,
+    providerTeamId,
+    SubjectType.TEAM,
+    team.name,
+    options.entityResolutions,
+    teamSnapshot(team)
+  );
+
+  const provenance: ReturnType<typeof fieldProvenance>[] = [];
+  const fields: Record<string, number> = {};
+  const setStat = (field: string, value: number | undefined): void => {
+    if (value === undefined) {
+      return;
+    }
+    fields[field] = value;
+    provenance.push(fieldProvenance(field, options.providerId, options.fetchedAtMs));
+  };
+
+  setStat('minutes', integerStat(stat.games?.minutes));
+  setStat('goals', integerStat(stat.goals?.total));
+  setStat('assists', integerStat(stat.goals?.assists));
+  setStat('shots', integerStat(stat.shots?.total));
+  setStat('shotsOnTarget', integerStat(stat.shots?.on));
+  setStat('keyPasses', integerStat(stat.passes?.key));
+  setStat('expectedGoals', doubleStat(stat.expected_goals));
+  setStat('expectedAssists', doubleStat(stat.expected_assists));
+  setStat('tackles', integerStat(stat.tackles?.total));
+  setStat('passes', integerStat(stat.passes?.total));
+  setStat('passCompletionPct', percentStat(stat.passes?.accuracy));
+  setStat('interceptions', integerStat(stat.tackles?.interceptions));
+  setStat('clearances', integerStat(stat.tackles?.blocks));
+  setStat('dribbles', integerStat(stat.dribbles?.attempts));
+  setStat('dribblesCompleted', integerStat(stat.dribbles?.success));
+  setStat('duels', integerStat(stat.duels?.total));
+  setStat('duelsWon', integerStat(stat.duels?.won));
+  setStat('foulsCommitted', integerStat(stat.fouls?.committed));
+  setStat('foulsDrawn', integerStat(stat.fouls?.drawn));
+  setStat('yellowCards', integerStat(stat.cards?.yellow));
+  setStat('redCards', integerStat(stat.cards?.red));
+  setStat('offsides', integerStat(stat.offsides));
+  setStat('saves', integerStat(stat.goals?.saves));
+  setStat('goalsConceded', integerStat(stat.goals?.conceded));
+  setStat('rating', doubleStat(stat.games?.rating));
+  setStat('shirtNumber', integerStat(stat.games?.number));
+
+  const isStarter = stat.games?.substitute === false;
+
+  return create(PlayerMatchStatsSchema, {
+    gameId: options.gameId,
+    player: playerSubject.subject,
+    team: teamSubject.subject,
+    role: playerRole(stat),
+    minutes: fields.minutes ?? 0,
+    goals: fields.goals ?? 0,
+    assists: fields.assists ?? 0,
+    shots: fields.shots ?? 0,
+    shotsOnTarget: fields.shotsOnTarget ?? 0,
+    keyPasses: fields.keyPasses ?? 0,
+    expectedGoals: fields.expectedGoals ?? 0,
+    expectedAssists: fields.expectedAssists ?? 0,
+    tackles: fields.tackles ?? 0,
+    passes: fields.passes ?? 0,
+    passCompletionPct: fields.passCompletionPct ?? 0,
+    passesCompleted: fields.passesCompleted ?? 0,
+    interceptions: fields.interceptions ?? 0,
+    clearances: fields.clearances ?? 0,
+    dribbles: fields.dribbles ?? 0,
+    dribblesCompleted: fields.dribblesCompleted ?? 0,
+    duels: fields.duels ?? 0,
+    duelsWon: fields.duelsWon ?? 0,
+    foulsCommitted: fields.foulsCommitted ?? 0,
+    foulsDrawn: fields.foulsDrawn ?? 0,
+    yellowCards: fields.yellowCards ?? 0,
+    redCards: fields.redCards ?? 0,
+    offsides: fields.offsides ?? 0,
+    saves: fields.saves ?? 0,
+    goalsConceded: fields.goalsConceded ?? 0,
+    rating: fields.rating ?? 0,
+    isStarter,
+    shirtNumber: fields.shirtNumber ?? 0,
+    extraStats: {},
+    source: providerAttribution(options.providerId),
+    provenance,
+    playerResolution: playerSubject.resolutionRef,
+    teamResolution: teamSubject.resolutionRef,
+    gameResolution: gameResolutionRef(options.providerId, options.providerFixtureId, options.gameId),
+    updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
+  });
+}
+
+/**
+ * Canonical team-stat metric extraction. API-Football reports team
+ * statistics as a flat `{ type, value }` list keyed by display strings;
+ * this collapses the recognised types into typed fields and stashes every
+ * other supplied metric (slugged) into `extra` so nothing is silently
+ * dropped. `value` may be a number, a percentage string, or null.
+ */
+interface IndexedTeamStats {
+  possessionPct?: number;
+  shots?: number;
+  shotsOnTarget?: number;
+  shotsOffTarget?: number;
+  shotsBlocked?: number;
+  corners?: number;
+  fouls?: number;
+  offsides?: number;
+  passes?: number;
+  passesCompleted?: number;
+  passCompletionPct?: number;
+  expectedGoals?: number;
+  yellowCards?: number;
+  redCards?: number;
+  saves?: number;
+  readonly extra: Record<string, number>;
+}
+
+function indexTeamStatistics(
+  statistics: readonly ApiFootballStatisticEntry[]
+): IndexedTeamStats {
+  const indexed: IndexedTeamStats = { extra: {} };
+  const known = new Set<string>();
+  const assign = (key: keyof Omit<IndexedTeamStats, 'extra'>, value: number | undefined): void => {
+    if (value !== undefined) {
+      indexed[key] = value;
+    }
+  };
+  for (const entry of statistics) {
+    if (!entry || typeof entry.type !== 'string') {
+      continue;
+    }
+    const normalisedType = entry.type.trim().toLowerCase();
+    known.add(normalisedType);
+    switch (normalisedType) {
+      case 'ball possession':
+        assign('possessionPct', percentStat(entry.value));
+        break;
+      case 'total shots':
+        assign('shots', integerStat(entry.value));
+        break;
+      case 'shots on goal':
+        assign('shotsOnTarget', integerStat(entry.value));
+        break;
+      case 'shots off goal':
+        assign('shotsOffTarget', integerStat(entry.value));
+        break;
+      case 'blocked shots':
+        assign('shotsBlocked', integerStat(entry.value));
+        break;
+      case 'corner kicks':
+        assign('corners', integerStat(entry.value));
+        break;
+      case 'fouls':
+        assign('fouls', integerStat(entry.value));
+        break;
+      case 'offsides':
+        assign('offsides', integerStat(entry.value));
+        break;
+      case 'total passes':
+        assign('passes', integerStat(entry.value));
+        break;
+      case 'passes accurate':
+        assign('passesCompleted', integerStat(entry.value));
+        break;
+      case 'passes %':
+        assign('passCompletionPct', percentStat(entry.value));
+        break;
+      case 'expected_goals':
+        assign('expectedGoals', doubleStat(entry.value));
+        break;
+      case 'yellow cards':
+        assign('yellowCards', integerStat(entry.value));
+        break;
+      case 'red cards':
+        assign('redCards', integerStat(entry.value));
+        break;
+      case 'goalkeeper saves':
+        assign('saves', integerStat(entry.value));
+        break;
+      default: {
+        const numeric = doubleStat(entry.value);
+        if (numeric !== undefined) {
+          indexed.extra[slugify(entry.type)] = numeric;
+        }
+      }
+    }
+  }
+  return indexed;
+}
+
+/**
+ * Map the API-Football per-player `games.substitute` flag to the canonical
+ * free-text `PlayerMatchStats.role`. `substitute === false` ⇒ STARTER,
+ * `true` ⇒ SUB, missing minutes ⇒ UNUSED, otherwise unset (game-service
+ * keeps its own taxonomy where the provider is silent).
+ */
+function playerRole(stat: ApiFootballPlayerStatistics): string {
+  if (stat.games?.substitute === false) {
+    return 'STARTER';
+  }
+  const minutes = integerStat(stat.games?.minutes) ?? 0;
+  if (stat.games?.substitute === true) {
+    return minutes > 0 ? 'SUB' : 'UNUSED';
+  }
+  return '';
+}
+
+function fieldProvenance(fieldName: string, providerId: string, fetchedAtMs: number) {
+  return create(FieldProvenanceSchema, {
+    fieldName,
+    provider: providerId,
+    isAuthoritative: true,
+    recordedAt: create(TimestampSchema, timestampFromMs(fetchedAtMs)),
+  });
+}
+
+function gameResolutionRef(providerId: string, providerFixtureId: string, gameId: string) {
+  return entityResolutionRef(
+    providerId,
+    providerFixtureId,
+    'fixture',
+    SubjectType.GAME,
+    providerFixtureId,
+    gameId ? { entityId: gameId } : undefined
+  );
+}
+
+/**
+ * Coerce an API-Football stat leaf to an integer. Returns `undefined` for
+ * null/missing so the caller can omit the field (and its provenance)
+ * entirely rather than fabricating a 0. Accepts numeric strings (the
+ * provider occasionally stringifies counts).
+ */
+function integerStat(value: number | string | null | undefined): number | undefined {
+  const numeric = doubleStat(value);
+  return numeric === undefined ? undefined : Math.round(numeric);
+}
+
+function doubleStat(value: number | string | null | undefined): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim().replace(/%$/, '');
+    if (trimmed === '') {
+      return undefined;
+    }
+    const parsed = Number.parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * Percentages arrive as either a bare number or a `"54%"` string. Strip the
+ * sign and return the 0-100 value; `undefined` when unreported.
+ */
+function percentStat(value: number | string | null | undefined): number | undefined {
+  return doubleStat(value);
 }
 
 function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIXTURE_ID }) {

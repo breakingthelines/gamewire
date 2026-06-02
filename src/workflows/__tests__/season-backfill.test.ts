@@ -245,7 +245,8 @@ describe('seasonBackfillWorkflow — full season walk', () => {
     expect(target?.fixturesProcessed).toBe(3);
     expect(target?.complete).toBe(true);
 
-    // Each finalised fixture got exactly one detail, events, and lineup call.
+    // Each finalised fixture got exactly one detail, events, lineup, and the
+    // two stats calls (team + player) — all five fixture-scoped workloads.
     for (const id of ['1001', '1002', '1003']) {
       expect(
         ingestion.calls.filter(
@@ -258,6 +259,16 @@ describe('seasonBackfillWorkflow — full season walk', () => {
       expect(
         ingestion.calls.filter((c) => c.resourceId === id && c.workload === 'lineups-post-confirm')
       ).toHaveLength(1);
+      const teamStats = ingestion.calls.filter(
+        (c) => c.resourceId === id && c.workload === 'team-match-stats'
+      );
+      expect(teamStats).toHaveLength(1);
+      expect(teamStats[0]?.path).toBe(`/fixtures/statistics?fixture=${id}`);
+      const playerStats = ingestion.calls.filter(
+        (c) => c.resourceId === id && c.workload === 'player-match-stats'
+      );
+      expect(playerStats).toHaveLength(1);
+      expect(playerStats[0]?.path).toBe(`/fixtures/players?fixture=${id}`);
     }
     // Scheduled fixtures were never touched.
     expect(ingestion.calls.some((c) => c.resourceId === '2001')).toBe(false);
@@ -336,7 +347,11 @@ describe('seasonBackfillWorkflow — pagination / resume via cursor', () => {
     const finalised = [1001, 1002, 1003, 1004, 1005];
     const target: SeasonBackfillInput = {
       targets: [{ competitionKey: 'comp-a', season: 2025 }],
-      // Budget: standings (1) + season-discovery (1) + 1 fixture (3) = 5 calls.
+      // Budget: standings (1) + season-discovery (1) = 2 calls, then the
+      // first fixture's 5 workloads (detail/events/lineups/team-stats/
+      // player-stats) over-run the remaining 3-call budget. The budget is
+      // checked at the START of each fixture, so exactly one fixture is
+      // processed before the next-fixture check halts the run.
       maxCallsPerRun: 5,
     };
 
@@ -399,8 +414,10 @@ describe('seasonBackfillWorkflow — pagination / resume via cursor', () => {
       }
     };
 
-    // Each run can do standings(1)+discovery(1)+1 fixture(3) on the first
-    // run, then 1 fixture(3) on resumes. Budget 5 keeps it to ~1 fixture/run.
+    // Each fixture now costs 5 workloads (detail/events/lineups/team-stats/
+    // player-stats). With the budget checked at the start of each fixture, a
+    // maxCallsPerRun of 5 lets the first run do standings + discovery + one
+    // fixture, then resumes do one fixture each — ~1 fixture/run either way.
     const input: SeasonBackfillInput = {
       targets: [{ competitionKey: 'comp-a', season: 2025 }],
       maxCallsPerRun: 5,
@@ -555,7 +572,8 @@ describe('seasonBackfillWorkflow — quota degradation', () => {
     ingestion.setSeasonFixtures(140, 2025, seasonEnvelope([3001]));
 
     const result = await run(ingestion, [COMPETITION_A, COMPETITION_B], {
-      // Budget only covers the first target's standings + discovery + 1 fixture.
+      // Budget covers the first target's standings + discovery, then its first
+      // (5-workload) fixture exhausts the remainder — comp-b is never reached.
       maxCallsPerRun: 5,
       targets: [
         { competitionKey: 'comp-a', season: 2025 },
