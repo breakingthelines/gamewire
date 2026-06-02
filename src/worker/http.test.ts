@@ -3,6 +3,7 @@ import { generateKeyPairSync, sign as ed25519Sign, type KeyObject } from 'node:c
 import { describe, expect, it, vi } from 'vitest';
 
 import { MESH_AUTH_CONTEXT_HEADER, Verifier } from './auth-context.js';
+import { InMemoryProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
 import { activityNames, handleWorkerRequest, type WorkerHttpResponse } from './http.js';
 import type {
@@ -221,6 +222,11 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
   const buildIngestion = (): ApiFootballIngestionLoop =>
     ({
       fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => buildResult(options)),
+      // The season-backfill workflow persists its resumable cursor via
+      // `ingestion.cache`; the real loop exposes it as a getter. Supply a
+      // process-local cache so the endpoint test exercises that path. The
+      // other workflows ignore it.
+      cache: new InMemoryProviderCache(),
     }) as unknown as ApiFootballIngestionLoop;
 
   const COMPETITION: CompetitionEntry = {
@@ -495,6 +501,73 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(result).toHaveProperty('fixtureId', '12345');
     expect(result).toHaveProperty('providerId', 'api-football');
     expect(JSON.stringify(completed)).not.toContain(HEAVY_MARKER);
+  });
+
+  it('runs season-backfill when btl-auth-context is valid', async () => {
+    // The season-backfill endpoint is the on-demand trigger surface the
+    // schedule/operator uses to import a competition's full historical
+    // season. It shares the same auth + NDJSON streaming + wire-projection
+    // contract as the other workflow routes. The mocked ingestion returns
+    // an empty fixture list, so discovery finds nothing and the run
+    // completes immediately — enough to pin the endpoint wiring.
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const body = {
+      targets: [{ competitionKey: 'unit-test', season: 2024 }],
+      maxCallsPerRun: 100,
+    };
+    const rawBody = JSON.stringify(body);
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/season-backfill',
+        body,
+        rawBody,
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toBe('application/x-ndjson; charset=utf-8');
+    const completed = await finalCompleted(response);
+    expect(completed).toMatchObject({
+      event: 'completed',
+      workflow: 'season-backfill',
+      status: 'ok',
+    });
+    const result = completed.result as Record<string, unknown> | undefined;
+    expect(result).toBeDefined();
+    // Summary-shaped: no raw per-fetch `fetches` arrays cross the wire.
+    expect(result).not.toHaveProperty('fetches');
+    expect(result).toHaveProperty('status');
+    const targets = result?.targets as Array<Record<string, unknown>> | undefined;
+    expect(targets?.[0]).toMatchObject({ target: 'unit-test:2024', season: 2024 });
+  });
+
+  it('rejects season-backfill without a valid btl-auth-context', async () => {
+    const { verifier } = makeVerifier();
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/season-backfill',
+        body: { targets: [{ competitionKey: 'unit-test', season: 2024 }] },
+        rawBody: JSON.stringify({ targets: [{ competitionKey: 'unit-test', season: 2024 }] }),
+        headers: {},
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({ status: 'unauthorized' });
   });
 
   it('surfaces workflow exceptions as a status:error completed line', async () => {

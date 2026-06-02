@@ -20,11 +20,15 @@ import {
   hourlyMatchdayToWire,
   hourlyMatchdayWorkflow,
   PHASE_A_COMPETITIONS,
+  seasonBackfillToWire,
+  seasonBackfillWorkflow,
   webhookCompletedToWire,
   webhookCompletedWorkflow,
   type CompetitionEntry,
   type DailyAnchorInput,
   type HourlyMatchdayInput,
+  type SeasonBackfillInput,
+  type SeasonBackfillTarget,
   type WebhookCompletedInput,
   type WorkflowDeps,
   type WorkflowLogger,
@@ -129,7 +133,7 @@ class WorkflowStreamQueue implements AsyncIterable<Record<string, unknown>> {
   }
 }
 
-type WorkflowName = 'daily-anchor' | 'hourly-matchday' | 'webhook-completed';
+type WorkflowName = 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' | 'season-backfill';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -322,14 +326,15 @@ const authoriseWorkflowRequest = (
   };
 };
 
-const workflowNameFromPath = (
-  pathname: string
-): 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' => {
+const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/hourly-matchday') {
     return 'hourly-matchday';
   }
   if (pathname === '/workflows/webhook-completed') {
     return 'webhook-completed';
+  }
+  if (pathname === '/workflows/season-backfill') {
+    return 'season-backfill';
   }
   return 'daily-anchor';
 };
@@ -362,6 +367,65 @@ const asStringList = (value: unknown): readonly string[] | undefined => {
     }
   }
   return out;
+};
+
+const asNumber = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+
+const asNumberList = (value: unknown): readonly number[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const out: number[] = [];
+  for (const item of value) {
+    if (typeof item === 'number' && Number.isFinite(item)) {
+      out.push(item);
+    }
+  }
+  return out;
+};
+
+const asBoolean = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
+
+const parseSeasonBackfillTargets = (
+  value: unknown
+): readonly SeasonBackfillTarget[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const out: SeasonBackfillTarget[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const season = asNumber(item.season);
+    if (season === undefined) {
+      // A target without a season is unusable; skip it rather than
+      // defaulting to a wrong season silently.
+      continue;
+    }
+    out.push({
+      competitionKey: asString(item.competitionKey),
+      apiFootballLeagueId: asNumber(item.apiFootballLeagueId),
+      season,
+    });
+  }
+  return out;
+};
+
+const parseSeasonBackfillInput = (body: unknown): SeasonBackfillInput => {
+  if (!isRecord(body)) {
+    return {};
+  }
+  return {
+    targets: parseSeasonBackfillTargets(body.targets),
+    seasons: asNumberList(body.seasons),
+    competitions: asStringList(body.competitions),
+    maxCallsPerRun: asNumber(body.maxCallsPerRun),
+    reset: asBoolean(body.reset),
+    nowUtc: asString(body.nowUtc),
+  };
 };
 
 const parseDailyAnchorInput = (body: unknown): DailyAnchorInput => {
@@ -474,7 +538,8 @@ export const handleWorkerRequest = async (
     request.method === 'POST' &&
     (request.pathname === '/workflows/daily-anchor' ||
       request.pathname === '/workflows/hourly-matchday' ||
-      request.pathname === '/workflows/webhook-completed')
+      request.pathname === '/workflows/webhook-completed' ||
+      request.pathname === '/workflows/season-backfill')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -525,6 +590,18 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => hourlyMatchdayWorkflow(input, { ...baseDeps, logger }),
           toWire: hourlyMatchdayToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/season-backfill') {
+      const input = parseSeasonBackfillInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => seasonBackfillWorkflow(input, { ...baseDeps, logger }),
+          toWire: seasonBackfillToWire,
         })
       );
     }

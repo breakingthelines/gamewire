@@ -23,6 +23,11 @@ export type {
   HourlyMatchdayWireResult,
   MatchdayCalendar,
   MatchdayWindow,
+  SeasonBackfillInput,
+  SeasonBackfillOutput,
+  SeasonBackfillTarget,
+  SeasonBackfillTargetResult,
+  SeasonBackfillWireResult,
   WebhookCompletedInput,
   WebhookCompletedOutput,
   WebhookCompletedWireResult,
@@ -30,7 +35,12 @@ export type {
   WorkflowLogEntry,
   WorkflowLogger,
 } from './types.js';
-export { dailyAnchorToWire, hourlyMatchdayToWire, webhookCompletedToWire } from './wire.js';
+export {
+  dailyAnchorToWire,
+  hourlyMatchdayToWire,
+  seasonBackfillToWire,
+  webhookCompletedToWire,
+} from './wire.js';
 export {
   handleIdentityOutage,
   handleProvider5xx,
@@ -46,3 +56,4 @@ export type { DegradeResult } from './degrade.js';
 export { dailyAnchorWorkflow } from './daily-anchor.js';
 export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
+export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
