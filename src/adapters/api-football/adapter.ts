@@ -746,7 +746,9 @@ function isApiFootballStatisticsResponse(value: unknown): value is ApiFootballSt
   }
   const team = (value as { team?: unknown }).team;
   const statistics = (value as { statistics?: unknown }).statistics;
-  return isRecord(team) && Number.isFinite((team as { id?: unknown }).id) && Array.isArray(statistics);
+  return (
+    isRecord(team) && Number.isFinite((team as { id?: unknown }).id) && Array.isArray(statistics)
+  );
 }
 
 function isApiFootballPlayersResponse(value: unknown): value is ApiFootballPlayersResponse {
@@ -1175,7 +1177,11 @@ function teamMatchStatsFromStatistics(
     source: providerAttribution(options.providerId),
     provenance,
     teamResolution: team.resolutionRef,
-    gameResolution: gameResolutionRef(options.providerId, options.providerFixtureId, options.gameId),
+    gameResolution: gameResolutionRef(
+      options.providerId,
+      options.providerFixtureId,
+      options.gameId
+    ),
     updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
   });
 }
@@ -1290,7 +1296,11 @@ function playerMatchStatsFromEntry(
     provenance,
     playerResolution: playerSubject.resolutionRef,
     teamResolution: teamSubject.resolutionRef,
-    gameResolution: gameResolutionRef(options.providerId, options.providerFixtureId, options.gameId),
+    gameResolution: gameResolutionRef(
+      options.providerId,
+      options.providerFixtureId,
+      options.gameId
+    ),
     updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
   });
 }
@@ -1321,9 +1331,7 @@ interface IndexedTeamStats {
   readonly extra: Record<string, number>;
 }
 
-function indexTeamStatistics(
-  statistics: readonly ApiFootballStatisticEntry[]
-): IndexedTeamStats {
+function indexTeamStatistics(statistics: readonly ApiFootballStatisticEntry[]): IndexedTeamStats {
   const indexed: IndexedTeamStats = { extra: {} };
   const known = new Set<string>();
   const assign = (key: keyof Omit<IndexedTeamStats, 'extra'>, value: number | undefined): void => {
