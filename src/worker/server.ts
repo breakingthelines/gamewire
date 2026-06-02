@@ -19,6 +19,7 @@ import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
+import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
   InMemoryMatchConcludedStreamClient,
@@ -74,6 +75,30 @@ const flattenHeaders = (request: IncomingMessage): Record<string, string> => {
     }
   }
   return out;
+};
+
+/**
+ * Compose zero or more fire-and-forget fixture bridges into one callback for
+ * the ingestion loop's single `onFixtureFetched` seam. Returns `undefined`
+ * when no bridge is active (so the loop keeps its no-op default). Each bridge
+ * is dispatched independently; a synchronous or async throw in one is
+ * swallowed so it can neither block the other bridge nor the fetch path.
+ */
+const composeFixtureBridges = (
+  ...bridges: readonly (OnFixtureFetchedCallback | undefined)[]
+): OnFixtureFetchedCallback | undefined => {
+  const active = bridges.filter(
+    (bridge): bridge is OnFixtureFetchedCallback => bridge !== undefined
+  );
+  if (active.length === 0) {
+    return undefined;
+  }
+  if (active.length === 1) {
+    return active[0];
+  }
+  return async (input) => {
+    await Promise.allSettled(active.map((bridge) => Promise.resolve(bridge(input))));
+  };
 };
 
 // The ingestion loop is constructed alongside the HTTP server. The default
@@ -246,7 +271,7 @@ if (!config.gameServiceUrl) {
  * details. No-op when the publisher, the game-service client, or the identity
  * client is unavailable.
  */
-const onFixtureFetched: OnFixtureFetchedCallback | undefined =
+const matchConcludedBridge: OnFixtureFetchedCallback | undefined =
   matchConcludedPublisher && gameServiceLookupClient && identityClient
     ? createMatchConcludedBridge({
         publisher: matchConcludedPublisher,
@@ -256,7 +281,7 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined =
       })
     : undefined;
 
-if (onFixtureFetched) {
+if (matchConcludedBridge) {
   console.log(
     '[gamewire-worker] match-concluded bridge active ' +
       `(gameService=${config.gameServiceUrl} ` +
@@ -270,6 +295,51 @@ if (onFixtureFetched) {
       `identity=${identityClient ? 'ready' : 'missing'})`
   );
 }
+
+/**
+ * Entity-imagery asset-mirror bridge. Stores CORS-clean copies of provider
+ * crests/logos/player photos in the EXISTING content R2 bucket
+ * (`R2_BUCKET_CONTENT`) under the `media/provider/` prefix as a byproduct of
+ * ingestion (zero added provider JSON quota) — NO separate bucket. Returns
+ * `undefined` — a safe no-op — when `R2_BUCKET_CONTENT` is unset, when the
+ * shared R2 credentials / CDN base are missing, or when Bun's S3Client is
+ * unavailable. Requires the identity client for provider→canonical id
+ * resolution. See `docs/proposals/entity-imagery-system.md`.
+ */
+const assetMirrorBridge: OnFixtureFetchedCallback | undefined = identityClient
+  ? createAssetMirrorBridge({
+      config: config.assetMirror,
+      identity: identityClient,
+      providerId: config.providerId,
+    })
+  : undefined;
+
+if (assetMirrorBridge) {
+  console.log(
+    '[gamewire-worker] asset-mirror bridge active ' +
+      `(bucket=${config.assetMirror.bucket} cdn=${config.assetMirror.cdnBaseUrl} ` +
+      `provider=${config.providerId})`
+  );
+} else {
+  console.log(
+    '[gamewire-worker] asset-mirror bridge inactive ' +
+      `(bucket=${config.assetMirror.bucket ? 'set' : 'unset'} ` +
+      `cdn=${config.assetMirror.cdnBaseUrl ? 'set' : 'unset'} ` +
+      `identity=${identityClient ? 'ready' : 'missing'}) — set R2_BUCKET_CONTENT (shared content bucket) to enable`
+  );
+}
+
+/**
+ * Compose the two fire-and-forget bridges into the single `onFixtureFetched`
+ * seam. Each bridge is invoked independently; a throw in one never blocks the
+ * other (each already swallows its own errors, but the composer defends
+ * against an unexpected synchronous throw too). Order is irrelevant — neither
+ * back-pressures the fetch path.
+ */
+const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBridges(
+  matchConcludedBridge,
+  assetMirrorBridge
+);
 
 const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
 

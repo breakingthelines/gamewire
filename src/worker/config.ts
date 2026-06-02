@@ -52,7 +52,65 @@ export interface GamewireWorkerConfig {
    * `GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE`.
    */
   authContextRequiredScope: string;
+  /**
+   * Entity-imagery asset mirror config. The mirror stores CORS-clean copies
+   * of provider entity images (crests/logos/player photos) in the EXISTING
+   * content R2 bucket — under a `media/provider/` prefix — as a byproduct of
+   * ingestion, so the app stops hotlinking and re-hitting the provider for
+   * images. There is NO separate media bucket: the objects are served by the
+   * same `cdn.breakingthelines.dev` that fronts content-service uploads.
+   * See `docs/proposals/entity-imagery-system.md`.
+   *
+   * The mirror is a SAFE NO-OP unless `bucket` (`R2_BUCKET_CONTENT`) is set —
+   * if the shared R2 creds/bucket are unset the worker simply skips mirroring.
+   * The S3-compatible credentials/endpoint are the SHARED R2 creds, the same
+   * account content-service's R2 client uses.
+   */
+  readonly assetMirror: AssetMirrorConfig;
 }
+
+/**
+ * Resolved entity-imagery asset-mirror configuration. Every value comes from
+ * the SHARED R2 env that content-service already uses — `R2_ENDPOINT`,
+ * `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and the existing content bucket
+ * `R2_BUCKET_CONTENT`. There is intentionally NO `R2_BUCKET_MEDIA`: the mirror
+ * writes into the content bucket under the `media/provider/` prefix.
+ *
+ * `bucket` is the load-bearing guard: when it is `undefined` the mirror is
+ * disabled end-to-end (no S3 client constructed, no HEAD/GET/PUT, no manifest
+ * write). Every other field is only meaningful when `bucket` is set.
+ */
+export interface AssetMirrorConfig {
+  /** `R2_BUCKET_CONTENT` — the EXISTING content bucket. Undefined ⇒ mirror disabled. */
+  readonly bucket?: string;
+  /**
+   * Public CDN base the platform's resolver reads back from, INCLUDING the
+   * `/media` segment, e.g. `https://cdn.breakingthelines.dev/media` (no
+   * trailing slash). Stamped into the coverage manifest's `cdnBase` so the
+   * design-system resolver builds `${cdnBase}/<layer>/<type>/<id>.<ext>` =
+   * `cdn.breakingthelines.dev/media/provider/<type>/<id>.<ext>`, which maps to
+   * the bucket key `media/provider/<type>/<id>.<ext>` this mirror writes.
+   * Sourced from `R2_MEDIA_CDN_BASE_URL` (or `CONTENT_STORAGE_CDN_BASE_URL`);
+   * defaults to `https://cdn.breakingthelines.dev/media`.
+   */
+  readonly cdnBaseUrl?: string;
+  /** `R2_ENDPOINT` — shared S3-compatible endpoint (Cloudflare R2 account URL). */
+  readonly endpoint?: string;
+  /** `R2_ACCESS_KEY_ID` — shared R2 access key id. */
+  readonly accessKeyId?: string;
+  /** `R2_SECRET_ACCESS_KEY` — shared R2 secret access key. */
+  readonly secretAccessKey?: string;
+  /** S3 region; R2 always uses `auto`. */
+  readonly region: string;
+}
+
+/**
+ * Default public CDN base the platform reads entity imagery from. Includes the
+ * `/media` segment because the objects live under the `media/` prefix in the
+ * shared content bucket (the same prefix content-service uploads use), and
+ * `cdn.breakingthelines.dev` fronts the bucket root.
+ */
+export const DEFAULT_MEDIA_CDN_BASE_URL = 'https://cdn.breakingthelines.dev/media';
 
 export type GamewireWorkerEnv = Record<string, string | undefined>;
 
@@ -183,7 +241,33 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       providerMode === 'live',
       'gamewire ingestion immediate tick flag'
     ),
+    assetMirror: resolveAssetMirrorConfig(env),
     ...resolveAuthContextConfig(env),
+  };
+};
+
+/**
+ * Resolve entity-imagery asset-mirror config from the SHARED R2 env. The mirror
+ * reuses content-service's R2 account credentials/endpoint AND its content
+ * bucket (`R2_BUCKET_CONTENT`) — writing under the `media/provider/` prefix, NOT
+ * a separate bucket. `bucket` is intentionally optional: when unset the mirror
+ * is a safe no-op (skip mirroring). The CDN base (which the resolver reads back
+ * from) defaults to `https://cdn.breakingthelines.dev/media` and has its
+ * trailing slash stripped to match the resolver's `cdnBase.replace(/\/+$/, '')`
+ * contract so keys join cleanly.
+ */
+const resolveAssetMirrorConfig = (env: GamewireWorkerEnv): AssetMirrorConfig => {
+  const cdnBaseUrl =
+    trimmedOrUndefined(env.R2_MEDIA_CDN_BASE_URL) ??
+    trimmedOrUndefined(env.CONTENT_STORAGE_CDN_BASE_URL) ??
+    DEFAULT_MEDIA_CDN_BASE_URL;
+  return {
+    bucket: trimmedOrUndefined(env.R2_BUCKET_CONTENT),
+    cdnBaseUrl: cdnBaseUrl.replace(/\/+$/, ''),
+    endpoint: trimmedOrUndefined(env.R2_ENDPOINT),
+    accessKeyId: trimmedOrUndefined(env.R2_ACCESS_KEY_ID),
+    secretAccessKey: trimmedOrUndefined(env.R2_SECRET_ACCESS_KEY),
+    region: trimmedOrUndefined(env.R2_REGION) ?? 'auto',
   };
 };
 

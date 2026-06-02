@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { loadConfig } from './config.js';
+import { DEFAULT_MEDIA_CDN_BASE_URL, loadConfig } from './config.js';
 
 const authEnv = (overrides: Record<string, string | undefined> = {}) => ({
   GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
@@ -100,5 +100,55 @@ describe('gamewire-worker config', () => {
     ).toThrow(
       /auth-context misconfigured.*GAMEWIRE_AUTH_CONTEXT_AUDIENCE.*GAMEWIRE_AUTH_CONTEXT_REQUIRED_SCOPE/
     );
+  });
+
+  describe('asset-mirror config (shared content bucket, no separate media bucket)', () => {
+    it('leaves the bucket unset (mirror no-op) when R2_BUCKET_CONTENT is absent', () => {
+      const cfg = loadConfig(authEnv());
+      // No-creds / no-bucket guard at the config layer: bucket undefined ⇒ the
+      // mirror factory returns a safe no-op.
+      expect(cfg.assetMirror.bucket).toBeUndefined();
+      // CDN base still defaults so the value is meaningful once a bucket lands.
+      expect(cfg.assetMirror.cdnBaseUrl).toBe(DEFAULT_MEDIA_CDN_BASE_URL);
+      expect(cfg.assetMirror.region).toBe('auto');
+      // Crucially, there is NO R2_BUCKET_MEDIA: even if set, it is ignored.
+      const withMediaOnly = loadConfig(authEnv({ R2_BUCKET_MEDIA: 'btl-media' }));
+      expect(withMediaOnly.assetMirror.bucket).toBeUndefined();
+    });
+
+    it('reuses the SHARED R2 env (R2_BUCKET_CONTENT + R2_* creds) for the mirror', () => {
+      const cfg = loadConfig(
+        authEnv({
+          R2_BUCKET_CONTENT: 'btl-content',
+          R2_ENDPOINT: 'https://acct.r2.cloudflarestorage.com',
+          R2_ACCESS_KEY_ID: 'AKIA',
+          R2_SECRET_ACCESS_KEY: 'secret',
+        })
+      );
+      expect(cfg.assetMirror).toMatchObject({
+        bucket: 'btl-content',
+        endpoint: 'https://acct.r2.cloudflarestorage.com',
+        accessKeyId: 'AKIA',
+        secretAccessKey: 'secret',
+        region: 'auto',
+      });
+    });
+
+    it('defaults the CDN base to cdn.breakingthelines.dev/media and strips a trailing slash', () => {
+      expect(DEFAULT_MEDIA_CDN_BASE_URL).toBe('https://cdn.breakingthelines.dev/media');
+      const def = loadConfig(authEnv());
+      expect(def.assetMirror.cdnBaseUrl).toBe('https://cdn.breakingthelines.dev/media');
+
+      const overridden = loadConfig(
+        authEnv({ R2_MEDIA_CDN_BASE_URL: 'https://cdn.breakingthelines.dev/media/' })
+      );
+      expect(overridden.assetMirror.cdnBaseUrl).toBe('https://cdn.breakingthelines.dev/media');
+
+      // Falls back to content-service's CDN base var when the media-specific one is absent.
+      const fromContent = loadConfig(
+        authEnv({ CONTENT_STORAGE_CDN_BASE_URL: 'https://cdn.example.dev/media' })
+      );
+      expect(fromContent.assetMirror.cdnBaseUrl).toBe('https://cdn.example.dev/media');
+    });
   });
 });
