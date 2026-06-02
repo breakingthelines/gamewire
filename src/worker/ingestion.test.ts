@@ -36,6 +36,8 @@ const baseConfig: GamewireWorkerConfig = {
   authContextIssuer: 'auth-service-test',
   authContextAudience: 'gamewire-worker',
   authContextRequiredScope: 'gamewire.workflow.invoke',
+  // Asset mirror disabled (no content bucket) — irrelevant to these tests.
+  assetMirror: { region: 'auto' },
 };
 
 const replayConfig: GamewireWorkerConfig = {

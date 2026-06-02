@@ -49,6 +49,8 @@ export {
 export {
   config,
   loadConfig,
+  DEFAULT_MEDIA_CDN_BASE_URL,
+  type AssetMirrorConfig,
   type GamewireWorkerConfig,
   type GamewireWorkerEnv,
   type GamewireWorkerLogLevel,
@@ -174,6 +176,30 @@ export {
   type RedisQuotaStoreOptions,
 } from './quota.js';
 export { IngestionMetrics, type CallOutcome, type MetricsSnapshot } from './metrics.js';
+export {
+  ENTITY_IMAGERY_MANIFEST_KEY,
+  MEDIA_PREFIX,
+  MIRROR_LAYER,
+  createAssetMirror,
+  entityImageKeySuffix,
+  entityImageTypeFor,
+  extensionFromUrl,
+  mirrorObjectKey,
+  type AssetMirrorLogEntry,
+  type AssetMirrorLogger,
+  type AssetMirrorOptions,
+  type EntityImageManifest,
+  type EntityImageManifestEntry,
+  type EntityImageType,
+  type ImageFetch,
+  type MediaObjectStore,
+  type OnFixtureFetched as AssetMirrorOnFixtureFetched,
+} from './asset-mirror.js';
+export {
+  createAssetMirrorBridge,
+  createBunMediaObjectStore,
+  type AssetMirrorBridgeDeps,
+} from './media-store.js';
 export {
   ApiFootballIngestionLoop,
   INGESTION_TICK_INTERVAL_MS,
