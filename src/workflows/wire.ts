@@ -24,6 +24,8 @@ import type {
   DailyAnchorWireResult,
   HourlyMatchdayOutput,
   HourlyMatchdayWireResult,
+  SeasonBackfillOutput,
+  SeasonBackfillWireResult,
   WebhookCompletedOutput,
   WebhookCompletedWireResult,
 } from './types.js';
@@ -68,5 +70,23 @@ export const webhookCompletedToWire = (
   status: output.status,
   degradeFlags: output.degradeFlags,
   reason: output.reason,
+  finalQuota: output.finalQuota,
+});
+
+/**
+ * Season-backfill output is already summary-shaped (per-target counters,
+ * no raw provider payloads), so the projection is a structural copy. It
+ * exists to hold the one-projection-per-workflow invariant and to pin
+ * the wire contract independently of the in-process type.
+ */
+export const seasonBackfillToWire = (output: SeasonBackfillOutput): SeasonBackfillWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  status: output.status,
+  callsBudgeted: output.callsBudgeted,
+  callsUsed: output.callsUsed,
+  fixturesProcessed: output.fixturesProcessed,
+  targets: output.targets,
+  degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
 });

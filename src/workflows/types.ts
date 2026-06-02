@@ -90,8 +90,9 @@ export interface WorkflowDeps {
 
 export interface WorkflowLogEntry {
   readonly event: string;
-  readonly workflow: 'daily-anchor' | 'hourly-matchday' | 'webhook-completed';
+  readonly workflow: 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' | 'season-backfill';
   readonly competition?: string;
+  readonly season?: number;
   readonly fixtureId?: string;
   readonly workload?: string;
   readonly status?: string;
@@ -235,5 +236,115 @@ export interface WebhookCompletedWireResult {
   readonly status: 'completed' | 'skipped' | 'failed';
   readonly degradeFlags: readonly DegradeFlag[];
   readonly reason?: string;
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+/**
+ * A single competition+season the backfill should import. Either a
+ * catalogue `competitionKey` (resolved against `deps.competitions`) or
+ * an explicit `apiFootballLeagueId` is required; `season` is always
+ * required so the same competition can be backfilled across multiple
+ * seasons (current + recent) without catalogue edits.
+ *
+ * When both `competitionKey` and `apiFootballLeagueId` are present the
+ * explicit league id wins (the key is then used only as the human label
+ * + cursor namespace component).
+ */
+export interface SeasonBackfillTarget {
+  readonly competitionKey?: string;
+  readonly apiFootballLeagueId?: number;
+  readonly season: number;
+}
+
+export interface SeasonBackfillInput {
+  /**
+   * Explicit list of competition+season targets. When omitted, the
+   * workflow expands `deps.competitions` (the Phase A catalogue by
+   * default) across {@link SeasonBackfillInput.seasons}.
+   */
+  readonly targets?: readonly SeasonBackfillTarget[];
+  /**
+   * Seasons to expand `deps.competitions` over when `targets` is
+   * omitted. Defaults to each competition's catalogue `season` only.
+   * Example: `[2024, 2025]` backfills the recent + current season for
+   * every Phase A competition.
+   */
+  readonly seasons?: readonly number[];
+  /**
+   * Subset of competition keys to include when expanding the catalogue.
+   * Ignored when `targets` is supplied. Empty/omitted means all.
+   */
+  readonly competitions?: readonly string[];
+  /**
+   * Hard ceiling on provider calls this run may budget before
+   * checkpointing and returning `incomplete`. This is the per-run
+   * throttle that keeps a single backfill invocation from draining the
+   * shared daily provider quota and starving the live ingestion loops.
+   * The {@link ProviderQuotaTracker} hard cap (70k/day) remains the
+   * absolute backstop. Defaults to {@link DEFAULT_MAX_CALLS_PER_RUN}.
+   */
+  readonly maxCallsPerRun?: number;
+  /**
+   * When true, discard any persisted cursor and re-discover the full
+   * season fixture list from scratch. The ingest path stays idempotent
+   * either way (game-service upserts + emit-once gate); this only
+   * controls cursor reuse. Defaults to false (resume).
+   */
+  readonly reset?: boolean;
+  /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+export interface SeasonBackfillTargetResult {
+  /** Human label, e.g. `premier-league:2024` or `league-39:2024`. */
+  readonly target: string;
+  readonly competition?: string;
+  readonly apiFootballLeagueId: number;
+  readonly season: number;
+  /** Total finalised fixtures discovered for the season. */
+  readonly fixturesDiscovered: number;
+  /** Fixtures whose detail/events/lineups were touched this run. */
+  readonly fixturesProcessed: number;
+  /** Cursor index reached this run (next run resumes here). */
+  readonly cursorIndex: number;
+  /** True once every discovered fixture has been processed. */
+  readonly complete: boolean;
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly errors: readonly string[];
+}
+
+export interface SeasonBackfillOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  /** `complete` when every target finished; `incomplete` when the run hit the call budget or a quota posture and checkpointed for resume; `aborted` on hard cap. */
+  readonly status: 'complete' | 'incomplete' | 'aborted';
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly fixturesProcessed: number;
+  readonly targets: readonly SeasonBackfillTargetResult[];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the season-backfill workflow.
+ * The in-process {@link SeasonBackfillOutput} is already summary-shaped
+ * (no raw `fetches`/`data` arrays are retained — backfill walks a full
+ * season and would otherwise accumulate hundreds of MB), so the wire
+ * type is structurally identical. It is declared explicitly to keep the
+ * one-projection-per-workflow invariant in `wire.ts` and to pin the wire
+ * contract independently of the in-process type if the latter grows
+ * debug detail later.
+ */
+export interface SeasonBackfillWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: 'complete' | 'incomplete' | 'aborted';
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly fixturesProcessed: number;
+  readonly targets: readonly SeasonBackfillTargetResult[];
+  readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
 }
