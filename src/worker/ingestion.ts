@@ -16,7 +16,9 @@
  */
 
 import {
+  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
+  apiFootballCompetitionKey,
   apiFootballEventPath,
   apiFootballFixturePath,
   apiFootballFixturePlayersPath,
@@ -473,12 +475,35 @@ export class ApiFootballIngestionLoop {
     };
 
     enqueueTick('fixtures-next-7d', async () => {
-      const result = await this.fetchWorkload({
-        workload: 'fixtures-next-7d',
-        resourceId: 'top-competitions',
-        path: apiFootballFixtureSyncPaths()[0],
-      });
-      addFixtureIds(fixtureIdsFromFixtureList(result.data, this.#clock()), 'fixtures-next-7d');
+      // Sweep EVERY competition in the catalogue, not just the first. The
+      // fixture-sync paths line up 1:1 with `API_FOOTBALL_BETA_COMPETITIONS`,
+      // so each league is fetched under its own `league-<id>-season-<season>`
+      // resourceId. This is what lands SCHEDULED games for upcoming-only
+      // competitions — most importantly FIFA World Cup 2026 (league 1 /
+      // season 2026) ahead of its opener: the previous `[0]` fetch only ever
+      // pulled the Premier League, so WC fixtures never reached the bridge.
+      //
+      // Each fetch flows through the ingestion-loop bridge's
+      // `fixtures-next-7d` branch, which upserts a canonical SCHEDULED game +
+      // the provider_game_mappings crosswalk per fixture (idempotent on
+      // `(provider, provider_game_id)`). Per-league resourceIds keep cache
+      // keys + crosswalk scopes clean. `allSettled` isolates one league's
+      // failure (quota/provider error) from the rest of the sweep.
+      const paths = apiFootballFixtureSyncPaths();
+      await Promise.allSettled(
+        API_FOOTBALL_BETA_COMPETITIONS.map(async (competition, index) => {
+          const path = paths[index];
+          if (path === undefined) {
+            return;
+          }
+          const result = await this.fetchWorkload({
+            workload: 'fixtures-next-7d',
+            resourceId: apiFootballCompetitionKey(competition),
+            path,
+          });
+          addFixtureIds(fixtureIdsFromFixtureList(result.data, this.#clock()), 'fixtures-next-7d');
+        })
+      );
     });
 
     const fixtureIdsForImmediate = (): readonly string[] => [

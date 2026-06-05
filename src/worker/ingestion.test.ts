@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { API_FOOTBALL_BETA_COMPETITIONS } from '../adapters/api-football/index.js';
 import { InMemoryProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
 import {
@@ -390,6 +391,51 @@ describe('ApiFootballIngestionLoop.start', () => {
     const urls = fetchFn.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes('/fixtures?id=1917'))).toBe(true);
     expect(urls.some((url) => url.includes('/fixtures/events?fixture=1917'))).toBe(true);
+    stop();
+  });
+
+  it('sweeps the fixtures list for EVERY catalogue competition, not just the first', async () => {
+    // Regression guard: the boot tick once fetched only
+    // `apiFootballFixtureSyncPaths()[0]` (Premier League), so upcoming-only
+    // competitions — notably FIFA World Cup 2026 (league 1 / season 2026) —
+    // never reached game-service. The tick must now fetch one fixtures list
+    // per catalogue entry, under a `league-<id>-season-<season>` resourceId.
+    const fetchFn = buildFetchMock({ response: [] });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    const schedule = vi.fn(() => 'h');
+    const cancel = vi.fn();
+    const stop = loop.start({
+      runImmediately: true,
+      intervals: { 'fixtures-next-7d': 1_000 },
+      schedule,
+      cancel,
+    });
+
+    const expectedCount = API_FOOTBALL_BETA_COMPETITIONS.length;
+    for (let i = 0; i < 10 && fetchFn.mock.calls.length < expectedCount; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+
+    const urls = fetchFn.mock.calls.map((call) => String(call[0]));
+    // One fixtures fetch per competition (the only workload with an interval).
+    expect(urls).toHaveLength(expectedCount);
+    // Every catalogue league+season pair is fetched, including World Cup 2026.
+    for (const competition of API_FOOTBALL_BETA_COMPETITIONS) {
+      expect(
+        urls.some(
+          (url) =>
+            url.includes(`league=${competition.leagueId}`) &&
+            url.includes(`season=${competition.season}`)
+        )
+      ).toBe(true);
+    }
+    // Explicit WC assertion so the tournament can never silently drop out.
+    expect(urls.some((url) => url.includes('league=1') && url.includes('season=2026'))).toBe(true);
     stop();
   });
 
