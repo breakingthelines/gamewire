@@ -252,12 +252,18 @@ export interface AssetMirrorOptions {
 
 /**
  * Workloads whose payloads carry entity imagery and which actually flow
- * through the ingestion loop's bridge seam (`BRIDGE_WORKLOADS`). Fixture
- * detail carries team crests + the competition logo; squad lists and
- * per-fixture player stats carry team crests + player photos. Events and
- * lineups carry no logo/photo fields, so they are intentionally absent.
+ * through the ingestion loop's bridge seam (`BRIDGE_WORKLOADS`). The fixtures
+ * LIST (`fixtures-next-7d`) and fixture detail both carry home/away crests +
+ * the competition logo (`collectCandidates` reads the same `teams`/`league`
+ * shape for either), so the list pass warms crests/logos for upcoming fixtures
+ * — including a tournament before its opener — at zero extra provider quota
+ * (the URLs are already in the payload and every store write is HEAD-gated).
+ * Squad lists and per-fixture player stats carry team crests + player photos.
+ * Events and lineups carry no logo/photo fields, so they are intentionally
+ * absent.
  */
 const IMAGERY_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
+  'fixtures-next-7d',
   'fixture-detail-preKO',
   'fixture-detail-live',
   'fixture-detail-fullTime',

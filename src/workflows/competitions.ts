@@ -10,8 +10,13 @@
  * League ids are sourced from `API_FOOTBALL_BETA_COMPETITIONS` in
  * `src/adapters/api-football/types.ts` where they overlap; EFL tiers,
  * Eredivisie, and the qualifier confederations are added here. WC26
- * ships as a stub today and will be replaced by a dynamic competition
- * during the tournament.
+ * (`fifa-world-cup-2026`, league 1 / season 2026) is a live catalogue
+ * entry: the daily-anchor + hourly sweeps fetch its fixtures and the
+ * ingestion-loop bridge mints canonical SCHEDULED games for them ahead
+ * of kickoff, exactly like every other competition. (Group→knockout
+ * round names are carried verbatim from the provider via
+ * `FootballGamePayload.stage`, so no per-stage catalogue edit is
+ * needed as the tournament progresses.)
  */
 import type { CompetitionEntry, MatchdayCalendar } from './types.js';
 
@@ -33,8 +38,9 @@ const WEEKEND_AND_MIDWEEK: MatchdayCalendar = [
  * International qualifier hours. Confederations cluster fixtures on
  * Tue/Wed/Thu/Fri evenings in their respective FIFA windows; this
  * catch-all keeps the worker hot through those weeks without a
- * separate per-confederation calendar. WC26 cron will be overridden
- * dynamically during the tournament.
+ * separate per-confederation calendar. WC26 group + knockout matchdays
+ * also land inside these windows, and the daily-anchor sweep (which
+ * ignores the calendar) covers any fixtures that fall outside them.
  */
 const INTERNATIONAL_WINDOWS: MatchdayCalendar = [
   { utcWeekday: 2, utcHourStart: 18, utcHourEnd: 23 }, // Tuesday

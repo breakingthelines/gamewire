@@ -695,6 +695,16 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
 
 const BRIDGE_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   ...FIXTURE_DETAIL_WORKLOADS,
+  // The fixtures LIST workload flows through the bridge so the
+  // match-concluded bridge can mint SCHEDULED canonical games + the
+  // provider_game_mappings crosswalk for upcoming fixtures (the forward
+  // -1d/+7d window and the season discovery pass). The single-fixture
+  // detail/events/lineups branches only fire once a fixture is in-play or
+  // finalised; without the list branch a competition whose fixtures are all
+  // upcoming (e.g. FIFA World Cup 2026 before its opener) never created any
+  // canonical games. The bridge's list branch never publishes a
+  // match-concluded fact — it only upserts the SCHEDULED game + crosswalk.
+  'fixtures-next-7d',
   'events-post-final',
   'lineups-post-confirm',
   'team-match-stats',

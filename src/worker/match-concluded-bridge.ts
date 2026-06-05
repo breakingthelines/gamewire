@@ -119,6 +119,22 @@ const FIXTURE_DETAIL_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   'fixture-detail-fullTime',
 ]);
 
+/**
+ * Workloads whose response payload is a multi-fixture LIST envelope
+ * (`/fixtures?league&season[&from&to]`). Unlike the single-fixture detail
+ * workloads, the list branch mints a canonical {@link Game} per fixture —
+ * including SCHEDULED (status `NS`) ones — so the forward `-1d/+7d` window
+ * (daily-anchor) and the season discovery pass (season-backfill) both populate
+ * the `provider_game_mappings` crosswalk BEFORE a fixture kicks off. Without
+ * this, a competition whose fixtures are all upcoming (e.g. a tournament before
+ * its opener, like FIFA World Cup 2026) never created any canonical games: the
+ * detail/events/lineups branches only fire once a fixture is in-play or
+ * finalised. The list branch does NOT publish a match-concluded fact — a
+ * scheduled fixture has not concluded; it only creates/updates the SCHEDULED
+ * canonical game + crosswalk. Terminal facts stay owned by the detail branch.
+ */
+const FIXTURE_LIST_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['fixtures-next-7d']);
+
 const EVENT_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['events-post-final']);
 const LINEUP_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['lineups-post-confirm']);
 const SQUAD_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set(['squad-list-fallback']);
@@ -174,6 +190,21 @@ export const createMatchConcludedBridge = (
   const gameLookupRetryDelaysMs = options.gameLookupRetryDelaysMs ?? GAME_LOOKUP_RETRY_DELAYS_MS;
 
   return async ({ workload, resourceId, data }) => {
+    if (FIXTURE_LIST_WORKLOADS.has(workload)) {
+      await ingestFixtureList({
+        workload,
+        resourceId,
+        data,
+        providerId,
+        gameService,
+        identity,
+        log,
+        clock,
+        gameLookupRetryDelaysMs,
+      });
+      return;
+    }
+
     if (EVENT_WORKLOADS.has(workload)) {
       await ingestEvents({
         workload,
@@ -387,6 +418,84 @@ interface ProviderResourceBridgeInput {
   readonly clock: () => number;
   readonly gameLookupRetryDelaysMs: readonly number[];
 }
+
+/**
+ * Mint canonical games for a `/fixtures?league&season[&from&to]` LIST
+ * envelope. Every fixture in the list is mapped through the HUB
+ * (`apiFootballIngestGamesRequestFromFixtures`) — including SCHEDULED (`NS`)
+ * ones — and pushed to `game-service.IngestGames`, which upserts the
+ * canonical {@link Game} and the `provider_game_mappings` crosswalk keyed by
+ * the provider fixture id. This is the path that creates SCHEDULED games for
+ * upcoming fixtures; the per-fixture detail/events/lineups branches only fire
+ * once a fixture is in-play or finalised, so without this a tournament whose
+ * fixtures are all upcoming (e.g. FIFA World Cup 2026 before its opener) would
+ * never appear in game-service.
+ *
+ * Idempotent: `IngestGames` upserts on `(provider, provider_game_id)`, so a
+ * fixture seen first as SCHEDULED here and later as LIVE/FINISHED via the
+ * detail branch updates the same canonical row rather than duplicating it.
+ *
+ * No match-concluded fact is published here — a scheduled (or even live)
+ * fixture has not concluded. Terminal-fact emission stays exclusively on the
+ * fixture-detail branch + its emit-once gate.
+ */
+const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  const fixtures = decodeFixtureResponses(input.data);
+  if (fixtures.length === 0) {
+    input.log({
+      event: 'bridge_fixtures_list_empty',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_fixtures_in_response',
+    });
+    return;
+  }
+  const entityResolutions = await resolveFixtureListEntities(
+    input.identity,
+    input.providerId,
+    fixtures,
+    input.log,
+    { workload: input.workload, resourceId: input.resourceId }
+  );
+  const request = apiFootballIngestGamesRequestFromFixtures({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.resourceId,
+    envelope: input.data,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.games.length === 0) {
+    input.log({
+      event: 'bridge_fixtures_list_empty',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerId: input.providerId,
+      reason: 'no_mapped_games',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestGames(request);
+    input.log({
+      event: 'bridge_fixtures_list_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerId: input.providerId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_fixtures_list_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerId: input.providerId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
 
 const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> => {
   const events = decodeEventEnvelope(input.data);
@@ -999,6 +1108,57 @@ const resolveFixtureEntities = async (
   });
   await addResolvedTeam(identity, providerId, resolutions, fixture.teams.home, log, context);
   await addResolvedTeam(identity, providerId, resolutions, fixture.teams.away, log, context);
+  return resolutions;
+};
+
+/**
+ * Resolve canonical entities across EVERY fixture in a list envelope, not
+ * just the first. A `/fixtures?league&season` response carries many fixtures
+ * spanning multiple teams (and, in international tournaments, a stable
+ * competition + season). `addResolvedEntity` is keyed by the primary provider
+ * id and short-circuits on a hit, so resolving the whole list issues at most
+ * one identity lookup per distinct competition / season / team regardless of
+ * how many fixtures reference it. Unresolved provider refs are preserved by
+ * the mapper, so a partial identity snapshot still yields a valid SCHEDULED
+ * game keyed by provider refs.
+ */
+const resolveFixtureListEntities = async (
+  identity: FootballIdentityLookupClient,
+  providerId: string,
+  fixtures: readonly ApiFootballFixtureResponse[],
+  log: MatchConcludedBridgeLogger,
+  context: ResolutionLogContext
+): Promise<ApiFootballEntityResolutionMap> => {
+  const resolutions = emptyResolutionMap();
+  for (const fixture of fixtures) {
+    await addResolvedEntity({
+      identity,
+      providerId,
+      resolutions,
+      kind: 'competition',
+      entityType: EntityType.COMPETITION,
+      providerIds: [String(fixture.league.id)],
+      label: fixture.league.name,
+      log,
+      context,
+    });
+    await addResolvedEntity({
+      identity,
+      providerId,
+      resolutions,
+      kind: 'season',
+      entityType: EntityType.SEASON,
+      providerIds: [
+        apiFootballSeasonProviderId(fixture.league.id, fixture.league.season),
+        String(fixture.league.season),
+      ],
+      label: `${fixture.league.season} ${fixture.league.name}`,
+      log,
+      context,
+    });
+    await addResolvedTeam(identity, providerId, resolutions, fixture.teams.home, log, context);
+    await addResolvedTeam(identity, providerId, resolutions, fixture.teams.away, log, context);
+  }
   return resolutions;
 };
 

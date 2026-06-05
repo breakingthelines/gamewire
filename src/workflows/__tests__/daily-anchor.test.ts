@@ -200,6 +200,41 @@ describe('dailyAnchorWorkflow', () => {
     expect(fixturesCall?.resourceId).toBe('league-999-season-2025-anchor-2026-05-24');
   });
 
+  it('counts every fixture in the forward window as ingested (incl. all-SCHEDULED competitions)', async () => {
+    // Mirrors the WC26 case: the forward window returns only NS fixtures.
+    // The ingestion-loop bridge upserts each as a SCHEDULED canonical game,
+    // so the sweep must report them as ingested even though none is finalised.
+    const scheduledList = {
+      response: [
+        {
+          fixture: { id: 1489369, date: '2026-06-11T19:00:00+00:00', status: { short: 'NS' } },
+          league: { id: 1, name: 'World Cup', season: 2026, round: 'Group Stage - 1' },
+          teams: { home: { id: 16 }, away: { id: 1531 } },
+        },
+        {
+          fixture: { id: 1538999, date: '2026-06-12T02:00:00+00:00', status: { short: 'NS' } },
+          league: { id: 1, name: 'World Cup', season: 2026, round: 'Group Stage - 1' },
+          teams: { home: { id: 2380 }, away: { id: 24 } },
+        },
+      ],
+    };
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
+        // Only the forward-window fixtures fetch returns the list; standings
+        // and any other workload return an empty response.
+        const data = options.path?.startsWith('/fixtures?') ? scheduledList : { response: [] };
+        return buildResult(options.workload, options.resourceId, { data });
+      }),
+    };
+    const deps = buildDeps(ingestion, [COMPETITION_A]);
+    const result = await dailyAnchorWorkflow({ nowUtc: '2026-06-05T02:00:00Z' }, deps);
+
+    // Two NS fixtures in the window ⇒ fixturesIngested === 2, with no
+    // double-count from a post-FT reconciliation pass (there are no FT fixtures).
+    expect(result.fixturesIngested).toBe(2);
+    expect(result.competitions[0]?.fixturesIngested).toBe(2);
+  });
+
   it('emits structured log events via logger', async () => {
     const ingestion: MockIngestion = {
       fetchWorkload: vi.fn(async (options: IngestionFetchOptions) =>

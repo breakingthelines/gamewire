@@ -213,6 +213,19 @@ const sweepCompetition = async (
   });
   mode = accumulate(fixturesResult, FIXTURES_WORKLOAD, fixturesResource, mode);
 
+  // Every fixture in the forward window — SCHEDULED (NS) ones included — is
+  // upserted into game-service as a canonical game by the ingestion loop's
+  // match-concluded bridge (the `fixtures-next-7d` list branch). Count the
+  // whole window list so a competition whose fixtures are all upcoming (e.g.
+  // FIFA World Cup 2026 before its opener) reports the games it actually
+  // created, mirroring `hourlyMatchdayWorkflow`'s window count. The post-FT
+  // detail/events/lineups reconciliation below operates on a subset of these
+  // same fixtures, so it must NOT additionally bump the counter (no double
+  // count).
+  if (fixturesResult.status === 'fetched' || fixturesResult.status === 'cached') {
+    fixturesIngested += countFixtures(fixturesResult.data);
+  }
+
   if (mode === 'abort') {
     return finalSweep(
       competition,
@@ -312,17 +325,9 @@ const sweepCompetition = async (
       resourceId: item.fixtureId,
     });
     mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, item.fixtureId, mode);
-
-    if (
-      detailResult.status === 'fetched' ||
-      detailResult.status === 'cached' ||
-      eventsResult.status === 'fetched' ||
-      eventsResult.status === 'cached' ||
-      lineupsResult.status === 'fetched' ||
-      lineupsResult.status === 'cached'
-    ) {
-      fixturesIngested += 1;
-    }
+    // NOTE: fixturesIngested is counted once from the window list above; the
+    // post-FT reconciliation here refreshes detail/events/lineups for the
+    // finalised subset but does not re-count those fixtures.
   }
 
   return finalSweep(
@@ -395,6 +400,20 @@ const extractFixtureItems = (data: unknown): readonly FixtureListItem[] => {
     });
   }
   return items;
+};
+
+/**
+ * Count the fixtures present in a `/fixtures` list envelope. Used as the
+ * `fixturesIngested` signal: every fixture in the forward window is upserted
+ * into game-service (SCHEDULED ones included) by the ingestion loop's
+ * `fixtures-next-7d` bridge branch. Matches `hourlyMatchdayWorkflow`'s
+ * `countFixtures`.
+ */
+const countFixtures = (data: unknown): number => {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return 0;
+  }
+  return data.response.length;
 };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>

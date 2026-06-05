@@ -5,7 +5,10 @@ import {
   type PlatformFact,
   PlatformFactSchema,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
-import { GameParticipantRole } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import {
+  GameParticipantRole,
+  GameStatus,
+} from '@breakingthelines/protos/btl/game/v1/types/game_pb';
 import {
   IngestBatchResponseSchema,
   type LookupGameByFixtureRequest,
@@ -1105,6 +1108,188 @@ describe('createMatchConcludedBridge', () => {
 
     expect(stream.published).toHaveLength(1);
     expect(gameService.lookupCalls).toHaveLength(1);
+  });
+});
+
+/**
+ * Build an API-Football `/fixtures?league&season[&from&to]` LIST envelope —
+ * the shape the daily-anchor + hourly + season-discovery fetches return. Unlike
+ * `buildFixtureResponse` (single `/fixtures?id=` detail), this carries `league`
+ * + multiple fixtures with provider goals, mirroring the real WC26 payload
+ * (status `NS`, `goals: {home: null, away: null}`).
+ */
+const buildFixtureListResponse = (
+  fixtures: readonly {
+    readonly id: number;
+    readonly status: string;
+    readonly date?: string;
+    readonly homeId?: number;
+    readonly awayId?: number;
+  }[]
+): unknown => ({
+  get: 'fixtures',
+  results: fixtures.length,
+  response: fixtures.map((f) => ({
+    fixture: {
+      id: f.id,
+      date: f.date ?? '2026-06-11T19:00:00+00:00',
+      status: { short: f.status, long: f.status === 'NS' ? 'Not Started' : 'Match Finished' },
+    },
+    league: { id: 1, name: 'World Cup', season: 2026, round: 'Group Stage - 1' },
+    teams: {
+      home: { id: f.homeId ?? 16, name: 'Mexico' },
+      away: { id: f.awayId ?? 1531, name: 'South Africa' },
+    },
+    goals: { home: null, away: null },
+  })),
+});
+
+describe('createMatchConcludedBridge — fixtures list (SCHEDULED game mint)', () => {
+  it('mints canonical games for an all-SCHEDULED (NS) fixture list and publishes no fact', async () => {
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({});
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(), // identity misses ⇒ provider refs preserved
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+      clock: () => Date.parse('2026-06-05T02:00:00Z'),
+    });
+
+    await bridge({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-1-season-2026-anchor-2026-06-05',
+      data: buildFixtureListResponse([
+        { id: 1489369, status: 'NS', homeId: 16, awayId: 1531 },
+        { id: 1538999, status: 'NS', homeId: 2380, awayId: 24 },
+        { id: 1539000, status: 'NS', homeId: 1118, awayId: 1532 },
+      ]),
+    });
+
+    // One IngestGames batch carrying all three SCHEDULED games.
+    expect(gameService.ingestCalls).toHaveLength(1);
+    const request = gameService.ingestCalls[0];
+    expect(request?.games).toHaveLength(3);
+    for (const game of request?.games ?? []) {
+      expect(game.status).toBe(GameStatus.SCHEDULED);
+      // provider_game_id is the crosswalk key game-service upserts on.
+      expect(game.providerGameId).not.toBe('');
+      // No score for an upcoming fixture (goals were null).
+      expect(game.score).toBeUndefined();
+    }
+    // The list branch NEVER looks up or publishes a match-concluded fact —
+    // a scheduled fixture has not concluded.
+    expect(gameService.lookupCalls).toHaveLength(0);
+    expect(stream.published).toHaveLength(0);
+    expect(logs.some((e) => e.event === 'bridge_fixtures_list_ingested')).toBe(true);
+  });
+
+  it('ingests every fixture in a mixed NS/FT list as a game without FT-gating', async () => {
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({});
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: noopLogger,
+    });
+
+    await bridge({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-1-season-2026',
+      data: buildFixtureListResponse([
+        { id: 100, status: 'NS' },
+        { id: 200, status: 'FT' },
+        { id: 300, status: '1H' },
+      ]),
+    });
+
+    expect(gameService.ingestCalls).toHaveLength(1);
+    expect(gameService.ingestCalls[0]?.games).toHaveLength(3);
+    // The list branch does not emit terminal facts even when the list
+    // contains a finalised fixture — that stays the detail branch's job.
+    expect(stream.published).toHaveLength(0);
+  });
+
+  it('is a no-op for an empty fixture list (no IngestGames call)', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({});
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-1-season-2026',
+      data: { response: [] },
+    });
+
+    expect(gameService.ingestCalls).toHaveLength(0);
+    expect(logs.some((e) => e.event === 'bridge_fixtures_list_empty')).toBe(true);
+  });
+
+  it('does not throw when the IngestGames RPC throws (caught and logged)', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({});
+    gameService.client.ingestGames = async () => {
+      throw new Error('game-service down');
+    };
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await expect(
+      bridge({
+        workload: 'fixtures-next-7d',
+        resourceId: 'league-1-season-2026',
+        data: buildFixtureListResponse([{ id: 1489369, status: 'NS' }]),
+      })
+    ).resolves.toBeUndefined();
+    expect(logs.some((e) => e.event === 'bridge_fixtures_list_ingest_error')).toBe(true);
+  });
+
+  it('resolves canonical entity ids across the list when identity hits', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({});
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      // Resolve the competition + both teams of the first fixture to canonical ids.
+      identity: resolvingIdentity({
+        '1': 'btl_football_competition_world_cup',
+        '16': 'btl_football_team_mexico',
+        '1531': 'btl_football_team_south_africa',
+      }),
+      providerId: 'api-football',
+      logger: noopLogger,
+    });
+
+    await bridge({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-1-season-2026',
+      data: buildFixtureListResponse([{ id: 1489369, status: 'NS', homeId: 16, awayId: 1531 }]),
+    });
+
+    const game = gameService.ingestCalls[0]?.games[0];
+    // Canonical competition id flows onto the game's competition SubjectRef.
+    expect(game?.competition?.id).toBe('btl_football_competition_world_cup');
+    // Canonical participant (team) ids flow onto the participants.
+    const participantIds = (game?.participants ?? []).map((p) => p.subject?.id);
+    expect(participantIds).toContain('btl_football_team_mexico');
+    expect(participantIds).toContain('btl_football_team_south_africa');
   });
 });
 
