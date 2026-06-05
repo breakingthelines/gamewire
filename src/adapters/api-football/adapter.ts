@@ -777,6 +777,12 @@ function liveGame(
     return null;
   }
 
+  // competition + season fall back to a provider-scoped SubjectRef on an
+  // identity miss so game-service always populates the `competition_id` /
+  // `season_id` columns (the predict screen filters games by the user's
+  // picked competition_ids). Without this, an as-yet-uncanonicalized
+  // tournament — e.g. FIFA World Cup 2026 before an identity backfill — lands
+  // games with an empty competition_id and cannot be filtered.
   const competition = resolvedSubject(
     'competition',
     options.providerId,
@@ -784,7 +790,8 @@ function liveGame(
     SubjectType.COMPETITION,
     response.league.name,
     options.entityResolutions,
-    competitionSnapshot(response.league)
+    competitionSnapshot(response.league),
+    { fallbackToProviderRef: true }
   );
   const season = resolvedSubject(
     'season',
@@ -793,7 +800,8 @@ function liveGame(
     SubjectType.SEASON,
     `${response.league.season} ${response.league.name}`,
     options.entityResolutions,
-    seasonSnapshot(response.league)
+    seasonSnapshot(response.league),
+    { fallbackToProviderRef: true }
   );
   const home = resolvedSubject(
     'team',
@@ -1601,7 +1609,8 @@ function resolvedSubject(
   entityType: SubjectType,
   displayLabel: string,
   resolutions: ApiFootballEntityResolutionMap | undefined,
-  providerSnapshot?: ReturnType<typeof providerEntitySnapshot>
+  providerSnapshot?: ReturnType<typeof providerEntitySnapshot>,
+  options?: { readonly fallbackToProviderRef?: boolean }
 ) {
   const resolved = resolvedEntity(kind, providerIdValue, displayLabel, resolutions);
   const providerResourceType = providerResourceTypeFor(kind);
@@ -1614,6 +1623,27 @@ function resolvedSubject(
     resolved,
     providerSnapshot
   );
+  // On an identity hit, the subject carries the canonical BTL entity id. On a
+  // miss with `fallbackToProviderRef`, emit a SubjectRef whose id is the
+  // provider-scoped storage id (`provider:<providerId>:<type>:<id>`) instead of
+  // dropping the subject. This is the same sentinel game-service derives for
+  // participants (`participantStorageID`) and the score `participantId`
+  // fallback, and the SubjectRef.id is what game-service writes into the
+  // `games.competition_id` / `season_id` columns — so a competition that has
+  // not been canonicalized yet (e.g. FIFA World Cup 2026 before an identity
+  // backfill) still yields a stable, filterable competition_id. A later
+  // identity backfill / game-service migration rebinds the provider sentinel
+  // to the canonical btl_football_* id.
+  const fallbackSubject =
+    options?.fallbackToProviderRef === true && providerIdValue.trim() !== ''
+      ? subject(
+          providerStorageId(providerId, providerResourceType, providerIdValue),
+          entityType,
+          displayLabel,
+          slugify(displayLabel),
+          providerSnapshot?.imageUrl
+        )
+      : undefined;
   return {
     subject: resolved
       ? subject(
@@ -1623,7 +1653,7 @@ function resolvedSubject(
           resolved.slug ?? slugify(resolved.label ?? displayLabel),
           providerSnapshot?.imageUrl
         )
-      : undefined,
+      : fallbackSubject,
     resolutionRef,
   };
 }

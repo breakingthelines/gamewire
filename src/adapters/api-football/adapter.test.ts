@@ -5,7 +5,11 @@ import {
   IngestPlayerMatchStatsRequestSchema,
   IngestTeamMatchStatsRequestSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
-import { GameParticipantRole } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import { SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
+import {
+  GameParticipantRole,
+  GameStatus,
+} from '@breakingthelines/protos/btl/game/v1/types/game_pb';
 
 import {
   API_FOOTBALL_BETA_COMPETITIONS,
@@ -225,6 +229,49 @@ describe('API-Football adapter', () => {
     expect(game?.participants[1]?.resolutionRef?.providerSnapshot?.imageUrl).toBe(
       'https://media.api-sports.io/football/teams/49.png'
     );
+  });
+
+  it('falls back to provider-scoped competition + season subjects when identity misses (WC26 case)', () => {
+    // Mirrors the live World Cup 2026 ingest on staging: identity has no
+    // canonical mapping for league 1 yet, so the bridge supplies no
+    // resolutions. The competition + season subjects must still carry a
+    // provider-scoped SubjectRef id so game-service populates
+    // games.competition_id / season_id (the predict screen filters on
+    // competition_id). A later identity backfill re-binds the sentinel to a
+    // canonical btl_football_* id on the next ingest.
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixtures-next-7d:league-1-season-2026',
+      resourceId: 'league-1-season-2026',
+      fetchedAtMs: Date.parse('2026-06-05T02:00:00Z'),
+      // No entityResolutions — full identity miss.
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1489369,
+              date: '2026-06-11T19:00:00+00:00',
+              status: { short: 'NS' },
+            },
+            league: { id: 1, name: 'World Cup', season: 2026, round: 'Group Stage - 1' },
+            teams: {
+              home: { id: 16, name: 'Mexico' },
+              away: { id: 1531, name: 'South Africa' },
+            },
+            goals: { home: null, away: null },
+          },
+        ],
+      },
+    });
+
+    const game = request.games[0];
+    // Provider-scoped sentinel ids — not empty, not canonical yet.
+    expect(game?.competition?.id).toBe('provider:api-football:competition:1');
+    expect(game?.season?.id).toBe('provider:api-football:season:1:2026');
+    // The resolution ref still carries the raw provider id for later rebind.
+    expect(game?.competition?.type).toBe(SubjectType.COMPETITION);
+    expect(game?.status).toBe(GameStatus.SCHEDULED);
+    // No score for an upcoming fixture (goals were null).
+    expect(game?.score).toBeUndefined();
   });
 
   it('normalizes API-Football fixture events into timeline occurrences', () => {
