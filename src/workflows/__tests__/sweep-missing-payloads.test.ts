@@ -339,6 +339,86 @@ describe('sweepMissingPayloadsWorkflow', () => {
     expect(result.fixturesOk).toBe(5);
   });
 
+  it('surfaces provider-rate-limited as a degrade flag without aborting the run', async () => {
+    // Regression guard for the api-football per-minute cap behaviour: the
+    // ingestion loop returns `status: 'rate_limited'` with
+    // `fallbackReason: 'PROVIDER_RATE_LIMITED'`. The sweep should count it as
+    // a `skipped` outcome (not `failed`), emit a `provider-rate-limited`
+    // degrade flag, and keep iterating remaining fixtures.
+    let i = 0;
+    const ingestion = buildIngestion(async (options) => {
+      i += 1;
+      if (i === 2) {
+        return buildResult(options.workload, options.resourceId, {
+          status: 'rate_limited',
+          fallbackReason: 'PROVIDER_RATE_LIMITED',
+          error: { message: 'Too many requests, retry in 1 minute' },
+        });
+      }
+      return buildResult(options.workload, options.resourceId);
+    });
+    const deps = buildDeps({
+      ingestion,
+      client: buildClient([responseWith(['10', '11', '12'])]),
+    });
+
+    const result = await sweepMissingPayloadsWorkflow(
+      { providerId: 'api-football', kind: 'team-match-stats' },
+      deps
+    );
+
+    // All three fixtures attempted (no abort on a single rate-limit hit).
+    expect(ingestion.fetchWorkload).toHaveBeenCalledTimes(3);
+    expect(result.fixturesProcessed).toBe(3);
+    expect(result.fixturesOk).toBe(2);
+    expect(result.fixturesSkipped).toBe(1);
+    expect(result.fixturesFailed).toBe(0);
+    // Degrade flag surfaced so ops can graph rate-limit frequency in the run.
+    expect(result.degradeFlags.some((f) => f.trigger === 'provider-rate-limited')).toBe(true);
+    expect(result.status).toBe('partial');
+  });
+
+  it('throttles inter-call cadence when intercallDelayMs is set', async () => {
+    // Pin the throttle contract: between each fetchWorkload invocation the
+    // sweep awaits `intercallDelayMs` so a 500-fixture run cannot blow past
+    // api-football's per-minute cap (Pro = 450/min). Use vitest fake timers
+    // + recorded timestamps to assert the gap without slowing the suite.
+    vi.useFakeTimers();
+    try {
+      const recordedAt: number[] = [];
+      const ingestion = buildIngestion(async (options) => {
+        recordedAt.push(Date.now());
+        return buildResult(options.workload, options.resourceId);
+      });
+      const client = buildClient([responseWith(['10', '11', '12'])]);
+      const deps = buildDeps({ ingestion, client });
+
+      const startAt = Date.now();
+      const runPromise = sweepMissingPayloadsWorkflow(
+        {
+          providerId: 'api-football',
+          kind: 'team-match-stats',
+          intercallDelayMs: 200,
+        },
+        deps
+      );
+
+      // Advance through the three fetches' worth of sleeps + microtask flushes.
+      await vi.runAllTimersAsync();
+      const result = await runPromise;
+
+      expect(result.fixturesProcessed).toBe(3);
+      expect(recordedAt).toHaveLength(3);
+      // First call has no preceding delay; subsequent calls each have a 200ms
+      // gap from the previous one.
+      expect(recordedAt[0]! - startAt).toBe(0);
+      expect(recordedAt[1]! - recordedAt[0]!).toBe(200);
+      expect(recordedAt[2]! - recordedAt[1]!).toBe(200);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('clamps limit to MAX_LIMIT (500) so an ops one-shot cannot drain the daily budget', async () => {
     const ingestion = buildIngestion();
     const ids = Array.from({ length: 600 }, (_, i) => `id-${i}`);

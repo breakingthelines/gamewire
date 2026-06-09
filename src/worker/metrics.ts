@@ -12,7 +12,7 @@
  * not the wire format.
  */
 
-export type CallOutcome = 'fetched' | 'cached' | 'skipped' | 'failed' | 'denied';
+export type CallOutcome = 'fetched' | 'cached' | 'skipped' | 'failed' | 'denied' | 'rate_limited';
 
 export interface MetricsSnapshot {
   readonly providerCallsTotal: Record<string, number>;
@@ -34,6 +34,7 @@ export class IngestionMetrics {
     skipped: 0,
     failed: 0,
     denied: 0,
+    rate_limited: 0,
   };
   #cacheHits = 0;
   #cacheMisses = 0;

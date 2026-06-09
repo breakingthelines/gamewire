@@ -111,14 +111,14 @@ export interface IngestionFetchOptions {
 }
 
 export interface IngestionFetchResult<TResponse = unknown> {
-  readonly status: 'cached' | 'fetched' | 'skipped' | 'failed' | 'denied';
+  readonly status: 'cached' | 'fetched' | 'skipped' | 'failed' | 'denied' | 'rate_limited';
   readonly workload: IngestionWorkload;
   readonly resourceId: string;
   readonly cacheKey: string;
   readonly cacheHit: boolean;
   readonly cachedOnlyMode: boolean;
   readonly quota: ProviderQuotaSnapshot;
-  readonly fallbackReason?: 'PROVIDER_OUTAGE';
+  readonly fallbackReason?: 'PROVIDER_OUTAGE' | 'PROVIDER_RATE_LIMITED';
   readonly fetch?: ProviderJsonFetchResult<TResponse>;
   readonly data?: unknown;
   readonly error?: { readonly message: string };
@@ -332,6 +332,42 @@ export class ApiFootballIngestionLoop {
         path,
         fetchFn: this.#fetchFn,
       });
+
+      if (fetchResult.status === 'rate_limited') {
+        // api-football's free + Pro plans return rate-limit responses as HTTP
+        // 200 with `{response: [], errors: {rateLimit: "..."}}`. The call DID
+        // leave the worker (so the reservation stays consumed) but the
+        // envelope is poison — caching it would surface `empty_provider_response`
+        // every time downstream re-reads the entry until the TTL expires (6h
+        // for match-stats). Skip the cache write, record an outcome metric so
+        // ops can graph rate-limit hits, log a structured event, and propagate
+        // PROVIDER_RATE_LIMITED via fallbackReason so the workflow layer can
+        // emit a degrade flag.
+        this.#metrics.recordProviderCall(this.#provider, workload, path);
+        this.#metrics.recordOutcome('rate_limited');
+        this.#log({
+          event: 'provider_rate_limited',
+          provider: this.#provider,
+          workload,
+          resourceId: options.resourceId,
+          cacheKey,
+          message: fetchResult.rateLimitMessage,
+        });
+        return {
+          status: 'rate_limited',
+          workload,
+          resourceId: options.resourceId,
+          cacheKey,
+          cacheHit: false,
+          cachedOnlyMode: reservation.snapshot.cachedOnlyMode,
+          quota: reservation.snapshot,
+          fetch: fetchResult,
+          fallbackReason: 'PROVIDER_RATE_LIMITED',
+          error: fetchResult.rateLimitMessage
+            ? { message: fetchResult.rateLimitMessage }
+            : undefined,
+        } satisfies IngestionFetchResult<TResponse>;
+      }
 
       if (fetchResult.status !== 'fetched') {
         // Refund the reservation when the call was skipped before hitting the

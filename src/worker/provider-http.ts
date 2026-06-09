@@ -19,7 +19,7 @@ export type ProviderFetch = (
   }
 ) => Promise<ProviderFetchResponse>;
 
-export type ProviderJsonFetchStatus = 'skipped' | 'fetched' | 'failed';
+export type ProviderJsonFetchStatus = 'skipped' | 'fetched' | 'failed' | 'rate_limited';
 export type ProviderJsonFetchSkipReason =
   | 'replay_mode'
   | 'missing_api_key'
@@ -54,6 +54,15 @@ export interface ProviderJsonFetchResult<TResponse = unknown> {
   readonly error?: {
     readonly message: string;
   };
+  /**
+   * Detail surfaced when {@link status} is `'rate_limited'`: the provider's
+   * rate-limit message (e.g. `"Too many requests, retry in 1 minute"`).
+   * api-football v3 ships these as HTTP 200 with `{response: [], errors: {rateLimit: "..."}}`,
+   * which is structurally indistinguishable from a legitimate empty payload
+   * unless the caller inspects `errors.rateLimit` explicitly. See
+   * `provider-http.ts` for the detection contract.
+   */
+  readonly rateLimitMessage?: string;
 }
 
 export interface ProviderJsonSummary {
@@ -113,6 +122,33 @@ export async function fetchApiFootballJson<TResponse = unknown>(
       },
     });
     const json = (await response.json()) as ApiFootballEnvelope<TResponse> | unknown;
+
+    // api-football's free + Pro plans ship rate-limit responses as HTTP 200
+    // with `{response: [], errors: {rateLimit: "..."}}`. Without inspecting the
+    // envelope the worker treats them as successful fetches, caches the empty
+    // payload for the workload TTL (6h for match-stats) and downstream
+    // consumers log `empty_provider_response` on every subsequent read. Surface
+    // them as a discrete status so the ingestion loop can skip the cache write
+    // and emit a degrade flag.
+    const rateLimitMessage = extractRateLimitMessage(json);
+    if (rateLimitMessage !== undefined) {
+      return {
+        status: 'rate_limited',
+        runtime,
+        request: {
+          ...request,
+          url: url.toString(),
+        },
+        response: {
+          status: response.status,
+          ok: response.ok,
+          contentType: response.headers.get('content-type') ?? undefined,
+          durationMs: Math.max(0, clock() - startedAt),
+        },
+        json,
+        rateLimitMessage,
+      };
+    }
 
     return {
       status: 'fetched',
@@ -194,6 +230,27 @@ function redactSecret(message: string, secret: string | undefined): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Detect api-football's "rate-limited" envelope. Returns the human-readable
+ * `errors.rateLimit` string when the body looks like:
+ *   `{ "results": 0, "response": [], "errors": { "rateLimit": "..." } }`
+ *
+ * Defensively narrows `errors`: the provider returns `errors: []` when there
+ * are no errors (a non-record), so this check MUST be a record-with-string-key
+ * test, not a truthiness check on `errors.rateLimit`.
+ */
+function extractRateLimitMessage(json: unknown): string | undefined {
+  if (!isRecord(json)) {
+    return undefined;
+  }
+  const errors = json.errors;
+  if (!isRecord(errors)) {
+    return undefined;
+  }
+  const rateLimit = errors.rateLimit;
+  return typeof rateLimit === 'string' && rateLimit.trim() !== '' ? rateLimit : undefined;
 }
 
 function jsonType(value: unknown): ProviderJsonSummary['rootType'] {

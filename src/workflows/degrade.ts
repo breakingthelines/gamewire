@@ -128,7 +128,7 @@ export const handleWebhookStall = (input: {
  * The workflow mirrors that into the run output.
  */
 export const handleProviderOutage = (input: {
-  readonly fallbackReason?: 'PROVIDER_OUTAGE';
+  readonly fallbackReason?: 'PROVIDER_OUTAGE' | 'PROVIDER_RATE_LIMITED';
 }): DegradeResult => {
   if (input.fallbackReason !== 'PROVIDER_OUTAGE') {
     return CONTINUE;
@@ -139,6 +139,35 @@ export const handleProviderOutage = (input: {
       trigger: 'provider-outage',
       action: 'cached-only',
       detail: 'ingestion loop reported PROVIDER_OUTAGE',
+    },
+  };
+};
+
+/**
+ * Provider rate-limited: api-football's free + Pro plans return HTTP 200 with
+ * `{response: [], errors: {rateLimit: "..."}}` once the per-minute cap is
+ * breached. The ingestion loop already declines to cache the poison envelope;
+ * the workflow surfaces this as a soft-degrade so ops can graph rate-limit
+ * frequency and adjust sweep cadence. Action is `skip-non-essential` rather
+ * than `cached-only` because we want the workflow to keep iterating remaining
+ * fixtures (the next call may land in a fresh per-minute bucket); only when
+ * EVERY call comes back rate-limited do we expect the run to surface as
+ * partial via the existing skipped/failed counters.
+ */
+export const handleProviderRateLimited = (input: {
+  readonly fallbackReason?: 'PROVIDER_OUTAGE' | 'PROVIDER_RATE_LIMITED';
+  readonly detail?: string;
+}): DegradeResult => {
+  if (input.fallbackReason !== 'PROVIDER_RATE_LIMITED') {
+    return CONTINUE;
+  }
+  return {
+    action: 'skip-non-essential',
+    flag: {
+      trigger: 'provider-rate-limited',
+      action: 'skip-non-essential',
+      detail:
+        input.detail ?? 'provider returned rate-limit envelope (HTTP 200 with errors.rateLimit)',
     },
   };
 };

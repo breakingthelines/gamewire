@@ -5,6 +5,7 @@ import {
   handleIdentityOutage,
   handleProvider5xx,
   handleProviderOutage,
+  handleProviderRateLimited,
   handleQuotaPosture,
   handleReepMissSpike,
   handleWebhookStall,
@@ -101,6 +102,28 @@ describe('handleProviderOutage', () => {
     const result = handleProviderOutage({ fallbackReason: 'PROVIDER_OUTAGE' });
     expect(result.action).toBe('cached-only');
     expect(result.flag?.trigger).toBe('provider-outage');
+  });
+});
+
+describe('handleProviderRateLimited', () => {
+  it('continues when no fallback reason', () => {
+    expect(handleProviderRateLimited({ fallbackReason: undefined }).action).toBe('continue');
+  });
+
+  it('continues when fallback reason is the (different) PROVIDER_OUTAGE', () => {
+    expect(handleProviderRateLimited({ fallbackReason: 'PROVIDER_OUTAGE' }).action).toBe(
+      'continue'
+    );
+  });
+
+  it('flips to skip-non-essential when PROVIDER_RATE_LIMITED observed', () => {
+    const result = handleProviderRateLimited({
+      fallbackReason: 'PROVIDER_RATE_LIMITED',
+      detail: 'Too many requests, retry in 1 minute',
+    });
+    expect(result.action).toBe('skip-non-essential');
+    expect(result.flag?.trigger).toBe('provider-rate-limited');
+    expect(result.flag?.detail).toBe('Too many requests, retry in 1 minute');
   });
 });
 

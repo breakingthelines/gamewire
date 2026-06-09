@@ -39,7 +39,12 @@ import {
 } from '../adapters/api-football/index.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
-import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './degrade.js';
+import {
+  handleProviderOutage,
+  handleProviderRateLimited,
+  handleQuotaPosture,
+  mostRestrictive,
+} from './degrade.js';
 import type {
   DegradeAction,
   DegradeFlag,
@@ -52,6 +57,35 @@ import type {
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
 const DEFAULT_PAGE_SIZE = 100;
+
+/**
+ * Default inter-call delay between provider fetches inside the sweep loop.
+ * The free + Pro tiers of api-football enforce a per-minute cap (Pro =
+ * 450/min ≈ 7.5/sec) that a tight `for` loop hitting `fetchWorkload` will
+ * burst through and trigger HTTP-200-with-rate-limit-envelope responses; the
+ * bridge then logs `bridge_team_stats_missing` for the poisoned payload.
+ * 200ms = 5 req/sec ≈ 300/min, which leaves ample headroom for ad-hoc
+ * traffic on the same key and keeps the sweep firmly under the per-minute
+ * ceiling without artificially slowing the run beyond what the provider
+ * allows.
+ *
+ * Production override: `SWEEP_INTER_CALL_DELAY_MS` env var (read at call
+ * time, NOT at module init, so test-setup.ts can pin it to 0).
+ * Caller override: `SweepMissingPayloadsInput.intercallDelayMs`, which wins
+ * over the env var when set.
+ */
+const DEFAULT_INTER_CALL_DELAY_MS = 200;
+
+const resolveInterCallDelayMs = (override?: number): number => {
+  if (typeof override === 'number' && Number.isFinite(override) && override >= 0) {
+    return override;
+  }
+  const raw = Number(process.env.SWEEP_INTER_CALL_DELAY_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_INTER_CALL_DELAY_MS;
+};
+
+const sleep = (ms: number): Promise<void> =>
+  ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 
 interface WorkloadBinding {
   readonly workload: IngestionWorkload;
@@ -345,7 +379,14 @@ export const sweepMissingPayloadsWorkflow = async (
     }
     if (result.status === 'fetched' || result.status === 'cached') {
       ok += 1;
-    } else if (result.status === 'skipped' || result.status === 'denied') {
+    } else if (
+      result.status === 'skipped' ||
+      result.status === 'denied' ||
+      result.status === 'rate_limited'
+    ) {
+      // Rate-limit responses are soft failures (the provider WILL serve the
+      // payload on the next per-minute window) so we count them as `skipped`
+      // for ok/failed accounting. The degrade flag below tells ops why.
       skipped += 1;
     } else {
       failed += 1;
@@ -357,24 +398,41 @@ export const sweepMissingPayloadsWorkflow = async (
     if (quotaResult.flag) {
       flags.push(quotaResult.flag);
     }
-    if (result.fallbackReason) {
+    if (result.fallbackReason === 'PROVIDER_OUTAGE') {
       const outage = handleProviderOutage({ fallbackReason: result.fallbackReason });
       if (outage.flag) {
         flags.push(outage.flag);
+      }
+    } else if (result.fallbackReason === 'PROVIDER_RATE_LIMITED') {
+      const rateLimited = handleProviderRateLimited({
+        fallbackReason: result.fallbackReason,
+        detail: result.error?.message,
+      });
+      if (rateLimited.flag) {
+        flags.push(rateLimited.flag);
       }
     }
     return mostRestrictive([
       currentMode,
       quotaResult.action,
       result.fallbackReason === 'PROVIDER_OUTAGE' ? 'cached-only' : 'continue',
+      result.fallbackReason === 'PROVIDER_RATE_LIMITED' ? 'skip-non-essential' : 'continue',
     ]);
   };
 
-  for (const fixtureId of fixtureIds) {
+  const interCallDelayMs = resolveInterCallDelayMs(input.intercallDelayMs);
+  for (let i = 0; i < fixtureIds.length; i += 1) {
     if (mode === 'abort') {
       aborted = true;
       break;
     }
+    if (i > 0) {
+      // Throttle inter-call cadence so a 500-fixture sweep stays comfortably
+      // under api-football's per-minute cap. See DEFAULT_INTER_CALL_DELAY_MS
+      // doc-block for the rationale.
+      await sleep(interCallDelayMs);
+    }
+    const fixtureId = fixtureIds[i]!;
     try {
       const result = await deps.ingestion.fetchWorkload({
         workload: binding.workload,

@@ -45,12 +45,14 @@ describe('IngestionMetrics', () => {
     metrics.recordOutcome('skipped');
     metrics.recordOutcome('failed');
     metrics.recordOutcome('denied');
+    metrics.recordOutcome('rate_limited');
     expect(metrics.snapshot().callOutcomes).toEqual({
       fetched: 2,
       cached: 1,
       skipped: 1,
       failed: 1,
       denied: 1,
+      rate_limited: 1,
     });
   });
 
@@ -81,6 +83,7 @@ describe('IngestionMetrics', () => {
       skipped: 0,
       failed: 0,
       denied: 0,
+      rate_limited: 0,
     });
     expect(snap.quotaCallsToday).toBe(0);
     expect(snap.quotaPosture).toBe('normal');
