@@ -248,6 +248,56 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     expect(result.quota.posture).toBe('soft_cap_reached');
   });
 
+  it('does not cache rate-limit envelopes and surfaces PROVIDER_RATE_LIMITED', async () => {
+    // The bug this guards against: api-football's per-minute cap breach
+    // ships HTTP 200 with `{response: [], errors: {rateLimit: "..."}}`. The
+    // provider-http layer flags it as `status: 'rate_limited'`; the
+    // ingestion loop must (a) keep the quota reservation (the call left the
+    // worker), (b) NOT write the poison body to cache, (c) emit a structured
+    // `provider_rate_limited` log event, and (d) attach
+    // `fallbackReason: 'PROVIDER_RATE_LIMITED'` so workflow code can degrade.
+    const rateLimitedBody = {
+      get: 'fixtures/statistics',
+      parameters: { fixture: '1391188' },
+      results: 0,
+      response: [],
+      errors: { rateLimit: 'Too many requests, retry in 1 minute' },
+    };
+    const fetchFn = buildFetchMock(rateLimitedBody);
+    const cache = new InMemoryProviderCache();
+    const setSpy = vi.spyOn(cache, 'set');
+    const logs: Record<string, unknown>[] = [];
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      cache,
+      fetchFn,
+      logger: (entry) => logs.push(entry),
+    });
+
+    const result = await loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: '1391188',
+    });
+
+    expect(result.status).toBe('rate_limited');
+    expect(result.fallbackReason).toBe('PROVIDER_RATE_LIMITED');
+    expect(result.error?.message).toBe('Too many requests, retry in 1 minute');
+    // No cache write — the next sweep must re-fetch fresh, NOT hit a poisoned
+    // entry.
+    expect(setSpy).not.toHaveBeenCalled();
+    // Structured rate-limit event so ops can graph it.
+    expect(
+      logs.some(
+        (entry) =>
+          entry.event === 'provider_rate_limited' &&
+          entry.workload === 'team-match-stats' &&
+          entry.resourceId === '1391188'
+      )
+    ).toBe(true);
+    // Quota reservation is consumed — the call DID leave the worker.
+    expect(result.quota.calls).toBeGreaterThan(0);
+  });
+
   it('writes cache with the workload TTL on fetched results', async () => {
     const cache = new InMemoryProviderCache();
     const setSpy = vi.spyOn(cache, 'set');

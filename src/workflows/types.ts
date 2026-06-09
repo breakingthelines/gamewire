@@ -68,6 +68,7 @@ export interface DegradeFlag {
     | 'provider-5xx'
     | 'webhook-stall'
     | 'provider-outage'
+    | 'provider-rate-limited'
     | 'identity-outage';
   readonly action: DegradeAction;
   readonly detail?: string;
@@ -396,6 +397,14 @@ export interface SweepMissingPayloadsInput {
   readonly fixtureIds?: readonly string[];
   /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
   readonly nowUtc?: string;
+  /**
+   * Override the per-fixture inter-call delay in milliseconds. When unset the
+   * workflow reads `SWEEP_INTER_CALL_DELAY_MS` from the environment, falling
+   * back to 200ms (≈5 RPS, well under api-football's per-minute cap). Tests
+   * inject `0` to keep mocked sweeps sub-second; ops can dial it lower for
+   * higher-tier provider keys.
+   */
+  readonly intercallDelayMs?: number;
 }
 
 export interface SweepMissingPayloadsOutput {

@@ -102,6 +102,115 @@ describe('API-Football provider HTTP boundary', () => {
     expect(JSON.stringify(result.runtime)).not.toContain('sample-api-football-key');
   });
 
+  it('flags api-football rate-limit envelopes (HTTP 200 with errors.rateLimit) as rate_limited', async () => {
+    // api-football's free + Pro plans return this shape on per-minute-cap
+    // breach. The body MUST NOT be promoted to `fetched` because downstream
+    // ingestion will cache the empty response array and poison every
+    // subsequent read.
+    const rateLimitedBody = {
+      get: 'fixtures/statistics',
+      parameters: { fixture: '1391188' },
+      results: 0,
+      response: [],
+      errors: { rateLimit: 'Too many requests, retry in 1 minute' },
+    };
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      json: async () => rateLimitedBody,
+    });
+    const result = await fetchApiFootballJson({
+      config: {
+        ...baseConfig,
+        providerMode: 'live',
+        providerApiKey: 'sample-api-football-key',
+      },
+      workload: 'team-match-stats',
+      resourceId: '1391188',
+      replayId: 'rate-limit-smoke',
+      fetchFn,
+    });
+
+    expect(result.status).toBe('rate_limited');
+    expect(result.rateLimitMessage).toBe('Too many requests, retry in 1 minute');
+    expect(result.response?.status).toBe(200);
+    expect(result.json).toEqual(rateLimitedBody);
+  });
+
+  it('treats normal HTTP 200 envelopes as fetched', async () => {
+    const goodBody = {
+      get: 'fixtures/statistics',
+      parameters: { fixture: '1391188' },
+      results: 2,
+      response: [{ team: { id: 50 }, statistics: [] }],
+      errors: [],
+    };
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      json: async () => goodBody,
+    });
+    const result = await fetchApiFootballJson({
+      config: {
+        ...baseConfig,
+        providerMode: 'live',
+        providerApiKey: 'sample-api-football-key',
+      },
+      workload: 'team-match-stats',
+      resourceId: '1391188',
+      replayId: 'happy-path-smoke',
+      fetchFn,
+    });
+
+    expect(result.status).toBe('fetched');
+    expect(result.rateLimitMessage).toBeUndefined();
+    expect(result.json).toEqual(goodBody);
+  });
+
+  it('does NOT misclassify `errors: []` (the empty-errors shape) as rate-limited', async () => {
+    // Regression guard: api-football returns `errors: []` (an array) when there
+    // are no errors. A naive `errors?.rateLimit` check on an array would still
+    // be undefined and so behave correctly, but a "any non-empty errors object"
+    // check would false-positive on legitimately empty results lists. Pin the
+    // contract: only `errors` being a non-array object WITH a string
+    // `rateLimit` key triggers the new branch.
+    const emptyButValidBody = {
+      get: 'fixtures/statistics',
+      parameters: { fixture: '1538961' },
+      results: 0,
+      response: [],
+      errors: [],
+    };
+    const fetchFn = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'application/json' : null),
+      },
+      json: async () => emptyButValidBody,
+    });
+    const result = await fetchApiFootballJson({
+      config: {
+        ...baseConfig,
+        providerMode: 'live',
+        providerApiKey: 'sample-api-football-key',
+      },
+      workload: 'team-match-stats',
+      resourceId: '1538961',
+      replayId: 'empty-but-valid-smoke',
+      fetchFn,
+    });
+
+    expect(result.status).toBe('fetched');
+    expect(result.rateLimitMessage).toBeUndefined();
+  });
+
   it('summarizes provider JSON without echoing account values', () => {
     const summary = summarizeProviderJson({
       get: 'status',
