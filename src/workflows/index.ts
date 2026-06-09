@@ -28,6 +28,10 @@ export type {
   SeasonBackfillTarget,
   SeasonBackfillTargetResult,
   SeasonBackfillWireResult,
+  SweepMissingPayloadKind,
+  SweepMissingPayloadsInput,
+  SweepMissingPayloadsOutput,
+  SweepMissingPayloadsWireResult,
   WebhookCompletedInput,
   WebhookCompletedOutput,
   WebhookCompletedWireResult,
@@ -39,6 +43,7 @@ export {
   dailyAnchorToWire,
   hourlyMatchdayToWire,
   seasonBackfillToWire,
+  sweepMissingPayloadsToWire,
   webhookCompletedToWire,
 } from './wire.js';
 export {
@@ -54,6 +59,7 @@ export {
 } from './degrade.js';
 export type { DegradeResult } from './degrade.js';
 export { dailyAnchorWorkflow } from './daily-anchor.js';
+export { sweepMissingPayloadsWorkflow } from './sweep-missing-payloads.js';
 export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';

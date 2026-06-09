@@ -12,6 +12,7 @@
  * action rather than implementing their own posture switching.
  */
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
+import type { FootballGameMissingPayloadsClient } from '../worker/clients/game-service.js';
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
 import type { MatchConcludedPublisher } from '../worker/match-concluded-publisher.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
@@ -86,11 +87,25 @@ export interface WorkflowDeps {
   readonly competitions: readonly CompetitionEntry[];
   readonly clock?: () => Date;
   readonly logger?: WorkflowLogger;
+  /**
+   * Optional game-service client used by {@link sweepMissingPayloadsWorkflow}
+   * to enumerate finished games whose specified payload was never ingested.
+   * Wired in `worker/server.ts` from the same gRPC transport that backs
+   * the match-concluded bridge. When unset, the sweep workflow requires
+   * an explicit `fixtureIds` list (ops one-shot mode) instead of paging
+   * the RPC.
+   */
+  readonly gameServiceMissingPayloads?: FootballGameMissingPayloadsClient;
 }
 
 export interface WorkflowLogEntry {
   readonly event: string;
-  readonly workflow: 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' | 'season-backfill';
+  readonly workflow:
+    | 'daily-anchor'
+    | 'hourly-matchday'
+    | 'webhook-completed'
+    | 'season-backfill'
+    | 'sweep-missing-payloads';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -347,4 +362,85 @@ export interface SeasonBackfillWireResult {
   readonly targets: readonly SeasonBackfillTargetResult[];
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+/**
+ * Payload kinds the sweep workflow can backfill. Each maps 1:1 to a single
+ * provider-facing workload (no batch detail re-fetch) so the call budget
+ * is the smallest possible per fixture.
+ */
+export type SweepMissingPayloadKind =
+  | 'team-match-stats'
+  | 'player-match-stats'
+  | 'events'
+  | 'lineups';
+
+export interface SweepMissingPayloadsInput {
+  /** Provider id (e.g. `'api-football'`). Other providers are skipped today. */
+  readonly providerId: string;
+  /** Which payload kind to sweep. */
+  readonly kind: SweepMissingPayloadKind;
+  /** Maximum number of fixtures to process this run. Defaults to 100, max 500. */
+  readonly limit?: number;
+  /** ISO-8601 lower bound on scheduled_start_at. */
+  readonly since?: string;
+  /** ISO-8601 upper bound on scheduled_start_at. */
+  readonly until?: string;
+  /** When true, enumerate but skip the per-fixture provider call. */
+  readonly dryRun?: boolean;
+  /**
+   * Optional explicit provider-fixture-id list. When set, the workflow skips
+   * the game-service RPC and just iterates the provided ids; useful for ops
+   * one-shot runs (`curl /workflows/sweep-missing-payloads ... {"fixtureIds":["1538961"]}`).
+   */
+  readonly fixtureIds?: readonly string[];
+  /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+export interface SweepMissingPayloadsOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly providerId: string;
+  readonly kind: SweepMissingPayloadKind;
+  readonly fixturesDiscovered: number;
+  readonly fixturesProcessed: number;
+  readonly fixturesOk: number;
+  readonly fixturesSkipped: number;
+  readonly fixturesFailed: number;
+  readonly callsUsed: number;
+  readonly status: 'completed' | 'partial' | 'aborted' | 'skipped';
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly errors: readonly string[];
+  readonly dryRun: boolean;
+  readonly reason?: string;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the sweep-missing-payloads workflow.
+ * The in-process output is already summary-shaped (no raw `fetches` array is
+ * retained — sweeps walk thousands of fixtures and would otherwise OOM the
+ * scanner buffer). The wire type drops the long-tail `errors` list so a
+ * single trailing line stays well under kernel-side
+ * `bufio.Scanner.MaxScanTokenSize` even on a 500-fixture run; per-fixture
+ * detail remains available via gamewire-worker logger events (each NDJSON
+ * line being its own bounded chunk).
+ */
+export interface SweepMissingPayloadsWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly providerId: string;
+  readonly kind: SweepMissingPayloadKind;
+  readonly fixturesDiscovered: number;
+  readonly fixturesProcessed: number;
+  readonly fixturesOk: number;
+  readonly fixturesSkipped: number;
+  readonly fixturesFailed: number;
+  readonly callsUsed: number;
+  readonly status: SweepMissingPayloadsOutput['status'];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
+  readonly reason?: string;
 }

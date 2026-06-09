@@ -13,6 +13,7 @@ import {
   IngestBatchResponseSchema,
   type LookupGameByFixtureRequest,
   type LookupGameByFixtureResponse,
+  ListGamesMissingPayloadsResponseSchema,
   LookupGameByFixtureResponseSchema,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
@@ -325,6 +326,12 @@ const fakeGameService = (options: {
         throw error;
       }
       return responses[Math.min(lookupCalls.length - 1, responses.length - 1)]!;
+    },
+    async listGamesMissingPayloads() {
+      // The match-concluded bridge does not exercise this RPC; the stub
+      // returns an empty response so the FootballGameBridgeClient contract
+      // type-checks while the bridge path stays focused on lookup/ingest.
+      return create(ListGamesMissingPayloadsResponseSchema, {});
     },
   };
   return {

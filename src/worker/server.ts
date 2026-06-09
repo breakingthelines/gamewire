@@ -410,6 +410,7 @@ const server = createServer(async (request, response) => {
       ingestion,
       competitions: PHASE_A_COMPETITIONS,
       authContextVerifier,
+      gameServiceMissingPayloads: gameServiceLookupClient,
       workflowLogger: (entry) => {
         console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
       },
