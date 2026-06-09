@@ -13,6 +13,8 @@ import {
   type IngestTeamMatchStatsRequest,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
+  type ListGamesMissingPayloadsRequest,
+  type ListGamesMissingPayloadsResponse,
   type LookupGameByFixtureRequest,
   type LookupGameByFixtureResponse,
   type RecordRatingRequest,
@@ -82,6 +84,22 @@ export interface FootballGameLookupClient {
   lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse>;
 }
 
+/**
+ * Backfill-sweep client boundary for the game-service `ListGamesMissingPayloads` RPC.
+ *
+ * The sweep-missing-payloads workflow uses this to enumerate finished games whose
+ * specified payload (team-match-stats, player-match-stats, events, lineups) was
+ * never ingested. It is intentionally a separate boundary from the ingest +
+ * lookup surfaces so consumers that only need to discover gaps can depend on a
+ * narrow client (and so tests can mock the RPC without standing up the wider
+ * ingest surface).
+ */
+export interface FootballGameMissingPayloadsClient {
+  listGamesMissingPayloads(
+    request: ListGamesMissingPayloadsRequest
+  ): Promise<ListGamesMissingPayloadsResponse>;
+}
+
 export interface FootballGameIngestClient {
   ingestGames(request: IngestGamesRequest): Promise<IngestBatchResponse>;
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
@@ -91,7 +109,9 @@ export interface FootballGameIngestClient {
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
 }
 
-export type FootballGameBridgeClient = FootballGameLookupClient & FootballGameIngestClient;
+export type FootballGameBridgeClient = FootballGameLookupClient &
+  FootballGameIngestClient &
+  FootballGameMissingPayloadsClient;
 
 export interface FetchFootballGameLookupClientOptions {
   /** Base URL of the game-service gRPC server, e.g. `http://game-service:50059`. */
@@ -159,6 +179,11 @@ export const createFetchFootballGameLookupClient = (
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });
+    },
+    listGamesMissingPayloads(
+      request: ListGamesMissingPayloadsRequest
+    ): Promise<ListGamesMissingPayloadsResponse> {
+      return client.listGamesMissingPayloads(request, { timeoutMs });
     },
   };
 };

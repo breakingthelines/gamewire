@@ -26,6 +26,8 @@ import type {
   HourlyMatchdayWireResult,
   SeasonBackfillOutput,
   SeasonBackfillWireResult,
+  SweepMissingPayloadsOutput,
+  SweepMissingPayloadsWireResult,
   WebhookCompletedOutput,
   WebhookCompletedWireResult,
 } from './types.js';
@@ -89,4 +91,33 @@ export const seasonBackfillToWire = (output: SeasonBackfillOutput): SeasonBackfi
   targets: output.targets,
   degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
+});
+
+/**
+ * Sweep-missing-payloads output drops the long-tail `errors` list at the
+ * wire boundary. A 500-fixture run with every fetch failing would generate
+ * hundreds of error strings (`team-match-stats:<fixtureId>:<provider-msg>`);
+ * folded into a single trailing NDJSON line that can exceed kernel-side
+ * `bufio.Scanner.MaxScanTokenSize` and fail the activity deterministically
+ * (same failure mode 2026-05-25 fix addressed for daily-anchor). Per-fixture
+ * error detail remains available via the streamed logger events.
+ */
+export const sweepMissingPayloadsToWire = (
+  output: SweepMissingPayloadsOutput
+): SweepMissingPayloadsWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  providerId: output.providerId,
+  kind: output.kind,
+  fixturesDiscovered: output.fixturesDiscovered,
+  fixturesProcessed: output.fixturesProcessed,
+  fixturesOk: output.fixturesOk,
+  fixturesSkipped: output.fixturesSkipped,
+  fixturesFailed: output.fixturesFailed,
+  callsUsed: output.callsUsed,
+  status: output.status,
+  degradeFlags: output.degradeFlags,
+  finalQuota: output.finalQuota,
+  dryRun: output.dryRun,
+  reason: output.reason,
 });

@@ -22,6 +22,8 @@ import {
   PHASE_A_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
+  sweepMissingPayloadsToWire,
+  sweepMissingPayloadsWorkflow,
   webhookCompletedToWire,
   webhookCompletedWorkflow,
   type CompetitionEntry,
@@ -29,10 +31,13 @@ import {
   type HourlyMatchdayInput,
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
+  type SweepMissingPayloadKind,
+  type SweepMissingPayloadsInput,
   type WebhookCompletedInput,
   type WorkflowDeps,
   type WorkflowLogger,
 } from '../workflows/index.js';
+import type { FootballGameMissingPayloadsClient } from './clients/game-service.js';
 
 export interface WorkerHttpRequest {
   method: string;
@@ -133,7 +138,12 @@ class WorkflowStreamQueue implements AsyncIterable<Record<string, unknown>> {
   }
 }
 
-type WorkflowName = 'daily-anchor' | 'hourly-matchday' | 'webhook-completed' | 'season-backfill';
+type WorkflowName =
+  | 'daily-anchor'
+  | 'hourly-matchday'
+  | 'webhook-completed'
+  | 'season-backfill'
+  | 'sweep-missing-payloads';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -237,6 +247,13 @@ export interface WorkerHttpHandlerOptions {
   readonly competitions?: readonly CompetitionEntry[];
   readonly workflowLogger?: WorkflowLogger;
   /**
+   * Optional game-service client used by the sweep-missing-payloads
+   * workflow to enumerate finished games whose specified payload was
+   * never ingested. When unset the sweep workflow still works for
+   * explicit `fixtureIds` lists (ops one-shot mode).
+   */
+  readonly gameServiceMissingPayloads?: FootballGameMissingPayloadsClient;
+  /**
    * btl-auth-context verifier built at boot via
    * {@link createAuthContextVerifier}. Required for `/workflows/*`
    * endpoints; other endpoints (health, metrics, smoke) ignore it.
@@ -336,6 +353,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/season-backfill') {
     return 'season-backfill';
   }
+  if (pathname === '/workflows/sweep-missing-payloads') {
+    return 'sweep-missing-payloads';
+  }
   return 'daily-anchor';
 };
 
@@ -347,6 +367,7 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
     ingestion: options.ingestion,
     competitions: options.competitions ?? PHASE_A_COMPETITIONS,
     logger: options.workflowLogger,
+    gameServiceMissingPayloads: options.gameServiceMissingPayloads,
   };
 };
 
@@ -464,6 +485,46 @@ const parseWebhookCompletedInput = (body: unknown): WebhookCompletedInput | unde
   };
 };
 
+const SWEEP_MISSING_PAYLOAD_KINDS: readonly SweepMissingPayloadKind[] = [
+  'team-match-stats',
+  'player-match-stats',
+  'events',
+  'lineups',
+];
+
+const parseSweepMissingPayloadKind = (value: unknown): SweepMissingPayloadKind | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  for (const kind of SWEEP_MISSING_PAYLOAD_KINDS) {
+    if (kind === value) {
+      return kind;
+    }
+  }
+  return undefined;
+};
+
+const parseSweepMissingPayloadsInput = (body: unknown): SweepMissingPayloadsInput | undefined => {
+  if (!isRecord(body)) {
+    return undefined;
+  }
+  const providerId = asString(body.providerId);
+  const kind = parseSweepMissingPayloadKind(body.kind);
+  if (providerId === undefined || providerId === '' || kind === undefined) {
+    return undefined;
+  }
+  return {
+    providerId,
+    kind,
+    limit: asNumber(body.limit),
+    since: asString(body.since),
+    until: asString(body.until),
+    dryRun: asBoolean(body.dryRun),
+    fixtureIds: asStringList(body.fixtureIds),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -539,7 +600,8 @@ export const handleWorkerRequest = async (
     (request.pathname === '/workflows/daily-anchor' ||
       request.pathname === '/workflows/hourly-matchday' ||
       request.pathname === '/workflows/webhook-completed' ||
-      request.pathname === '/workflows/season-backfill')
+      request.pathname === '/workflows/season-backfill' ||
+      request.pathname === '/workflows/sweep-missing-payloads')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -590,6 +652,24 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => hourlyMatchdayWorkflow(input, { ...baseDeps, logger }),
           toWire: hourlyMatchdayToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/sweep-missing-payloads') {
+      const input = parseSweepMissingPayloadsInput(request.body);
+      if (!input) {
+        return jsonResponse(400, {
+          status: 'bad_request',
+          reason: 'missing_or_invalid_provider_kind',
+        });
+      }
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => sweepMissingPayloadsWorkflow(input, { ...baseDeps, logger }),
+          toWire: sweepMissingPayloadsToWire,
         })
       );
     }
