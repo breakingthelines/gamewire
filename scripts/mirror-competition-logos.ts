@@ -11,10 +11,10 @@
 //
 // pairs.json: { "<btl_football_competition_*>": "<wikidata Qid>", ... }
 
-const PAIRS_PATH = process.argv[2] ?? "/tmp/comp-wikidata.json";
+const PAIRS_PATH = process.argv[2] ?? '/tmp/comp-wikidata.json';
 const UA =
-  "BTL-competition-logo-backfill/1.0 (https://breakingthelines.com; ops@breakingthelines.com)";
-const MANIFEST_KEY = "media/manifest/entity-imagery.json";
+  'BTL-competition-logo-backfill/1.0 (https://breakingthelines.com; ops@breakingthelines.com)';
+const MANIFEST_KEY = 'media/manifest/entity-imagery.json';
 
 const endpoint = process.env.R2_ENDPOINT;
 const accessKeyId = process.env.R2_ACCESS_KEY_ID;
@@ -23,42 +23,44 @@ const bucket = process.env.R2_BUCKET_CONTENT;
 const cdnBaseEnv = (
   process.env.R2_MEDIA_CDN_BASE_URL ??
   process.env.CONTENT_STORAGE_CDN_BASE_URL ??
-  ""
-).replace(/\/+$/, "");
+  ''
+).replace(/\/+$/, '');
 
 if (!endpoint || !accessKeyId || !secretAccessKey || !bucket) {
-  console.error("missing R2 env (R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET_CONTENT)");
+  console.error(
+    'missing R2 env (R2_ENDPOINT / R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_BUCKET_CONTENT)'
+  );
   process.exit(1);
 }
 
 // @ts-expect-error Bun global
-const s3 = new Bun.S3Client({ endpoint, accessKeyId, secretAccessKey, bucket, region: "auto" });
+const s3 = new Bun.S3Client({ endpoint, accessKeyId, secretAccessKey, bucket, region: 'auto' });
 
 const CONTENT_TYPE: Record<string, string> = {
-  svg: "image/svg+xml",
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-  gif: "image/gif",
+  svg: 'image/svg+xml',
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
 };
 
 const extOf = (filename: string): string => {
   const m = filename.toLowerCase().match(/\.([a-z0-9]+)$/);
-  return m ? m[1] : "";
+  return m ? m[1] : '';
 };
 
 // Wikidata P154 (logo image) → Commons filename. Returns null when absent.
 async function wikidataLogoFile(qid: string): Promise<string | null> {
   const url = `https://www.wikidata.org/w/api.php?action=wbgetclaims&entity=${qid}&property=P154&format=json`;
-  const r = await fetch(url, { headers: { "User-Agent": UA } });
+  const r = await fetch(url, { headers: { 'User-Agent': UA } });
   if (!r.ok) return null;
   const d: any = await r.json();
   const claims = d?.claims?.P154;
   if (!Array.isArray(claims)) return null;
   for (const cl of claims) {
     const v = cl?.mainsnak?.datavalue?.value;
-    if (typeof v === "string" && v) return v;
+    if (typeof v === 'string' && v) return v;
   }
   return null;
 }
@@ -74,7 +76,9 @@ async function main() {
   manifest.entities ??= {};
   const cdnBase = manifest.cdnBase || cdnBaseEnv;
   if (!cdnBase) {
-    console.error("no cdnBase (manifest has none + env unset) — refusing to write a broken manifest");
+    console.error(
+      'no cdnBase (manifest has none + env unset) — refusing to write a broken manifest'
+    );
     process.exit(1);
   }
 
@@ -102,9 +106,9 @@ async function main() {
         continue;
       }
       const commonsUrl = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(
-        file.replace(/ /g, "_"),
+        file.replace(/ /g, '_')
       )}`;
-      const img = await fetch(commonsUrl, { headers: { "User-Agent": UA }, redirect: "follow" });
+      const img = await fetch(commonsUrl, { headers: { 'User-Agent': UA }, redirect: 'follow' });
       if (!img.ok) {
         failed++;
         console.error(`fetch ${img.status} ${cid} ${qid} ${file}`);
@@ -117,7 +121,7 @@ async function main() {
       }
       const key = `media/provider/competition/${cid}.${ext}`;
       await s3.file(key).write(body, { type: CONTENT_TYPE[ext] });
-      manifest.entities[cid] = { type: "competition", provider: ext };
+      manifest.entities[cid] = { type: 'competition', provider: ext };
       mirrored++;
       if (mirrored % 20 === 0) console.log(`...${mirrored} mirrored`);
       await Bun.sleep(150); // be polite to Wikimedia
@@ -129,12 +133,12 @@ async function main() {
 
   manifest.version = new Date().toISOString();
   manifest.cdnBase = cdnBase;
-  await manifestFile.write(`${JSON.stringify(manifest, null, 2)}\n`, { type: "application/json" });
+  await manifestFile.write(`${JSON.stringify(manifest, null, 2)}\n`, { type: 'application/json' });
 
   console.log(
-    `DONE. mirrored=${mirrored} skipped(already)=${skipped} no-logo=${nologo} failed=${failed} total=${ids.length} | manifest competitions now=${Object.values(
-      manifest.entities,
-    ).filter((e: any) => e?.type === "competition").length}`,
+    `DONE. mirrored=${mirrored} skipped(already)=${skipped} no-logo=${nologo} failed=${failed} total=${ids.length} | manifest competitions now=${
+      Object.values(manifest.entities).filter((e: any) => e?.type === 'competition').length
+    }`
   );
 }
 
