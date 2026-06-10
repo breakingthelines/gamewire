@@ -320,7 +320,14 @@ describe('API-Football adapter', () => {
       envelope: {
         response: [
           {
-            team: { id: 42, name: 'Arsenal' },
+            team: {
+              id: 42,
+              name: 'Arsenal',
+              colors: {
+                player: { primary: 'e10000', number: 'ffffff', border: 'e10000' },
+                goalkeeper: { primary: 'ffd700', number: '000000', border: 'ffd700' },
+              },
+            },
             formation: '4-3-3',
             startXI: [
               {
@@ -344,6 +351,40 @@ describe('API-Football adapter', () => {
     expect(request.lineups[0]?.teamSheets[0]?.players[0]?.playerId).toBe(
       'provider:api-football:player:1460'
     );
+    // kit colours flow from the lineup payload's team.colors into the team sheet
+    expect(request.lineups[0]?.teamSheets[0]?.kitPlayerColor).toBe('e10000');
+    expect(request.lineups[0]?.teamSheets[0]?.kitGoalkeeperColor).toBe('ffd700');
+  });
+
+  it('normalizes kit colours and tolerates a leading "#" and missing colour data', () => {
+    const request = apiFootballIngestLineupsRequestFromLineups({
+      replayId: 'live:lineups-kit-normalise:1917',
+      resourceId: '1917',
+      gameId: 'btl_football_game_g1917',
+      envelope: {
+        response: [
+          {
+            // leading '#' stripped on the outfield kit; no goalkeeper colour
+            team: { id: 50, name: 'Manchester City', colors: { player: { primary: '#abd1f5' } } },
+            formation: '4-3-3',
+            startXI: [{ player: { id: 1, name: 'Player', number: 1, pos: 'GK', grid: '1:1' } }],
+            substitutes: [],
+          },
+          {
+            // no colours block at all → both fields empty
+            team: { id: 66, name: 'Leicester' },
+            formation: '4-4-2',
+            startXI: [{ player: { id: 2, name: 'Player Two', number: 2, pos: 'CB', grid: '2:1' } }],
+            substitutes: [],
+          },
+        ],
+      },
+    });
+
+    expect(request.lineups[0]?.teamSheets[0]?.kitPlayerColor).toBe('abd1f5');
+    expect(request.lineups[0]?.teamSheets[0]?.kitGoalkeeperColor).toBe('');
+    expect(request.lineups[0]?.teamSheets[1]?.kitPlayerColor).toBe('');
+    expect(request.lineups[0]?.teamSheets[1]?.kitGoalkeeperColor).toBe('');
   });
 
   it('normalizes API-Football squad lists as a distinct lineup fallback', () => {

@@ -79,8 +79,28 @@ export interface ApiFootballEventResponse {
   readonly comments?: string | null;
 }
 
+/**
+ * Per-fixture kit colours, present only on the `/fixtures/lineups` payload
+ * (not `/teams`). API-Football reports them under `team.colors` as 6-digit
+ * hex strings without a leading `#` (e.g. Arsenal `e10000`, Man City
+ * `abd1f5`). `player` is the outfield kit; `goalkeeper` the keeper kit. Any
+ * sub-field can be absent for fixtures the provider has not coloured.
+ */
+export interface ApiFootballKitColors {
+  readonly player?: ApiFootballKitColorSet | null;
+  readonly goalkeeper?: ApiFootballKitColorSet | null;
+}
+
+export interface ApiFootballKitColorSet {
+  readonly primary?: string | null;
+  readonly number?: string | null;
+  readonly border?: string | null;
+}
+
 export interface ApiFootballLineupResponse {
-  readonly team: ApiFootballTeamRef;
+  readonly team: ApiFootballTeamRef & {
+    readonly colors?: ApiFootballKitColors | null;
+  };
   readonly formation: string;
   readonly startXI: readonly ApiFootballLineupPlayer[];
   readonly substitutes: readonly ApiFootballLineupPlayer[];
