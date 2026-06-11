@@ -89,7 +89,17 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'fixture-detail-preKO': 10 * 60 * 1000, // every 10 min for upcoming kickoffs
   'fixture-detail-live': 30 * 1000, // every 30s for in-play fixtures
   'fixture-detail-fullTime': 30 * 60 * 1000, // every 30 min after FT
-  'events-post-final': 30 * 60 * 1000, // timeline events settle after FT
+  // Retired from the steady-state cron. The fixture-detail-live payload
+  // carries the same accumulating events[] inline, and the bridge lifts that
+  // slice into game_occurrences on every live tick. Polling
+  // /fixtures/events on its own 30-min cadence was tuned for "events settle
+  // after FT", but the first pre-kickoff fetch returned [] which the 6h TTL
+  // then poisoned into a half-day cache hit — so during a live match this
+  // workload only ever emitted `bridge_events_missing` while the inline path
+  // never fired. A 0 interval keeps `enqueueTick` from scheduling it; the
+  // workload identifier stays in the type union so direct `fetchWorkload`
+  // calls (replay tooling, backfill workflows) continue to work.
+  'events-post-final': 0,
   'lineups-post-confirm': 10 * 60 * 1000, // every 10 min after lineups confirmed
   // Match stats are NOT on the steady-state polling cron: they are pulled
   // on-demand by the webhook-completed (post-final) and season-backfill
