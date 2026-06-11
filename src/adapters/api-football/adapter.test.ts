@@ -274,6 +274,102 @@ describe('API-Football adapter', () => {
     expect(game?.score).toBeUndefined();
   });
 
+  it('maps fixture.venue to Game.venue (the SubjectRef the platform header renders)', () => {
+    // Crystal Palace v Arsenal at Selhurst Park — the platform header reads
+    // venueLabel(game) off game.venue.label, so the stadium name must survive
+    // the mapping with type VENUE. The id mirrors the provider-scoped fallback
+    // scheme (provider:<provider>:venue:<id>) since venues have no canonical
+    // identity path in this adapter.
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail:1208021',
+      resourceId: '1208021',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1208021,
+              date: '2026-05-11T19:00:00+00:00',
+              status: { short: 'NS' },
+              venue: { id: 525, name: 'Selhurst Park', city: 'London' },
+            },
+            league: { id: 39, name: 'Premier League', season: 2025, round: 'Regular Season - 1' },
+            teams: {
+              home: { id: 52, name: 'Crystal Palace' },
+              away: { id: 42, name: 'Arsenal' },
+            },
+            goals: { home: null, away: null },
+          },
+        ],
+      },
+    });
+
+    const game = request.games[0];
+    expect(game?.venue?.label).toBe('Selhurst Park');
+    expect(game?.venue?.type).toBe(SubjectType.VENUE);
+    expect(game?.venue?.id).toBe('provider:api-football:venue:525');
+    expect(game?.venue?.slug).toBe('selhurst-park');
+  });
+
+  it('emits a label-only Game.venue when the provider supplies no stadium id', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail:1208022',
+      resourceId: '1208022',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1208022,
+              date: '2026-05-11T19:00:00+00:00',
+              status: { short: 'NS' },
+              venue: { id: null, name: 'Wembley Stadium', city: null },
+            },
+            league: { id: 39, name: 'Premier League', season: 2025, round: 'Regular Season - 1' },
+            teams: {
+              home: { id: 33, name: 'Manchester United' },
+              away: { id: 40, name: 'Liverpool' },
+            },
+            goals: { home: null, away: null },
+          },
+        ],
+      },
+    });
+
+    const game = request.games[0];
+    expect(game?.venue?.label).toBe('Wembley Stadium');
+    expect(game?.venue?.type).toBe(SubjectType.VENUE);
+    expect(game?.venue?.id).toBe('');
+  });
+
+  it('omits Game.venue when the provider attached no venue name', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail:1208023',
+      resourceId: '1208023',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1208023,
+              date: '2026-05-11T19:00:00+00:00',
+              status: { short: 'NS' },
+              venue: { id: null, name: null, city: null },
+            },
+            league: { id: 39, name: 'Premier League', season: 2025, round: 'Regular Season - 1' },
+            teams: {
+              home: { id: 47, name: 'Tottenham' },
+              away: { id: 50, name: 'Manchester City' },
+            },
+            goals: { home: null, away: null },
+          },
+        ],
+      },
+    });
+
+    expect(request.games[0]?.venue).toBeUndefined();
+  });
+
   it('normalizes API-Football fixture events into timeline occurrences', () => {
     const request = apiFootballIngestOccurrencesRequestFromEvents({
       replayId: 'live:events-post-final:1538961',

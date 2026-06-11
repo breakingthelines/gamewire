@@ -31,6 +31,18 @@ export interface ApiFootballFixtureRef {
     readonly short: string;
     readonly elapsed?: number | null;
   };
+  /**
+   * Stadium the fixture is played at. Present on every `/fixtures` response
+   * as `fixture.venue.{id, name, city}`; `id`/`city` are occasionally null
+   * for neutral or newly-added grounds, and `name` can be null when the
+   * provider has not yet attached a venue. Mapped to `Game.venue` (a
+   * `btl.context.v1.SubjectRef`, type VENUE) only when `name` is present.
+   */
+  readonly venue?: {
+    readonly id?: number | null;
+    readonly name?: string | null;
+    readonly city?: string | null;
+  } | null;
 }
 
 export interface ApiFootballLeagueRef {
