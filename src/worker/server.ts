@@ -411,6 +411,15 @@ const server = createServer(async (request, response) => {
       competitions: PHASE_A_COMPETITIONS,
       authContextVerifier,
       gameServiceMissingPayloads: gameServiceLookupClient,
+      // The squad-sweep workflow ingests standing rosters via
+      // IngestFootballSquadLists and resolves provider team ids to canonical
+      // btl_football_team_* ids through identity. Both clients must reach the
+      // workflow deps or every team skips as `game_service_not_wired` (and an
+      // unresolved canonical id leaves team_squad_rosters unfindable by
+      // GetTeamSquad). gameServiceLookupClient is a FootballGameBridgeClient,
+      // which is a superset of FootballGameIngestClient.
+      gameService: gameServiceLookupClient,
+      identity: identityClient,
       workflowLogger: (entry) => {
         console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
       },
