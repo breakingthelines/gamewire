@@ -12,7 +12,11 @@
  * action rather than implementing their own posture switching.
  */
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
-import type { FootballGameMissingPayloadsClient } from '../worker/clients/game-service.js';
+import type {
+  FootballGameIngestClient,
+  FootballGameMissingPayloadsClient,
+} from '../worker/clients/game-service.js';
+import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
 import type { MatchConcludedPublisher } from '../worker/match-concluded-publisher.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
@@ -97,6 +101,23 @@ export interface WorkflowDeps {
    * the RPC.
    */
   readonly gameServiceMissingPayloads?: FootballGameMissingPayloadsClient;
+  /**
+   * Game-service ingest client used by {@link squadSweepWorkflow} to push
+   * standing squad rosters via IngestFootballSquadLists. Wired in
+   * `worker/server.ts` from the same gRPC transport used for the bridge.
+   * When unset, squad ingest calls are skipped (teams are still enumerated
+   * and provider-fetched, but not written to game-service).
+   */
+  readonly gameService?: FootballGameIngestClient;
+  /**
+   * Identity-server lookup client used by {@link squadSweepWorkflow} to
+   * resolve provider team ids to canonical btl_football_team_* ids before
+   * ingesting a standing squad list. Wired in `worker/server.ts`. When
+   * unset, the canonical_team_id field is left empty in the ingested row
+   * (game-service still stores the roster keyed by provider id and
+   * resolves it at read time).
+   */
+  readonly identity?: FootballIdentityLookupClient;
 }
 
 export interface WorkflowLogEntry {
@@ -106,7 +127,8 @@ export interface WorkflowLogEntry {
     | 'hourly-matchday'
     | 'webhook-completed'
     | 'season-backfill'
-    | 'sweep-missing-payloads';
+    | 'sweep-missing-payloads'
+    | 'squad-sweep';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -452,4 +474,86 @@ export interface SweepMissingPayloadsWireResult {
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
   readonly dryRun: boolean;
   readonly reason?: string;
+}
+
+// ── Squad Sweep ───────────────────────────────────────────────────────────────
+
+/**
+ * Input for the squad-sweep workflow. All fields are optional; with an empty
+ * body the workflow sweeps every team known from the cached fixture envelopes.
+ */
+export interface SquadSweepInput {
+  /**
+   * Explicit list of API-Football provider team ids to sweep. When omitted
+   * the workflow enumerates all teams known from the cached
+   * `api-football:fixtures-next-7d:<key>` Redis entries.
+   */
+  readonly teamIds?: readonly string[];
+  /**
+   * Maximum number of teams to process per run. Defaults to 500. A full
+   * Phase A sweep is ~120 teams; 500 handles the full WC + qualifier
+   * universe in one shot.
+   */
+  readonly maxTeamsPerRun?: number;
+  /**
+   * Per-team inter-call delay in milliseconds. Defaults to the
+   * `SQUAD_SWEEP_INTER_CALL_DELAY_MS` environment variable or 200ms.
+   * Pass 0 in tests.
+   */
+  readonly intercallDelayMs?: number;
+  /**
+   * When true, enumerate and resolve teams but skip the provider fetch and
+   * game-service ingest. Useful to preview the team set without spending
+   * API quota.
+   */
+  readonly dryRun?: boolean;
+  /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+/** Per-team result in a squad sweep run. */
+export interface SquadSweepTeamResult {
+  readonly providerTeamId: string;
+  readonly canonicalTeamId: string;
+  readonly status: 'ok' | 'failed' | 'skipped';
+  readonly reason?: string;
+  readonly acceptedCount?: number;
+  readonly updatedCount?: number;
+}
+
+export interface SquadSweepOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  /** `completed` = all teams attempted with no failures; `partial` = some failures; `aborted` = hard-cap or circuit-open. */
+  readonly status: 'completed' | 'partial' | 'aborted';
+  readonly teamsDiscovered: number;
+  readonly teamsOk: number;
+  readonly teamsFailed: number;
+  readonly teamsSkipped: number;
+  readonly callsUsed: number;
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  /** Per-team result list. Dropped at the wire boundary to stay under NDJSON scanner limits. */
+  readonly teams: readonly SquadSweepTeamResult[];
+  readonly dryRun: boolean;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the squad-sweep workflow.
+ * The per-team `teams` list is dropped at the wire boundary so a large sweep
+ * cannot exceed kernel-side `bufio.Scanner.MaxScanTokenSize`; per-team detail
+ * remains available via the streamed logger events.
+ */
+export interface SquadSweepWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: SquadSweepOutput['status'];
+  readonly teamsDiscovered: number;
+  readonly teamsOk: number;
+  readonly teamsFailed: number;
+  readonly teamsSkipped: number;
+  readonly callsUsed: number;
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
 }

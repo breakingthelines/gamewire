@@ -28,6 +28,10 @@ export type {
   SeasonBackfillTarget,
   SeasonBackfillTargetResult,
   SeasonBackfillWireResult,
+  SquadSweepInput,
+  SquadSweepOutput,
+  SquadSweepTeamResult,
+  SquadSweepWireResult,
   SweepMissingPayloadKind,
   SweepMissingPayloadsInput,
   SweepMissingPayloadsOutput,
@@ -43,6 +47,7 @@ export {
   dailyAnchorToWire,
   hourlyMatchdayToWire,
   seasonBackfillToWire,
+  squadSweepToWire,
   sweepMissingPayloadsToWire,
   webhookCompletedToWire,
 } from './wire.js';
@@ -63,3 +68,4 @@ export { sweepMissingPayloadsWorkflow } from './sweep-missing-payloads.js';
 export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
+export { squadSweepWorkflow } from './squad-sweep.js';
