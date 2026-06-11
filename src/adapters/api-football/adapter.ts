@@ -999,8 +999,6 @@ function teamSheetFromLineup(
   return create(FootballTeamSheetSchema, {
     teamId,
     formation: lineup.formation,
-    kitPlayerColor: kitColor(lineup.team.colors?.player?.primary),
-    kitGoalkeeperColor: kitColor(lineup.team.colors?.goalkeeper?.primary),
     players: [
       ...lineup.startXI.map((entry, index) =>
         lineupsPlayer(entry, {
@@ -1796,18 +1794,6 @@ function providerEntitySnapshot(input: {
 
 function stringOrEmpty(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
-}
-
-/**
- * Normalise an API-Football kit colour to the canonical
- * `FootballTeamSheet.kit_player_color` / `kit_goalkeeper_color` form: a
- * 6-digit hex string with no leading `#`. The provider supplies bare hex
- * (e.g. `e10000`) but we strip a `#` defensively in case a future payload
- * (or a replay fixture) includes one. Returns `''` when the colour is
- * missing — the formation board then falls back to greyscale.
- */
-function kitColor(value: string | null | undefined): string {
-  return stringOrEmpty(value).replace(/^#/, '');
 }
 
 function actorFromProviderRef(
