@@ -821,6 +821,14 @@ function liveGame(
     options.entityResolutions,
     teamSnapshot(response.teams.away)
   );
+  // Venue has no canonical identity path in this adapter (identity does not
+  // bucket grounds), so mint a provider-scoped SubjectRef the same way the
+  // competition/season/team fallback does: id `provider:<providerId>:venue:<id>`
+  // when the provider supplies a stadium id, label-only otherwise. The
+  // displayable stadium name is `venue.name` — what the platform header's
+  // `venueLabel(game)` reads off `game.venue.label`. Omitted when the provider
+  // attached no venue name (neutral/unannounced grounds).
+  const venue = venueSubject(options.providerId, response.fixture.venue);
 
   const homeGoals = nullableNumber(response.goals?.home);
   const awayGoals = nullableNumber(response.goals?.away);
@@ -841,6 +849,7 @@ function liveGame(
     providerGameId,
     competition: competition.subject,
     season: season.subject,
+    venue,
     participants: [
       create(GameParticipantSchema, {
         subject: home.subject,
@@ -1600,6 +1609,32 @@ function subject(id: string, type: SubjectType, label: string, slug: string, ima
     slug,
     imageUrl,
   });
+}
+
+/**
+ * Build the `Game.venue` SubjectRef (type VENUE, sport FOOTBALL) from an
+ * API-Football `fixture.venue`. The provider attaches `{ id, name, city }` to
+ * every fixture; `name` is the displayable stadium label the platform header's
+ * `venueLabel(game)` renders. Venues have no canonical identity path here, so
+ * the id mirrors the provider-scoped fallback used for competition/season/team
+ * (`provider:<providerId>:venue:<id>`) when the provider supplies a stadium id,
+ * and is left label-only when only the name is known. Returns `undefined` when
+ * the provider attached no venue name so the field is omitted gracefully.
+ */
+function venueSubject(
+  providerId: string,
+  venue: ApiFootballFixtureResponse['fixture']['venue']
+): ReturnType<typeof subject> | undefined {
+  const name = stringOrEmpty(venue?.name);
+  if (name === '') {
+    return undefined;
+  }
+  const providerVenueId =
+    venue?.id === undefined || venue?.id === null || !Number.isFinite(venue.id) || venue.id === 0
+      ? ''
+      : String(venue.id);
+  const id = providerVenueId === '' ? '' : providerStorageId(providerId, 'venue', providerVenueId);
+  return subject(id, SubjectType.VENUE, name, slugify(name));
 }
 
 function resolvedSubject(
