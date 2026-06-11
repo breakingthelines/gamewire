@@ -28,11 +28,7 @@ import type { FootballGameIngestClient } from '../../worker/clients/game-service
 import type { IngestBatchResponse } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import type { FootballSquadListTeam } from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 import { squadSweepWorkflow, __test } from '../squad-sweep.js';
-import type {
-  CompetitionEntry,
-  SquadSweepInput,
-  WorkflowDeps,
-} from '../types.js';
+import type { CompetitionEntry, SquadSweepInput, WorkflowDeps } from '../types.js';
 
 const {
   teamIdsFromFixtureListEnvelope,
@@ -160,18 +156,22 @@ class MockIngestion {
   });
 }
 
-const mockIdentity = (resolutions: Record<string, string> = {}): FootballIdentityLookupClient => ({
-  lookup: vi.fn(),
-  resolve: vi.fn(async (req) => {
-    const canonical = resolutions[req.providerId] ?? '';
-    return { found: canonical !== '', entityId: canonical, entity: undefined };
-  }),
-  search: vi.fn(),
-  stats: vi.fn(),
-}) as unknown as FootballIdentityLookupClient;
+const mockIdentity = (resolutions: Record<string, string> = {}): FootballIdentityLookupClient =>
+  ({
+    lookup: vi.fn(),
+    resolve: vi.fn(async (req) => {
+      const canonical = resolutions[req.providerId] ?? '';
+      return { found: canonical !== '', entityId: canonical, entity: undefined };
+    }),
+    search: vi.fn(),
+    stats: vi.fn(),
+  }) as unknown as FootballIdentityLookupClient;
 
 const mockGameService = (): FootballGameIngestClient & {
-  squadListCalls: Array<{ gameId: string; teams: Array<{ teamId: string; providerTeamId: string }> }>;
+  squadListCalls: Array<{
+    gameId: string;
+    teams: Array<{ teamId: string; providerTeamId: string }>;
+  }>;
 } => {
   const squadListCalls: Array<{
     gameId: string;
@@ -186,7 +186,10 @@ const mockGameService = (): FootballGameIngestClient & {
       for (const sl of request.squadLists) {
         squadListCalls.push({
           gameId: sl.gameId,
-          teams: sl.teams.map((t: FootballSquadListTeam) => ({ teamId: t.teamId, providerTeamId: t.providerTeamId })),
+          teams: sl.teams.map((t: FootballSquadListTeam) => ({
+            teamId: t.teamId,
+            providerTeamId: t.providerTeamId,
+          })),
         });
       }
       const response: IngestBatchResponse = {
@@ -205,7 +208,10 @@ const mockGameService = (): FootballGameIngestClient & {
     ingestTeamMatchStats: vi.fn(),
     ingestPlayerMatchStats: vi.fn(),
   } as unknown as FootballGameIngestClient & {
-    squadListCalls: Array<{ gameId: string; teams: Array<{ teamId: string; providerTeamId: string }> }>;
+    squadListCalls: Array<{
+      gameId: string;
+      teams: Array<{ teamId: string; providerTeamId: string }>;
+    }>;
   };
 };
 
@@ -331,11 +337,7 @@ describe('squadSweepWorkflow — team enumeration', () => {
 
     // Seed fixture-list caches for both competitions.
     ingestion.setCachedFixtureList(39, 2025, fixtureListEnvelope([{ homeId: 42, awayId: 49 }]));
-    ingestion.setCachedFixtureList(
-      140,
-      2025,
-      fixtureListEnvelope([{ homeId: 101, awayId: 102 }])
-    );
+    ingestion.setCachedFixtureList(140, 2025, fixtureListEnvelope([{ homeId: 101, awayId: 102 }]));
 
     // Each team gets a squad envelope.
     for (const id of ['42', '49', '101', '102']) {
@@ -343,7 +345,9 @@ describe('squadSweepWorkflow — team enumeration', () => {
     }
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
 
     const result = await squadSweepWorkflow({ intercallDelayMs: 0 }, deps);
 
@@ -363,7 +367,9 @@ describe('squadSweepWorkflow — team enumeration', () => {
     ingestion.setSquadPayload('42', squadEnvelope(42, [1001, 1002]));
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
     const input: SquadSweepInput = { teamIds: ['42'], intercallDelayMs: 0 };
 
     const result = await squadSweepWorkflow(input, deps);
@@ -383,9 +389,14 @@ describe('squadSweepWorkflow — team enumeration', () => {
     ingestion.setSquadPayload('42', squadEnvelope(42, [1001]));
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
     // Pass the same id twice.
-    const result = await squadSweepWorkflow({ teamIds: ['42', '42', '42'], intercallDelayMs: 0 }, deps);
+    const result = await squadSweepWorkflow(
+      { teamIds: ['42', '42', '42'], intercallDelayMs: 0 },
+      deps
+    );
 
     expect(result.teamsDiscovered).toBe(1);
     expect(ingestion.fetchCalls).toHaveLength(1);
@@ -445,7 +456,9 @@ describe('squadSweepWorkflow — dry-run', () => {
     ingestion.setSquadPayload('49', squadEnvelope(49, [1002]));
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
     const input: SquadSweepInput = { dryRun: true, intercallDelayMs: 0 };
 
     const result = await squadSweepWorkflow(input, deps);
@@ -475,10 +488,7 @@ describe('squadSweepWorkflow — quota degrade', () => {
       gameService: gameService as unknown as FootballGameIngestClient,
     });
 
-    const result = await squadSweepWorkflow(
-      { teamIds: ['42', '49'], intercallDelayMs: 0 },
-      deps
-    );
+    const result = await squadSweepWorkflow({ teamIds: ['42', '49'], intercallDelayMs: 0 }, deps);
 
     // Team 42 succeeded; team 49 was denied (skipped).
     expect(result.teamsOk).toBe(1);
@@ -497,7 +507,9 @@ describe('squadSweepWorkflow — empty squad response', () => {
     ingestion.setSquadPayload('42', { response: [] });
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
 
     const result = await squadSweepWorkflow({ teamIds: ['42'], intercallDelayMs: 0 }, deps);
 
@@ -517,7 +529,9 @@ describe('squadSweepWorkflow — maxTeamsPerRun', () => {
     }
 
     const gameService = mockGameService();
-    const deps = buildDeps(ingestion, { gameService: gameService as unknown as FootballGameIngestClient });
+    const deps = buildDeps(ingestion, {
+      gameService: gameService as unknown as FootballGameIngestClient,
+    });
 
     const result = await squadSweepWorkflow(
       { teamIds, maxTeamsPerRun: 3, intercallDelayMs: 0 },

@@ -32,3 +32,5 @@ coverage
 
 # TypeScript cache
 *.tsbuildinfo
+# Claude Code local worktrees/cruft
+.claude/

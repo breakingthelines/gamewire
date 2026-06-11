@@ -96,7 +96,7 @@ import type {
 
 /** Environment variable or input override for per-team inter-call delay. */
 const SWEEP_INTER_CALL_DELAY_MS = Number(
-  typeof process !== 'undefined' ? process.env.SQUAD_SWEEP_INTER_CALL_DELAY_MS ?? '200' : '200'
+  typeof process !== 'undefined' ? (process.env.SQUAD_SWEEP_INTER_CALL_DELAY_MS ?? '200') : '200'
 );
 
 /**
@@ -266,7 +266,8 @@ const extractSquadTeams = (
       .map((p) => {
         const providerPlayerId = String(p.id).trim();
         const playerName = typeof p.name === 'string' ? p.name.trim() : '';
-        const shirtNumber = typeof p.number === 'number' && Number.isFinite(p.number) ? p.number : 0;
+        const shirtNumber =
+          typeof p.number === 'number' && Number.isFinite(p.number) ? p.number : 0;
         const position = typeof p.position === 'string' ? p.position.trim() : '';
         const age = typeof p.age === 'number' && Number.isFinite(p.age) ? p.age : 0;
         const photo = typeof p.photo === 'string' ? p.photo.trim() : '';

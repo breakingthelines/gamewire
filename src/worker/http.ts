@@ -8,7 +8,10 @@ import type { GamewireWorkerConfig } from './config.js';
 import { config as defaultConfig } from './config.js';
 import { apiFootballFixturePath, apiFootballStatusPath } from '../adapters/api-football/index.js';
 import type { ApiFootballIngestionLoop } from './ingestion.js';
-import type { FootballGameIngestClient, FootballGameMissingPayloadsClient } from './clients/game-service.js';
+import type {
+  FootballGameIngestClient,
+  FootballGameMissingPayloadsClient,
+} from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   fetchApiFootballJson,
