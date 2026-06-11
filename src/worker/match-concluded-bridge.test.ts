@@ -93,6 +93,46 @@ const buildEventResponse = (fixtureId: number | string = 1538961): unknown => ({
   ],
 });
 
+/**
+ * Build an API-Football `/fixtures?id=` LIVE detail envelope with an
+ * embedded events[] slice. Mirrors the actual live payload shape that
+ * Wave 6.29a traced for Mexico vs South Africa (kickoff status `1H`, one
+ * goal at 9' from Quinones). The events slice is what the
+ * fixture-detail-live branch now lifts into game_occurrences.
+ */
+const buildLiveFixtureWithEventsResponse = (
+  fixtureId: number | string = 1489369,
+  statusShort = '1H',
+  events: readonly Record<string, unknown>[] = [
+    {
+      time: { elapsed: 9, extra: null },
+      team: { id: 16, name: 'Mexico' },
+      player: { id: 35845, name: 'J. Quinones' },
+      assist: { id: null, name: null },
+      type: 'Goal',
+      detail: 'Normal Goal',
+      comments: null,
+    },
+  ]
+): unknown => ({
+  response: [
+    {
+      fixture: {
+        id: fixtureId,
+        date: '2026-06-11T19:00:00+00:00',
+        status: { short: statusShort, long: 'First Half', elapsed: 17 },
+      },
+      league: { id: 1, name: 'FIFA World Cup', season: 2026 },
+      teams: {
+        home: { id: 16, name: 'Mexico' },
+        away: { id: 1532, name: 'South Africa' },
+      },
+      goals: { home: 1, away: 0 },
+      events,
+    },
+  ],
+});
+
 const buildLineupResponse = (): unknown => ({
   response: [
     {
@@ -551,6 +591,82 @@ describe('createMatchConcludedBridge', () => {
     expect(request?.occurrences[0]?.actors[0]?.providerRef?.providerId).toBe('49');
     expect(stream.published).toHaveLength(0);
     expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
+  });
+
+  it('lifts the embedded events[] off a fixture-detail-live payload into game_occurrences', async () => {
+    // Wave 6.29a regression guard. The api-football live fixture-detail
+    // payload carries the accumulating events array inline under
+    // `response[0].events`; without this projection the live branch only
+    // updated status + score, and the only event-bearing workload
+    // (events-post-final) was poisoned by its 6h-TTL pre-kickoff empty
+    // cache hit. So a live match's Timeline tab stayed empty for the full
+    // 90 minutes even though api-football was returning the goal/card/sub
+    // events on every 30s tick.
+    const { publisher, stream } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_ga10b0dc6903c7770' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+      clock: () => Date.parse('2026-06-11T19:22:00Z'),
+    });
+
+    await bridge({
+      workload: 'fixture-detail-live',
+      resourceId: '1489369',
+      data: buildLiveFixtureWithEventsResponse(1489369, '1H'),
+    });
+
+    // The detail branch still runs: it ingests the canonical game + looks
+    // up the gameId. Then it ALSO ingests the embedded events.
+    expect(gameService.ingestCalls).toHaveLength(1);
+    expect(gameService.occurrenceCalls).toHaveLength(1);
+    const occurrenceRequest = gameService.occurrenceCalls[0];
+    expect(occurrenceRequest?.gameId).toBe('btl_football_game_ga10b0dc6903c7770');
+    expect(occurrenceRequest?.occurrences).toHaveLength(1);
+    expect(occurrenceRequest?.occurrences[0]?.payload.case).toBe('timeline');
+    // Deterministic occurrence id keyed by sequence — re-ingesting the same
+    // accumulating events on the next 30s tick upserts in place rather
+    // than duplicating (game-service uses ON CONFLICT (id) DO UPDATE).
+    expect(occurrenceRequest?.occurrences[0]?.id).toBe('api-football:fixture:1489369:event:1');
+    // Live status (1H) is non-terminal — emit-once gate must NOT publish a
+    // match-concluded fact. The Timeline ingest is independent of the
+    // terminal-fact path.
+    expect(stream.published).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
+  });
+
+  it('is a no-op for the events path when a fixture-detail-live payload has no events', async () => {
+    // Pre-kickoff or no-event-yet fixtures must not log a noisy "missing
+    // events" line on every 30s tick — they simply skip the events ingest
+    // and continue with the status + score path.
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({
+      workload: 'fixture-detail-live',
+      resourceId: '1489369',
+      data: buildLiveFixtureWithEventsResponse(1489369, '1H', []),
+    });
+
+    expect(gameService.occurrenceCalls).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === 'bridge_events_missing')).toBe(false);
+    expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(false);
   });
 
   it('retries event game lookup when fixture detail creates the mapping during boot', async () => {

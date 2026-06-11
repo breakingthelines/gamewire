@@ -370,6 +370,33 @@ export const createMatchConcludedBridge = (
       return;
     }
 
+    // Lift the embedded events[] slice off the fixture-detail payload and
+    // ingest it the same way the steady-state events-post-final workload
+    // does. Without this, every live tick would update status + score but
+    // drop the timeline events the provider returns inline on the same
+    // /fixtures?id=N envelope. The post-final events workload's TTL (6h)
+    // poisoned its first pre-kickoff empty fetch into a half-day cache hit,
+    // so during a live match the only timeline-bearing path is here.
+    //
+    // Idempotent on the game-service side: GameOccurrence.id is
+    // `${providerId}:fixture:${providerFixtureId}:event:${sequence}` and the
+    // postgres upsert is keyed `ON CONFLICT (id) DO UPDATE`. Re-sending the
+    // same accumulating events array on every 30s tick is harmless — early
+    // events keep their stable sequence number, new ones append at the tail.
+    await ingestEventsFromFixtureDetail({
+      workload,
+      resourceId,
+      providerFixtureId,
+      providerStatus,
+      providerId,
+      gameId: lookupResponse.gameId,
+      data,
+      gameService,
+      identity,
+      log,
+      clock,
+    });
+
     const observation: MatchFixtureObservation = {
       providerFixtureId,
       gameId: lookupResponse.gameId,
@@ -492,6 +519,104 @@ const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<vo
       workload: input.workload,
       resourceId: input.resourceId,
       providerId: input.providerId,
+      message: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+interface FixtureDetailEventIngestInput {
+  readonly workload: IngestionWorkload;
+  readonly resourceId: string;
+  readonly providerFixtureId: string;
+  readonly providerStatus: string;
+  readonly providerId: string;
+  readonly gameId: string;
+  readonly data: unknown;
+  readonly gameService: FootballGameBridgeClient;
+  readonly identity: FootballIdentityLookupClient;
+  readonly log: MatchConcludedBridgeLogger;
+  readonly clock: () => number;
+}
+
+/**
+ * Drive the events ingest path from the same `/fixtures?id=N` envelope used
+ * by the fixture-detail status/score branch. The api-football live payload
+ * carries the accumulating events array under `response[0].events`; lifting
+ * the slice and re-wrapping it as `{response: events}` lets us hand it
+ * straight to `apiFootballIngestOccurrencesRequestFromEvents` without
+ * widening the adapter contract.
+ *
+ * Skips silently when the embedded events array is missing or empty (e.g.
+ * pre-kickoff fixtures, or fixtures the provider has not yet annotated).
+ * Uses the gameId already resolved by the fixture-detail branch — no extra
+ * lookupGameByFixture call.
+ */
+const ingestEventsFromFixtureDetail = async (
+  input: FixtureDetailEventIngestInput
+): Promise<void> => {
+  const events = decodeEventsFromFixtureDetail(input.data);
+  if (events.length === 0) {
+    // Quiet skip on pre-kickoff / no-event-yet fixtures. We log only once
+    // per tick at the outer detail branch; an explicit `bridge_events_*`
+    // line here would just add noise for the steady state.
+    return;
+  }
+  const eventsEnvelope = { response: events };
+  const entityResolutions = await resolveEventEntities(
+    input.identity,
+    input.providerId,
+    events,
+    input.log,
+    {
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.providerFixtureId,
+      providerStatus: input.providerStatus,
+    }
+  );
+  const request = apiFootballIngestOccurrencesRequestFromEvents({
+    provider: input.providerId,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+    resourceId: input.providerFixtureId,
+    gameId: input.gameId,
+    envelope: eventsEnvelope,
+    entityResolutions,
+    fetchedAtMs: input.clock(),
+  });
+  if (request.occurrences.length === 0) {
+    input.log({
+      event: 'bridge_events_missing',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.providerFixtureId,
+      providerId: input.providerId,
+      gameId: input.gameId,
+      reason: 'no_normalized_occurrences',
+    });
+    return;
+  }
+  try {
+    const response = await input.gameService.ingestGameOccurrences(request);
+    input.log({
+      event: 'bridge_events_ingested',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.providerFixtureId,
+      providerStatus: input.providerStatus,
+      providerId: input.providerId,
+      gameId: input.gameId,
+      acceptedCount: response.acceptedCount,
+      updatedCount: response.updatedCount,
+    });
+  } catch (err) {
+    input.log({
+      event: 'bridge_events_ingest_error',
+      workload: input.workload,
+      resourceId: input.resourceId,
+      providerFixtureId: input.providerFixtureId,
+      providerStatus: input.providerStatus,
+      providerId: input.providerId,
+      gameId: input.gameId,
       message: err instanceof Error ? err.message : String(err),
     });
   }
@@ -991,6 +1116,39 @@ const decodeFixtureResponses = (data: unknown): readonly ApiFootballFixtureRespo
 const decodeEventEnvelope = (data: unknown): readonly ApiFootballEventResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballEventResponse => {
+    if (!isRecord(item) || !isRecord(item.time) || !isRecord(item.team)) {
+      return false;
+    }
+    return typeof item.type === 'string' && typeof item.detail === 'string';
+  });
+};
+
+/**
+ * Lift the embedded `events[]` slice from a `/fixtures?id=N` (fixture
+ * detail) envelope. The slice has the same per-event shape as
+ * `/fixtures/events?fixture=N` (`{time, team, player, assist, type,
+ * detail}`), but lives nested under `response[0].events[]` rather than at
+ * the top level. Returns an empty array when the envelope is malformed or
+ * the events slice is missing — the live caller treats that as a quiet
+ * "no events yet" rather than an error.
+ */
+const decodeEventsFromFixtureDetail = (data: unknown): readonly ApiFootballEventResponse[] => {
+  if (!isRecord(data)) {
+    return [];
+  }
+  const list = (data as { response?: unknown }).response;
+  if (!Array.isArray(list) || list.length === 0) {
+    return [];
+  }
+  const first = list[0];
+  if (!isRecord(first)) {
+    return [];
+  }
+  const events = (first as { events?: unknown }).events;
+  if (!Array.isArray(events)) {
+    return [];
+  }
+  return events.filter((item): item is ApiFootballEventResponse => {
     if (!isRecord(item) || !isRecord(item.time) || !isRecord(item.team)) {
       return false;
     }
