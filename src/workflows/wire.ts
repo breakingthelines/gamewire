@@ -26,6 +26,8 @@ import type {
   HourlyMatchdayWireResult,
   SeasonBackfillOutput,
   SeasonBackfillWireResult,
+  SquadSweepOutput,
+  SquadSweepWireResult,
   SweepMissingPayloadsOutput,
   SweepMissingPayloadsWireResult,
   WebhookCompletedOutput,
@@ -91,6 +93,27 @@ export const seasonBackfillToWire = (output: SeasonBackfillOutput): SeasonBackfi
   targets: output.targets,
   degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
+});
+
+/**
+ * Squad-sweep output drops the per-team `teams` list at the wire boundary.
+ * A full Phase A sweep (~120 teams) produces one entry per team; that list
+ * is too large for a single NDJSON line without risking kernel-side scanner
+ * buffer overflow. Per-team detail remains available via the streamed logger
+ * events (each line is bounded in size).
+ */
+export const squadSweepToWire = (output: SquadSweepOutput): SquadSweepWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  status: output.status,
+  teamsDiscovered: output.teamsDiscovered,
+  teamsOk: output.teamsOk,
+  teamsFailed: output.teamsFailed,
+  teamsSkipped: output.teamsSkipped,
+  callsUsed: output.callsUsed,
+  degradeFlags: output.degradeFlags,
+  finalQuota: output.finalQuota,
+  dryRun: output.dryRun,
 });
 
 /**

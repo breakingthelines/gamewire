@@ -8,6 +8,8 @@ import type { GamewireWorkerConfig } from './config.js';
 import { config as defaultConfig } from './config.js';
 import { apiFootballFixturePath, apiFootballStatusPath } from '../adapters/api-football/index.js';
 import type { ApiFootballIngestionLoop } from './ingestion.js';
+import type { FootballGameIngestClient, FootballGameMissingPayloadsClient } from './clients/game-service.js';
+import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   fetchApiFootballJson,
   summarizeProviderJson,
@@ -22,6 +24,8 @@ import {
   PHASE_A_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
+  squadSweepToWire,
+  squadSweepWorkflow,
   sweepMissingPayloadsToWire,
   sweepMissingPayloadsWorkflow,
   webhookCompletedToWire,
@@ -31,13 +35,13 @@ import {
   type HourlyMatchdayInput,
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
+  type SquadSweepInput,
   type SweepMissingPayloadKind,
   type SweepMissingPayloadsInput,
   type WebhookCompletedInput,
   type WorkflowDeps,
   type WorkflowLogger,
 } from '../workflows/index.js';
-import type { FootballGameMissingPayloadsClient } from './clients/game-service.js';
 
 export interface WorkerHttpRequest {
   method: string;
@@ -143,7 +147,8 @@ type WorkflowName =
   | 'hourly-matchday'
   | 'webhook-completed'
   | 'season-backfill'
-  | 'sweep-missing-payloads';
+  | 'sweep-missing-payloads'
+  | 'squad-sweep';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -254,6 +259,16 @@ export interface WorkerHttpHandlerOptions {
    */
   readonly gameServiceMissingPayloads?: FootballGameMissingPayloadsClient;
   /**
+   * Game-service ingest client used by the squad-sweep workflow to push
+   * standing squad rosters via IngestFootballSquadLists.
+   */
+  readonly gameService?: FootballGameIngestClient;
+  /**
+   * Identity-server client used by the squad-sweep workflow to resolve
+   * provider team ids to canonical btl_football_team_* ids.
+   */
+  readonly identity?: FootballIdentityLookupClient;
+  /**
    * btl-auth-context verifier built at boot via
    * {@link createAuthContextVerifier}. Required for `/workflows/*`
    * endpoints; other endpoints (health, metrics, smoke) ignore it.
@@ -356,6 +371,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/sweep-missing-payloads') {
     return 'sweep-missing-payloads';
   }
+  if (pathname === '/workflows/squad-sweep') {
+    return 'squad-sweep';
+  }
   return 'daily-anchor';
 };
 
@@ -368,6 +386,8 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
     competitions: options.competitions ?? PHASE_A_COMPETITIONS,
     logger: options.workflowLogger,
     gameServiceMissingPayloads: options.gameServiceMissingPayloads,
+    gameService: options.gameService,
+    identity: options.identity,
   };
 };
 
@@ -525,6 +545,19 @@ const parseSweepMissingPayloadsInput = (body: unknown): SweepMissingPayloadsInpu
   };
 };
 
+const parseSquadSweepInput = (body: unknown): SquadSweepInput => {
+  if (!isRecord(body)) {
+    return {};
+  }
+  return {
+    teamIds: asStringList(body.teamIds),
+    maxTeamsPerRun: asNumber(body.maxTeamsPerRun),
+    intercallDelayMs: asNumber(body.intercallDelayMs),
+    dryRun: asBoolean(body.dryRun),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -601,7 +634,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/hourly-matchday' ||
       request.pathname === '/workflows/webhook-completed' ||
       request.pathname === '/workflows/season-backfill' ||
-      request.pathname === '/workflows/sweep-missing-payloads')
+      request.pathname === '/workflows/sweep-missing-payloads' ||
+      request.pathname === '/workflows/squad-sweep')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -682,6 +716,18 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => seasonBackfillWorkflow(input, { ...baseDeps, logger }),
           toWire: seasonBackfillToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/squad-sweep') {
+      const input = parseSquadSweepInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => squadSweepWorkflow(input, { ...baseDeps, logger }),
+          toWire: squadSweepToWire,
         })
       );
     }
