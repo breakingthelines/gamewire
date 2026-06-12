@@ -20,7 +20,20 @@
  * burn the singleflight key collisions and double the call budget
  * with no schedule benefit at this cadence.
  */
-import { apiFootballFixturePath } from '../adapters/api-football/index.js';
+import { create } from '@bufbuild/protobuf';
+
+import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
+import { ResolveRequestSchema } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
+
+import {
+  API_FOOTBALL_PROVIDER_ID,
+  apiFootballFixturePath,
+  apiFootballIngestStandingsRequestFromStandings,
+  apiFootballSeasonProviderId,
+  type ApiFootballEntityResolutionMap,
+  type ApiFootballResolvedEntity,
+} from '../adapters/api-football/index.js';
+import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { isMatchdayWindow } from './competitions.js';
@@ -58,7 +71,7 @@ const TEAM_METADATA_RESOURCE = (competition: CompetitionEntry, teamId: number): 
 const TEAM_METADATA_PATH = (teamId: number): string => `/teams?id=${teamId}`;
 
 const TEAM_METADATA_WORKLOAD: IngestionWorkload = 'team-metadata';
-const STANDINGS_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
+const STANDINGS_WORKLOAD: IngestionWorkload = 'competition-standings';
 const FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
 const LINEUPS_WORKLOAD: IngestionWorkload = 'lineups-post-confirm';
@@ -236,8 +249,15 @@ const sweepCompetition = async (
     );
   }
 
-  // Step 2: standings — same workload key reuses the cache TTL but a
-  // different resource id + path so the cache doesn't collide.
+  // Step 2: standings. The `/standings` payload is NOT a fixture list, so it
+  // is fetched under its own `competition-standings` workload (outside the
+  // match-concluded bridge's fixture-scoped set) and ingested inline here —
+  // mirroring how `squadSweepWorkflow` maps + pushes standing rosters directly
+  // to game-service. The fetch still flows through the ingestion loop's
+  // cache/quota/HTTP machinery (gamewire-worker stays the only outbound-HTTP
+  // component); only the canonical mapping + `IngestFootballStandings` ingest
+  // happen in the workflow. This is the table that backs the First Touch club
+  // picker (`GetCompetitionStandings` reads `football_standings`).
   const standingsResource = `standings-${competition.apiFootballLeagueId}-${competition.season}`;
   const standingsResult = await deps.ingestion.fetchWorkload({
     workload: STANDINGS_WORKLOAD,
@@ -245,6 +265,12 @@ const sweepCompetition = async (
     path: STANDINGS_PATH(competition),
   });
   mode = accumulate(standingsResult, STANDINGS_WORKLOAD, standingsResource, mode);
+  await ingestStandings({
+    competition,
+    resourceId: standingsResource,
+    result: standingsResult,
+    deps,
+  });
 
   if (mode === 'abort') {
     return finalSweep(
@@ -400,6 +426,198 @@ const extractFixtureItems = (data: unknown): readonly FixtureListItem[] => {
     });
   }
   return items;
+};
+
+interface StandingsIngestInput {
+  readonly competition: CompetitionEntry;
+  readonly resourceId: string;
+  readonly result: IngestionFetchResult;
+  readonly deps: WorkflowDeps;
+}
+
+/**
+ * Resolve + map + ingest a `/standings` envelope into game-service's
+ * `football_standings` table via `IngestFootballStandings`.
+ *
+ * Self-contained (does not route through the match-concluded bridge) because a
+ * standings payload is not fixture-scoped: the competition, season, and each
+ * team are resolved to canonical ids through identity here, exactly as the
+ * fixture-list bridge and the squad sweep resolve their entities. The canonical
+ * `competition_id` is what makes the row discoverable — `GetCompetitionStandings`
+ * filters `football_standings` by competition id alone — so an unresolved
+ * competition would write a row the picker can never read. Team ids fall back to
+ * provider-storage ids (game-service re-resolves at read time); the season id
+ * falls back to the same provider-storage format the games carry.
+ *
+ * No-ops (with a structured log) when the fetch produced no usable data, when
+ * game-service is not wired, or when the envelope maps to zero tables. Never
+ * throws: a standings failure must not poison the rest of the competition sweep.
+ */
+const ingestStandings = async (input: StandingsIngestInput): Promise<void> => {
+  const { competition, resourceId, result, deps } = input;
+  const log = deps.logger ?? (() => undefined);
+
+  if (result.status !== 'fetched' && result.status !== 'cached') {
+    return;
+  }
+  if (result.data === undefined) {
+    return;
+  }
+  if (!deps.gameService) {
+    log({
+      event: 'daily_anchor.standings_skipped',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: 'game_service_not_wired',
+    });
+    return;
+  }
+
+  const entityResolutions = await resolveStandingsEntities(deps.identity, competition, result.data);
+  const request = apiFootballIngestStandingsRequestFromStandings({
+    replayId: `live:${STANDINGS_WORKLOAD}:${resourceId}`,
+    resourceId,
+    envelope: result.data,
+    entityResolutions,
+    fetchedAtMs: Date.now(),
+  });
+  if (request.standings.length === 0) {
+    log({
+      event: 'daily_anchor.standings_empty',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: 'no_mapped_standings',
+    });
+    return;
+  }
+  try {
+    const response = await deps.gameService.ingestFootballStandings(request);
+    log({
+      event: 'daily_anchor.standings_ingested',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: `accepted=${response.acceptedCount} updated=${response.updatedCount} tables=${request.standings.length}`,
+    });
+  } catch (err) {
+    log({
+      event: 'daily_anchor.standings_ingest_error',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+/**
+ * Build an {@link ApiFootballEntityResolutionMap} for a `/standings` envelope:
+ * the competition + season are resolved once from the catalogue entry's
+ * provider league id/season, and every team appearing in any standings group is
+ * resolved by its provider team id. `resolve` short-circuits per provider id, so
+ * one call per distinct competition / season / team is issued regardless of the
+ * group count. Identity misses leave the bucket empty and the mapper falls back
+ * to provider-storage ids (game-service re-resolves at read time). Returns an
+ * empty map when no identity client is wired.
+ */
+const resolveStandingsEntities = async (
+  identity: FootballIdentityLookupClient | undefined,
+  competition: CompetitionEntry,
+  data: unknown
+): Promise<ApiFootballEntityResolutionMap> => {
+  const competitions: Record<string, ApiFootballResolvedEntity | undefined> = {};
+  const seasons: Record<string, ApiFootballResolvedEntity | undefined> = {};
+  const teams: Record<string, ApiFootballResolvedEntity | undefined> = {};
+  if (!identity) {
+    return { competitions, seasons, teams, players: {} };
+  }
+
+  const leagueId = String(competition.apiFootballLeagueId);
+  const competitionResolved = await resolveOne(identity, EntityType.COMPETITION, leagueId);
+  if (competitionResolved) {
+    competitions[leagueId] = competitionResolved;
+  }
+
+  const seasonProviderId = apiFootballSeasonProviderId(
+    competition.apiFootballLeagueId,
+    competition.season
+  );
+  const seasonResolved = await resolveOne(identity, EntityType.SEASON, seasonProviderId);
+  if (seasonResolved) {
+    seasons[seasonProviderId] = seasonResolved;
+  }
+
+  for (const providerTeamId of standingsTeamProviderIds(data)) {
+    if (teams[providerTeamId] !== undefined) {
+      continue;
+    }
+    const resolved = await resolveOne(identity, EntityType.TEAM, providerTeamId);
+    teams[providerTeamId] = resolved;
+  }
+
+  return { competitions, seasons, teams, players: {} };
+};
+
+const resolveOne = async (
+  identity: FootballIdentityLookupClient,
+  entityType: EntityType,
+  providerId: string
+): Promise<ApiFootballResolvedEntity | undefined> => {
+  if (providerId === '') {
+    return undefined;
+  }
+  try {
+    const response = await identity.resolve(
+      create(ResolveRequestSchema, {
+        entityType,
+        provider: API_FOOTBALL_PROVIDER_ID,
+        providerId,
+      })
+    );
+    if (response.found && response.entityId) {
+      return { entityId: response.entityId };
+    }
+  } catch {
+    // Identity outage / miss: leave unresolved so the mapper falls back to a
+    // provider-storage id. A standings ingest must not be blocked by identity.
+  }
+  return undefined;
+};
+
+/**
+ * Collect the distinct provider team ids appearing across every group of a
+ * `/standings` envelope (`response[].league.standings[][].team.id`).
+ */
+const standingsTeamProviderIds = (data: unknown): readonly string[] => {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return [];
+  }
+  const ids = new Set<string>();
+  for (const item of data.response) {
+    if (!isRecord(item) || !isRecord(item.league)) {
+      continue;
+    }
+    const groups = (item.league as { standings?: unknown }).standings;
+    if (!Array.isArray(groups)) {
+      continue;
+    }
+    for (const group of groups) {
+      if (!Array.isArray(group)) {
+        continue;
+      }
+      for (const entry of group) {
+        if (!isRecord(entry) || !isRecord(entry.team)) {
+          continue;
+        }
+        const id = (entry.team as { id?: unknown }).id;
+        if ((typeof id === 'number' && Number.isFinite(id)) || typeof id === 'string') {
+          const str = String(id).trim();
+          if (str !== '' && str !== '0') {
+            ids.add(str);
+          }
+        }
+      }
+    }
+  }
+  return [...ids];
 };
 
 /**

@@ -17,6 +17,7 @@ import {
   LookupGameByFixtureResponseSchema,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
+  type IngestFootballStandingsRequest,
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
   type IngestPlayerMatchStatsRequest,
@@ -338,6 +339,17 @@ const fakeGameService = (options: {
       squadListCalls.push(request);
       return create(IngestBatchResponseSchema, {
         acceptedCount: request.squadLists.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
+    async ingestFootballStandings(request: IngestFootballStandingsRequest) {
+      // The match-concluded bridge does not ingest standings (the daily-anchor
+      // workflow owns that path). The stub keeps the FootballGameBridgeClient
+      // contract type-checking while the bridge stays focused on
+      // fixture/event/lineup ingest.
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.standings.length,
         updatedCount: 0,
         replayId: request.metadata?.replayId ?? '',
       });

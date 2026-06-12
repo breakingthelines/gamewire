@@ -80,6 +80,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'team-match-stats': 6 * 60 * 60,
       'player-match-stats': 6 * 60 * 60,
       'squad-list-fallback': 24 * 60 * 60,
+      'competition-standings': 6 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
     });
@@ -89,6 +90,10 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     // scheduling them so the cron cadence is unchanged.
     expect(INGESTION_TICK_INTERVAL_MS['team-match-stats']).toBe(0);
     expect(INGESTION_TICK_INTERVAL_MS['player-match-stats']).toBe(0);
+    // Standings are swept by daily-anchor (and one-shot triggers), never on the
+    // steady-state cron — a 0 interval keeps `enqueueTick` from scheduling a
+    // standalone standings poll.
+    expect(INGESTION_TICK_INTERVAL_MS['competition-standings']).toBe(0);
   });
 
   it('fetches once on miss and caches under provider:workload:resource', async () => {

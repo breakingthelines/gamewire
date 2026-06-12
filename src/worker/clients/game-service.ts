@@ -105,6 +105,7 @@ export interface FootballGameIngestClient {
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
   ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
+  ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
 }
@@ -170,6 +171,9 @@ export const createFetchFootballGameLookupClient = (
       request: IngestFootballSquadListsRequest
     ): Promise<IngestBatchResponse> {
       return client.ingestFootballSquadLists(request, { timeoutMs });
+    },
+    ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse> {
+      return client.ingestFootballStandings(request, { timeoutMs });
     },
     ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse> {
       return client.ingestTeamMatchStats(request, { timeoutMs });
