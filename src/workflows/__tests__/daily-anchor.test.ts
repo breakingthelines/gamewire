@@ -250,4 +250,131 @@ describe('dailyAnchorWorkflow', () => {
     expect(logs[0]?.event).toBe('daily_anchor.started');
     expect(logs.at(-1)?.event).toBe('daily_anchor.finished');
   });
+
+  it('resolves + ingests standings via game-service on the standings step', async () => {
+    const standingsEnvelope = {
+      response: [
+        {
+          league: {
+            id: 999,
+            name: 'Competition A',
+            season: 2025,
+            standings: [
+              [
+                {
+                  rank: 1,
+                  team: { id: 42, name: 'Club Forty-Two' },
+                  points: 20,
+                  goalsDiff: 10,
+                  all: { played: 8, win: 6, draw: 2, lose: 0, goals: { for: 18, against: 8 } },
+                },
+              ],
+            ],
+          },
+        },
+      ],
+    };
+
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
+        if (options.workload === 'competition-standings') {
+          return buildResult(options.workload, options.resourceId, { data: standingsEnvelope });
+        }
+        return buildResult(options.workload, options.resourceId, { data: { response: [] } });
+      }),
+    };
+
+    const ingestFootballStandings = vi.fn(async (_request: unknown) => ({
+      acceptedCount: 1,
+      updatedCount: 0,
+      replayId: 'r',
+    }));
+    const resolve = vi.fn(async (req: { entityType: number; providerId: string }) => {
+      // Resolve the competition (league 999) and team 42 to canonical ids; the
+      // season stays unresolved to exercise the provider-storage fallback.
+      if (req.providerId === '999') {
+        return { found: true, entityId: 'btl_football_competition_l999' };
+      }
+      if (req.providerId === '42') {
+        return { found: true, entityId: 'btl_football_team_t42' };
+      }
+      return { found: false, entityId: '' };
+    });
+
+    const logs: WorkflowLogEntry[] = [];
+    const deps = buildDeps(ingestion, [COMPETITION_A], {
+      logger: (entry) => logs.push(entry),
+      gameService: {
+        ingestFootballStandings,
+      } as unknown as WorkflowDeps['gameService'],
+      identity: { resolve } as unknown as WorkflowDeps['identity'],
+    });
+
+    await dailyAnchorWorkflow({}, deps);
+
+    // The standings step fetched under the dedicated workload (own resource id
+    // + path), NOT the fixtures-next-7d bridge workload.
+    const standingsFetchArgs = ingestion.fetchWorkload.mock.calls
+      .map((args) => args[0] as IngestionFetchOptions)
+      .find((opts) => opts.workload === 'competition-standings');
+    expect(standingsFetchArgs?.resourceId).toBe('standings-999-2025');
+    expect(standingsFetchArgs?.path).toContain('/standings?league=999');
+
+    // Standings were resolved + ingested exactly once.
+    expect(ingestFootballStandings).toHaveBeenCalledTimes(1);
+    const request = ingestFootballStandings.mock.calls[0]?.[0] as {
+      standings: ReadonlyArray<{
+        competitionId: string;
+        seasonId: string;
+        entries: ReadonlyArray<{ teamId: string; rank: number }>;
+      }>;
+    };
+    expect(request.standings).toHaveLength(1);
+    expect(request.standings[0]!.competitionId).toBe('btl_football_competition_l999');
+    // Season unresolved → provider-storage fallback.
+    expect(request.standings[0]!.seasonId).toBe('provider:api-football:season:999:2025');
+    expect(request.standings[0]!.entries[0]!.teamId).toBe('btl_football_team_t42');
+
+    expect(logs.some((l) => l.event === 'daily_anchor.standings_ingested')).toBe(true);
+  });
+
+  it('skips standings ingest with a structured log when game-service is not wired', async () => {
+    const standingsEnvelope = {
+      response: [
+        {
+          league: {
+            id: 999,
+            name: 'Competition A',
+            season: 2025,
+            standings: [
+              [
+                {
+                  rank: 1,
+                  team: { id: 42, name: 'C42' },
+                  points: 1,
+                  goalsDiff: 0,
+                  all: { played: 1, win: 0, draw: 1, lose: 0, goals: { for: 0, against: 0 } },
+                },
+              ],
+            ],
+          },
+        },
+      ],
+    };
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) =>
+        options.workload === 'competition-standings'
+          ? buildResult(options.workload, options.resourceId, { data: standingsEnvelope })
+          : buildResult(options.workload, options.resourceId, { data: { response: [] } })
+      ),
+    };
+    const logs: WorkflowLogEntry[] = [];
+    // No gameService in deps → standings ingest must be skipped, not throw.
+    const deps = buildDeps(ingestion, [COMPETITION_A], {
+      logger: (entry) => logs.push(entry),
+    });
+    await dailyAnchorWorkflow({}, deps);
+    expect(logs.some((l) => l.event === 'daily_anchor.standings_skipped')).toBe(true);
+    expect(logs.at(-1)?.event).toBe('daily_anchor.finished');
+  });
 });

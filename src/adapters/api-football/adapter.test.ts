@@ -2,6 +2,7 @@ import { toBinary } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 
 import {
+  IngestFootballStandingsRequestSchema,
   IngestPlayerMatchStatsRequestSchema,
   IngestTeamMatchStatsRequestSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
@@ -23,8 +24,10 @@ import {
   apiFootballIngestOccurrencesRequestFromEvents,
   apiFootballIngestPlayerMatchStatsRequestFromPlayers,
   apiFootballIngestSquadListRequestFromSquads,
+  apiFootballIngestStandingsRequestFromStandings,
   apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballLivePath,
+  apiFootballStandingPath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
   apiFootballReplayOccurrencesRequest,
@@ -803,5 +806,209 @@ describe('API-Football match-stats mapping', () => {
   it('derives the provider stat paths', () => {
     expect(apiFootballFixtureStatisticsPath('1917')).toBe('/fixtures/statistics?fixture=1917');
     expect(apiFootballFixturePlayersPath('1917')).toBe('/fixtures/players?fixture=1917');
+  });
+});
+
+describe('API-Football standings mapping', () => {
+  // A realistic `/standings` envelope: one league response whose single group
+  // carries two ranked rows plus a malformed row (no team id) that must be
+  // dropped.
+  const leagueStandingsEnvelope = () => ({
+    response: [
+      {
+        league: {
+          id: 39,
+          name: 'Premier League',
+          season: 2025,
+          standings: [
+            [
+              {
+                rank: 1,
+                team: { id: 42, name: 'Arsenal' },
+                points: 23,
+                goalsDiff: 13,
+                all: { played: 10, win: 7, draw: 2, lose: 1, goals: { for: 22, against: 9 } },
+              },
+              {
+                rank: 2,
+                team: { id: 49, name: 'Chelsea' },
+                points: 18,
+                goalsDiff: 6,
+                all: { played: 10, win: 5, draw: 3, lose: 2, goals: { for: 18, against: 12 } },
+              },
+              {
+                rank: 3,
+                team: { id: 0, name: 'Malformed' },
+                points: 0,
+                goalsDiff: 0,
+                all: { played: 0, win: 0, draw: 0, lose: 0, goals: { for: 0, against: 0 } },
+              },
+            ],
+          ],
+        },
+      },
+    ],
+  });
+
+  it('maps a /standings envelope to canonical ids and flattens entries', () => {
+    const request = apiFootballIngestStandingsRequestFromStandings({
+      replayId: 'live:competition-standings:standings-39-2025',
+      resourceId: 'standings-39-2025',
+      envelope: leagueStandingsEnvelope(),
+      fetchedAtMs: 1_700_000_000_000,
+      entityResolutions: {
+        competitions: { '39': { entityId: 'btl_football_competition_lb3d230cb' } },
+        seasons: { '39:2025': { entityId: 'btl_football_season_s39' } },
+        teams: {
+          '42': { entityId: 'btl_football_team_t8596499a', label: 'Arsenal' },
+          // team 49 deliberately unresolved → provider-storage fallback
+        },
+      },
+    });
+
+    expect(request.standings).toHaveLength(1);
+    const table = request.standings[0]!;
+    expect(table.competitionId).toBe('btl_football_competition_lb3d230cb');
+    expect(table.seasonId).toBe('btl_football_season_s39');
+    // The malformed (team id 0) row is dropped; the two valid rows remain.
+    expect(table.entries).toHaveLength(2);
+
+    const arsenal = table.entries[0]!;
+    expect(arsenal.teamId).toBe('btl_football_team_t8596499a');
+    expect(arsenal.teamName).toBe('Arsenal');
+    expect(arsenal.rank).toBe(1);
+    expect(arsenal.played).toBe(10);
+    expect(arsenal.won).toBe(7);
+    expect(arsenal.drawn).toBe(2);
+    expect(arsenal.lost).toBe(1);
+    expect(arsenal.goalsFor).toBe(22);
+    expect(arsenal.goalsAgainst).toBe(9);
+    expect(arsenal.goalDifference).toBe(13);
+    expect(arsenal.points).toBe(23);
+
+    // Unresolved team falls back to the provider-storage id; game-service
+    // re-resolves it at read time.
+    const chelsea = table.entries[1]!;
+    expect(chelsea.teamId).toBe('provider:api-football:team:49');
+    expect(chelsea.teamName).toBe('Chelsea');
+  });
+
+  it('falls back to provider-storage ids when the competition/season are unresolved', () => {
+    const request = apiFootballIngestStandingsRequestFromStandings({
+      replayId: 'replay',
+      resourceId: 'standings-39-2025',
+      envelope: leagueStandingsEnvelope(),
+    });
+    const table = request.standings[0]!;
+    // No resolution map → competition + season both fall back to provider
+    // storage ids so the row is still keyed deterministically + idempotently.
+    expect(table.competitionId).toBe('provider:api-football:competition:39');
+    expect(table.seasonId).toBe('provider:api-football:season:39:2025');
+  });
+
+  it('flattens multi-group (tournament) standings into a single table', () => {
+    const request = apiFootballIngestStandingsRequestFromStandings({
+      replayId: 'replay',
+      resourceId: 'standings-1-2026',
+      envelope: {
+        response: [
+          {
+            league: {
+              id: 1,
+              name: 'World Cup',
+              season: 2026,
+              standings: [
+                [
+                  {
+                    rank: 1,
+                    team: { id: 6, name: 'Brazil' },
+                    points: 9,
+                    goalsDiff: 5,
+                    all: { played: 3, win: 3, draw: 0, lose: 0, goals: { for: 7, against: 2 } },
+                  },
+                ],
+                [
+                  {
+                    rank: 1,
+                    team: { id: 2, name: 'France' },
+                    points: 7,
+                    goalsDiff: 4,
+                    all: { played: 3, win: 2, draw: 1, lose: 0, goals: { for: 6, against: 2 } },
+                  },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(request.standings).toHaveLength(1);
+    // Both groups' entries are flattened into one table.
+    expect(request.standings[0]!.entries).toHaveLength(2);
+  });
+
+  it('drops a league whose entries are all malformed', () => {
+    const request = apiFootballIngestStandingsRequestFromStandings({
+      replayId: 'replay',
+      resourceId: 'standings-39-2025',
+      envelope: {
+        response: [
+          {
+            league: {
+              id: 39,
+              name: 'Premier League',
+              season: 2025,
+              standings: [
+                [
+                  {
+                    rank: 1,
+                    team: { id: 0, name: 'Bad' },
+                    points: 0,
+                    goalsDiff: 0,
+                    all: { played: 0, win: 0, draw: 0, lose: 0, goals: { for: 0, against: 0 } },
+                  },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(request.standings).toHaveLength(0);
+  });
+
+  it('returns an empty standings list for a malformed envelope', () => {
+    expect(
+      apiFootballIngestStandingsRequestFromStandings({
+        replayId: 'replay',
+        resourceId: 'standings-39-2025',
+        envelope: { response: 'not-an-array' },
+      }).standings
+    ).toHaveLength(0);
+    expect(
+      apiFootballIngestStandingsRequestFromStandings({
+        replayId: 'replay',
+        resourceId: 'standings-39-2025',
+        envelope: undefined,
+      }).standings
+    ).toHaveLength(0);
+  });
+
+  it('is deterministic + idempotent across repeated mapping', () => {
+    const args = {
+      replayId: 'live:competition-standings:standings-39-2025',
+      resourceId: 'standings-39-2025',
+      envelope: leagueStandingsEnvelope(),
+      fetchedAtMs: 1_700_000_000_000,
+    } as const;
+    const a = apiFootballIngestStandingsRequestFromStandings(args);
+    const b = apiFootballIngestStandingsRequestFromStandings(args);
+    expect(toBinary(IngestFootballStandingsRequestSchema, b)).toEqual(
+      toBinary(IngestFootballStandingsRequestSchema, a)
+    );
+  });
+
+  it('derives the provider standings path', () => {
+    expect(apiFootballStandingPath(39, 2025)).toBe('/standings?league=39&season=2025');
   });
 });

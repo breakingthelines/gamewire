@@ -83,6 +83,8 @@ import {
   type ApiFootballPlayersResponse,
   type ApiFootballSquadPlayer,
   type ApiFootballSquadResponse,
+  type ApiFootballStandingEntry,
+  type ApiFootballStandingResponse,
   type ApiFootballStatisticEntry,
   type ApiFootballStatisticsResponse,
   type ApiFootballTeamRef,
@@ -165,6 +167,13 @@ export function apiFootballLineupPath(fixtureId: string): string {
 
 export function apiFootballSquadPath(teamId: string): string {
   return `/players/squads?team=${encodeURIComponent(teamId)}`;
+}
+
+export function apiFootballStandingPath(
+  leagueId: string | number,
+  season: string | number
+): string {
+  return `/standings?league=${encodeURIComponent(String(leagueId))}&season=${encodeURIComponent(String(season))}`;
 }
 
 export function apiFootballEventPath(fixtureId: string): string {
@@ -586,6 +595,154 @@ export function apiFootballReplayStandingsRequest(options: {
       }),
     ],
   });
+}
+
+/**
+ * Map an API-Football `/standings?league=<id>&season=<yr>` envelope to a
+ * canonical {@link IngestFootballStandingsRequest}.
+ *
+ * The provider shape is:
+ *   { response: [ { league: { id, name, season,
+ *                             standings: [ [ <entry>, ... ], ... ] } } ] }
+ * where `league.standings` is an array of GROUPS, each a ranked array of
+ * entries. Domestic leagues (Premier League, Championship, Eredivisie, …)
+ * return a single group; group-stage tournaments (e.g. the World Cup group
+ * phase) return one group per group letter.
+ *
+ * One {@link FootballStandings} is emitted per `response[]` league entry, with
+ * every group's entries flattened into a single ranked list. The competition
+ * and season ids are taken from the resolution map (the caller resolves the
+ * provider league id → canonical `btl_football_competition_*` and the season
+ * via identity, exactly as the fixture-list bridge does); when identity has no
+ * match they fall back to the same provider-storage id format used elsewhere so
+ * the row is still keyed deterministically and is idempotent on re-run. The
+ * read path (`GetCompetitionStandings`) filters by `competition_id` only, so a
+ * canonical competition id is what makes the standings discoverable — this is
+ * why competition resolution is mandatory for the table to render, while the
+ * season id only needs to be stable.
+ *
+ * Each {@link FootballStandingEntry}'s `team_id` is the canonical
+ * `btl_football_team_*` id when identity resolved the provider team, falling
+ * back to the provider-storage id otherwise (game-service re-resolves straggler
+ * provider ids at read time). Entries missing a provider team id are dropped.
+ */
+export function apiFootballIngestStandingsRequestFromStandings(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly envelope: ApiFootballEnvelope<readonly ApiFootballStandingResponse[]> | unknown;
+  readonly entityResolutions?: ApiFootballEntityResolutionMap;
+  readonly fetchedAtMs?: number;
+}): IngestFootballStandingsRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const fetchedAtMs = options.fetchedAtMs ?? Date.now();
+  const updatedAt = create(TimestampSchema, timestampFromMs(fetchedAtMs));
+
+  const standings = apiFootballStandingsFromEnvelope(options.envelope)
+    .map((item) => {
+      const league = item.league;
+      const competitionResolved = resolvedEntity(
+        'competition',
+        String(league.id),
+        league.name,
+        options.entityResolutions
+      );
+      const competitionId =
+        competitionResolved?.entityId ??
+        providerStorageId(providerId, 'competition', String(league.id));
+
+      const seasonProviderId = apiFootballSeasonProviderId(league.id, league.season);
+      const seasonResolved = resolvedEntity(
+        'season',
+        seasonProviderId,
+        `${league.season} ${league.name}`,
+        options.entityResolutions
+      );
+      const seasonId =
+        seasonResolved?.entityId ?? providerStorageId(providerId, 'season', seasonProviderId);
+
+      const entries = (league.standings ?? [])
+        .flat()
+        .map((entry) => standingEntryFromApiFootball(entry, providerId, options.entityResolutions))
+        .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+      if (entries.length === 0) {
+        return null;
+      }
+
+      return create(FootballStandingsSchema, {
+        competitionId,
+        seasonId,
+        entries,
+        updatedAt,
+      });
+    })
+    .filter((table): table is NonNullable<typeof table> => table !== null);
+
+  return create(IngestFootballStandingsRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'standings',
+      options.resourceId,
+      `provider://${providerId}/standings/${options.resourceId}`
+    ),
+    standings,
+  });
+}
+
+/**
+ * Map one API-Football standings row to a {@link FootballStandingEntry},
+ * resolving the team to its canonical id via the resolution map (provider
+ * storage id fallback). Returns null when the provider team id is missing so
+ * the caller drops the malformed row rather than minting an entry with no team.
+ */
+function standingEntryFromApiFootball(
+  entry: ApiFootballStandingEntry,
+  providerId: string,
+  entityResolutions: ApiFootballEntityResolutionMap | undefined
+) {
+  const providerTeamId = String(entry.team?.id ?? '').trim();
+  if (providerTeamId === '' || providerTeamId === '0') {
+    return null;
+  }
+  const resolved = resolvedEntity('team', providerTeamId, entry.team.name, entityResolutions);
+  const all = entry.all;
+  const goalsFor = all?.goals?.for ?? 0;
+  const goalsAgainst = all?.goals?.against ?? 0;
+  return create(FootballStandingEntrySchema, {
+    teamId: resolved?.entityId ?? providerStorageId(providerId, 'team', providerTeamId),
+    teamName: resolved?.label ?? entry.team.name,
+    rank: entry.rank ?? 0,
+    played: all?.played ?? 0,
+    won: all?.win ?? 0,
+    drawn: all?.draw ?? 0,
+    lost: all?.lose ?? 0,
+    goalsFor,
+    goalsAgainst,
+    goalDifference: entry.goalsDiff ?? goalsFor - goalsAgainst,
+    points: entry.points ?? 0,
+  });
+}
+
+function apiFootballStandingsFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballStandingResponse[]> | unknown
+): readonly ApiFootballStandingResponse[] {
+  if (!isRecord(envelope)) {
+    return [];
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  return response.filter(isApiFootballStandingResponse);
+}
+
+function isApiFootballStandingResponse(value: unknown): value is ApiFootballStandingResponse {
+  if (!isRecord(value) || !isRecord(value.league)) {
+    return false;
+  }
+  return Array.isArray((value.league as { standings?: unknown }).standings);
 }
 
 /**
