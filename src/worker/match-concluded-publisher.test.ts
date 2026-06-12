@@ -513,28 +513,33 @@ describe('createBunMatchConcludedStreamClient', () => {
     expect(trailing).toContain('game.match.concluded');
   });
 
-  it('encodes Uint8Array fields via Latin-1 binary-string round-trip (matches consumer)', async () => {
-    const calls: { command: string; args: string[] }[] = [];
+  it('passes binary fields to send as a raw Uint8Array (NOT latin1-stringified)', async () => {
+    // Regression guard: a JS string arg is sent UTF-8-encoded by Bun.redis,
+    // which inflates proto bytes >= 0x80 and makes the payload undecodable by
+    // the go-redis consumer (proto.Unmarshal "invalid wire-format data").
+    // The binary `data` field MUST be handed to send() as raw bytes so it
+    // round-trips byte-identically to the Go reader. This silently killed
+    // prediction settlement before the fix.
+    const calls: { command: string; args: (string | Uint8Array)[] }[] = [];
     const bun = {
-      async send(command: string, args: string[]): Promise<unknown> {
+      async send(command: string, args: (string | Uint8Array)[]): Promise<unknown> {
         calls.push({ command, args });
         return '1-0';
       },
     };
     const client = createBunMatchConcludedStreamClient(bun);
-    // Byte sequence with a high bit set to verify Latin-1 round-trip.
+    // Byte sequence with high bits set — the exact case latin1->UTF-8 broke.
     const bytes = new Uint8Array([0x00, 0xff, 0x7f, 0x80, 0x01]);
     await client.publish({ data: bytes }, { stream: 'x', maxLen: 1 });
     const dataIndex = calls[0].args.indexOf('data');
     expect(dataIndex).toBeGreaterThan(-1);
     const encoded = calls[0].args[dataIndex + 1];
-    expect(typeof encoded).toBe('string');
-    // Same algorithm consumer uses to decode.
-    const back = new Uint8Array(encoded.length);
-    for (let i = 0; i < encoded.length; i += 1) {
-      back[i] = encoded.charCodeAt(i) & 0xff;
-    }
-    expect(Array.from(back)).toEqual(Array.from(bytes));
+    // Raw bytes, not a string: the value handed to send() is the Uint8Array
+    // itself, preserving the exact byte sequence.
+    expect(encoded).toBeInstanceOf(Uint8Array);
+    expect(Array.from(encoded as Uint8Array)).toEqual(Array.from(bytes));
+    // String fields stay strings (only binary is passed as bytes).
+    expect(typeof calls[0].args[0]).toBe('string');
   });
 
   it('exports a uint8ArrayToBinaryString helper that matches the consumer implementation', () => {

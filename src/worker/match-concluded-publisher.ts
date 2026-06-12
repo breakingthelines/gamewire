@@ -288,7 +288,11 @@ export class InMemoryEmittedFixtureStore implements EmittedFixtureStore {
  * both — no need to construct a second Redis connection.
  */
 export interface BunRedisStreamPublisher {
-  send(command: string, args: string[]): Promise<unknown>;
+  // Bun.redis.send transmits a Uint8Array arg as a raw RESP bulk string
+  // (byte-for-byte). A JS string arg is sent UTF-8-encoded, which inflates
+  // binary proto bytes >= 0x80 — so binary payloads MUST be passed as
+  // Uint8Array, never latin1-stringified first.
+  send(command: string, args: (string | Uint8Array)[]): Promise<unknown>;
 }
 
 /**
@@ -358,19 +362,33 @@ export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamC
  * trimming approximate (matches the wire contract documented in the
  * sibling lane handoff).
  *
- * Field encoding matches the consumer's expectation: binary data is
- * sent as a Latin-1-encoded string because `Bun.redis.send()` round-
- * trips bytes that way in RESP2 mode.
+ * Field encoding: the binary `data` payload (proto bytes) is passed to
+ * `Bun.redis.send()` as a raw `Uint8Array`, which Bun transmits as a RESP
+ * bulk string byte-for-byte. We MUST NOT latin1-stringify it first: a JS
+ * string arg is sent UTF-8-encoded, so every proto byte >= 0x80 inflates to
+ * two bytes on the wire. The Go consumer (go-redis) then reads the raw,
+ * inflated bytes and proto.Unmarshal fails with "invalid wire-format data"
+ * — which silently killed prediction settlement (gamewire publishes here,
+ * game-service's settle consumer reads). A raw Uint8Array round-trips
+ * byte-identically across both the Bun writer and the go-redis reader.
  */
 export const createBunMatchConcludedStreamClient = (
   client: BunRedisStreamPublisher
 ): MatchConcludedStreamClient => ({
   backend: 'redis' as const,
   async publish(fields, options) {
-    const args: string[] = [options.stream, 'MAXLEN', '~', String(options.maxLen), '*'];
+    const args: (string | Uint8Array)[] = [
+      options.stream,
+      'MAXLEN',
+      '~',
+      String(options.maxLen),
+      '*',
+    ];
     for (const [key, value] of Object.entries(fields)) {
       args.push(key);
-      args.push(typeof value === 'string' ? value : uint8ArrayToBinaryString(value));
+      // String values stay strings; binary values (the proto `data` field)
+      // are passed as raw bytes so they are NOT UTF-8 inflated on the wire.
+      args.push(value);
     }
     const raw = await client.send('XADD', args);
     return typeof raw === 'string' ? raw : String(raw ?? '');

@@ -679,7 +679,11 @@ function outcomesToObject(
  * normalise this to {@link StreamEntry}.
  */
 export interface BunRedisLike {
-  send(command: string, args: string[]): Promise<unknown>;
+  // Bun.redis.send transmits a Uint8Array arg as a raw RESP bulk string
+  // (byte-for-byte). A JS string arg is sent UTF-8-encoded, which inflates
+  // binary proto bytes >= 0x80 — so binary payloads MUST be passed as
+  // Uint8Array, never latin1-stringified first (see the XADD note below).
+  send(command: string, args: (string | Uint8Array)[]): Promise<unknown>;
 }
 
 export const createBunRedisStreamClient = (client: BunRedisLike): RedisStreamClient => ({
@@ -721,10 +725,15 @@ export const createBunRedisStreamClient = (client: BunRedisLike): RedisStreamCli
   },
 
   async xAdd(stream, fields) {
-    const args: string[] = [stream, '*'];
+    // Binary values (proto `data`) are passed as raw bytes, NOT
+    // latin1-stringified: a JS string arg is sent UTF-8-encoded and inflates
+    // bytes >= 0x80, which makes the payload undecodable by the go-redis
+    // consumer (proto.Unmarshal "invalid wire-format data"). A raw
+    // Uint8Array round-trips byte-identically across Bun and go-redis.
+    const args: (string | Uint8Array)[] = [stream, '*'];
     for (const [key, value] of Object.entries(fields)) {
       args.push(key);
-      args.push(typeof value === 'string' ? value : uint8ArrayToBinaryString(value));
+      args.push(value);
     }
     const raw = await client.send('XADD', args);
     return typeof raw === 'string' ? raw : String(raw ?? '');
