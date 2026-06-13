@@ -518,6 +518,56 @@ describe('ApiFootballIngestionLoop.start', () => {
     stop();
   });
 
+  it('re-adopts in-play fixtures at boot even when runImmediately is false (restart resilience)', async () => {
+    // Resilience guard: `fixtureIds` is in-memory and rebuilt each restart by
+    // the hourly fixtures-next-7d discovery. With runImmediately=false the boot
+    // discovery was skipped, so after a deploy/crash the recurring 30s
+    // fixture-detail-live tick polled an EMPTY set and every in-play game froze
+    // for up to an hour. The boot discovery must run regardless of
+    // runImmediately so a re-adopted LIVE fixture is polled within one tick.
+    const fetchFn = buildFetchMock({
+      response: [{ fixture: { id: 1489370, status: { short: '2H' } }, teams: {} }],
+    });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    // Capture the scheduled callbacks so we can fire the recurring tick after
+    // the boot discovery has seeded the set.
+    const callbacks: Array<() => void> = [];
+    const schedule = vi.fn((cb: () => void) => {
+      callbacks.push(cb);
+      return 'h';
+    });
+    const cancel = vi.fn();
+    const stop = loop.start({
+      bootstrapFixtureIds: [],
+      runImmediately: false,
+      intervals: { 'fixtures-next-7d': 1_000, 'fixture-detail-live': 1_000 },
+      schedule,
+      cancel,
+    });
+
+    // The boot discovery runs despite runImmediately=false. Drain enough
+    // microtask turns for its per-competition fetches + addFixtureIds to settle.
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(fetchFn.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    // Fire the recurring fixture-detail-live tick: the re-adopted live fixture
+    // must now be polled (it would not be without the boot discovery).
+    callbacks.forEach((cb) => cb());
+    for (let i = 0; i < 30; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const urls = fetchFn.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes('/fixtures?id=1489370'))).toBe(true);
+    stop();
+  });
+
   it('sweeps the fixtures list for EVERY catalogue competition, not just the first', async () => {
     // Regression guard: the boot tick once fetched only
     // `apiFootballFixtureSyncPaths()[0]` (Premier League), so upcoming-only

@@ -539,7 +539,10 @@ export class ApiFootballIngestionLoop {
       }
     };
 
-    enqueueTick('fixtures-next-7d', async () => {
+    // Discovery sweep that populates the live polling set (`fixtureIds`). Runs
+    // hourly on its own tick AND once at boot (see the unconditional seed at the
+    // end of `start`) so a restart re-establishes the in-flight fixture set.
+    const discoverFixtures = async (): Promise<void> => {
       // Sweep EVERY competition in the catalogue, not just the first. The
       // fixture-sync paths line up 1:1 with `API_FOOTBALL_BETA_COMPETITIONS`,
       // so each league is fetched under its own `league-<id>-season-<season>`
@@ -553,7 +556,9 @@ export class ApiFootballIngestionLoop {
       // the provider_game_mappings crosswalk per fixture (idempotent on
       // `(provider, provider_game_id)`). Per-league resourceIds keep cache
       // keys + crosswalk scopes clean. `allSettled` isolates one league's
-      // failure (quota/provider error) from the rest of the sweep.
+      // failure (quota/provider error) from the rest of the sweep. The fixture
+      // list includes LIVE games (`isDiscoverableFixture`), so this also
+      // re-adopts in-play matches after a restart.
       const paths = apiFootballFixtureSyncPaths();
       await Promise.allSettled(
         API_FOOTBALL_BETA_COMPETITIONS.map(async (competition, index) => {
@@ -569,7 +574,8 @@ export class ApiFootballIngestionLoop {
           addFixtureIds(fixtureIdsFromFixtureList(result.data, this.#clock()), 'fixtures-next-7d');
         })
       );
-    });
+    };
+    enqueueTick('fixtures-next-7d', discoverFixtures);
 
     const fixtureIdsForImmediate = (): readonly string[] => [
       ...new Set([...fixtureIds, ...bootstrapFixtureIds]),
@@ -732,6 +738,19 @@ export class ApiFootballIngestionLoop {
     }
 
     this.#timers.push(...stopHandles);
+
+    // Resilience: ALWAYS re-establish the in-flight fixture set at boot. The
+    // recurring fixture-detail ticks poll `fixtureIds`, which is in-memory and
+    // otherwise empty until the hourly `fixtures-next-7d` sweep first fires. So
+    // a worker restart (deploy / crash) with `runImmediately=false` would leave
+    // every in-play game frozen for up to an hour — or permanently if pods
+    // recycle faster than hourly. The discovery list includes LIVE games, so
+    // this lets gamewire pick back up the matches already in flight within one
+    // `fixture-detail-live` tick. When `runImmediately` is on, the tick's own
+    // immediate refresh already ran it, so only seed here when it's off.
+    if (!options.runImmediately) {
+      runRefresh('fixtures-next-7d', discoverFixtures);
+    }
 
     return () => {
       for (const handle of stopHandles) {
