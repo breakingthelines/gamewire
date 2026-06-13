@@ -582,6 +582,11 @@ const ingestEventsFromFixtureDetail = async (
     envelope: eventsEnvelope,
     entityResolutions,
     fetchedAtMs: input.clock(),
+    // Authoritative for event period: during live play api-football can report
+    // a second-half stoppage event as a raw `elapsed: 98` (no `extra`), which
+    // the minute heuristic alone would mislabel as extra time. The fixture
+    // status (`2H` here) clamps it back to the second half.
+    status: input.providerStatus,
   });
   if (request.occurrences.length === 0) {
     input.log({
@@ -658,6 +663,11 @@ const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> =
     envelope: input.data,
     entityResolutions,
     fetchedAtMs: input.clock(),
+    // No status here: the `/fixtures/events` payload carries no fixture status,
+    // and this post-final path runs after full time, where events already
+    // arrive with their `extra` stoppage split (90+8') so the minute heuristic
+    // resolves the period correctly without a clamp. Omitting status leaves the
+    // period to that heuristic, which is right for finished fixtures.
   });
   if (request.occurrences.length === 0) {
     input.log({

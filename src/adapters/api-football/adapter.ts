@@ -361,6 +361,11 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
   readonly envelope: ApiFootballEnvelope<readonly ApiFootballEventResponse[]> | unknown;
   readonly entityResolutions?: ApiFootballEntityResolutionMap;
   readonly fetchedAtMs?: number;
+  // Fixture status short code (e.g. `2H`, `ET`, `FT`). Authoritative for the
+  // event timeline period: it disambiguates second-half stoppage from real
+  // extra time, which the event minute alone cannot. Omit (or pass empty) when
+  // the status is unknown and the minute-only heuristic should stand.
+  readonly status?: string;
 }): IngestGameOccurrencesRequest {
   const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
   const events = apiFootballEventsFromEnvelope(options.envelope);
@@ -372,6 +377,7 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
       sequence: index + 1,
       entityResolutions: options.entityResolutions,
       fetchedAtMs: options.fetchedAtMs ?? Date.now(),
+      status: options.status,
     })
   );
 
@@ -1079,6 +1085,7 @@ function occurrenceFromEvent(
     readonly sequence: number;
     readonly entityResolutions?: ApiFootballEntityResolutionMap;
     readonly fetchedAtMs: number;
+    readonly status?: string;
   }
 ) {
   const teamActor = actorFromProviderRef(
@@ -1107,7 +1114,7 @@ function occurrenceFromEvent(
   );
   const timelineType = footballTimelineTypeFromApiFootball(event.type, event.detail);
   const kind = occurrenceKindFromApiFootball(event.type, event.detail);
-  const clock = clockFromEventTime(event.time);
+  const clock = clockFromEventTime(event.time, options.status ?? '');
   const primaryPlayerId = actorEntityId(playerActor);
   const secondaryPlayerId = actorEntityId(assistActor);
   const teamId = actorEntityId(teamActor);
@@ -2109,24 +2116,56 @@ function gameStatusFromApiFootball(status: string): GameStatus {
   }
 }
 
-function clockFromEventTime(time: ApiFootballEventResponse['time']) {
+function clockFromEventTime(time: ApiFootballEventResponse['time'], status = '') {
   const elapsed = nullableNumber(time.elapsed) ?? 0;
   const stoppage = nullableNumber(time.extra) ?? 0;
   const display = stoppage > 0 ? `${elapsed}+${stoppage}'` : `${elapsed}'`;
+  const period = footballPeriodForEvent(elapsed, status);
   return create(GameClockSchema, {
     display,
-    period: footballPeriodFromMinute(elapsed),
+    period,
     elapsedSeconds: (elapsed + stoppage) * 60,
     running: false,
     sportClock: {
       case: 'football',
       value: create(FootballClockPayloadSchema, {
-        period: footballPeriodFromMinute(elapsed),
+        period,
         minute: elapsed,
         stoppageMinute: stoppage,
       }),
     },
   });
+}
+
+/**
+ * Resolve an event's timeline period from its minute, clamped by the fixture
+ * status. The event minute alone cannot tell second-half stoppage (a raw
+ * `elapsed: 98` the provider sometimes reports for 90+8' during live play) from
+ * real extra time (`elapsed: 98` in an ET fixture); both look like minute 98.
+ * The fixture status is the authority, so any minute-derived period beyond the
+ * second half is forced back to the second half unless the fixture is actually
+ * in or past extra time. An unknown status (empty) does not clamp, preserving
+ * the prior minute-only behaviour for callers that lack the status.
+ */
+function footballPeriodForEvent(minute: number, status: string): FootballPeriod {
+  const period = footballPeriodFromMinute(minute);
+  const beyondSecondHalf =
+    period === FootballPeriod.EXTRA_TIME_FIRST ||
+    period === FootballPeriod.EXTRA_TIME_SECOND ||
+    period === FootballPeriod.SHOOTOUT;
+  if (beyondSecondHalf && status !== '' && !fixtureInExtraTime(status)) {
+    return FootballPeriod.SECOND_HALF;
+  }
+  return period;
+}
+
+/**
+ * True when the api-football fixture status short code means the match has
+ * reached extra time or the shootout (and so an extra-time / shootout event
+ * period is legitimate rather than mislabelled second-half stoppage).
+ */
+function fixtureInExtraTime(status: string): boolean {
+  return ['ET', 'BT', 'P', 'PEN', 'AET'].includes(status.trim().toUpperCase());
 }
 
 function footballPeriodFromMinute(minute: number): FootballPeriod {
