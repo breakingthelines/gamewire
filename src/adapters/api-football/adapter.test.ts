@@ -908,6 +908,7 @@ describe('API-Football standings mapping', () => {
                 team: { id: 42, name: 'Arsenal' },
                 points: 23,
                 goalsDiff: 13,
+                group: 'Premier League',
                 all: { played: 10, win: 7, draw: 2, lose: 1, goals: { for: 22, against: 9 } },
               },
               {
@@ -915,6 +916,7 @@ describe('API-Football standings mapping', () => {
                 team: { id: 49, name: 'Chelsea' },
                 points: 18,
                 goalsDiff: 6,
+                group: 'Premier League',
                 all: { played: 10, win: 5, draw: 3, lose: 2, goals: { for: 18, against: 12 } },
               },
               {
@@ -922,6 +924,7 @@ describe('API-Football standings mapping', () => {
                 team: { id: 0, name: 'Malformed' },
                 points: 0,
                 goalsDiff: 0,
+                group: 'Premier League',
                 all: { played: 0, win: 0, draw: 0, lose: 0, goals: { for: 0, against: 0 } },
               },
             ],
@@ -966,6 +969,9 @@ describe('API-Football standings mapping', () => {
     expect(arsenal.goalsAgainst).toBe(9);
     expect(arsenal.goalDifference).toBe(13);
     expect(arsenal.points).toBe(23);
+    // A single-table league tags every row with the provider's group label
+    // (the league name). One distinct group → the serve path renders flat.
+    expect(table.entries.map((e) => e.group)).toEqual(['Premier League', 'Premier League']);
 
     // Unresolved team falls back to the provider-storage id; game-service
     // re-resolves it at read time.
@@ -987,7 +993,71 @@ describe('API-Football standings mapping', () => {
     expect(table.seasonId).toBe('provider:api-football:season:39:2025');
   });
 
-  it('flattens multi-group (tournament) standings into a single table', () => {
+  it('flattens multi-group (tournament) standings into one table and tags each row with its group', () => {
+    const request = apiFootballIngestStandingsRequestFromStandings({
+      replayId: 'replay',
+      resourceId: 'standings-1-2026',
+      envelope: {
+        response: [
+          {
+            league: {
+              id: 1,
+              name: 'World Cup',
+              season: 2026,
+              // league.standings is an array of GROUPS; each provider row also
+              // carries its own "group" label.
+              standings: [
+                [
+                  {
+                    rank: 1,
+                    team: { id: 6, name: 'Brazil' },
+                    points: 9,
+                    goalsDiff: 5,
+                    group: 'Group A',
+                    all: { played: 3, win: 3, draw: 0, lose: 0, goals: { for: 7, against: 2 } },
+                  },
+                  {
+                    rank: 2,
+                    team: { id: 26, name: 'Mexico' },
+                    points: 6,
+                    goalsDiff: 2,
+                    group: 'Group A',
+                    all: { played: 3, win: 2, draw: 0, lose: 1, goals: { for: 4, against: 2 } },
+                  },
+                ],
+                [
+                  {
+                    rank: 1,
+                    team: { id: 2, name: 'France' },
+                    points: 7,
+                    goalsDiff: 4,
+                    group: 'Group B',
+                    all: { played: 3, win: 2, draw: 1, lose: 0, goals: { for: 6, against: 2 } },
+                  },
+                ],
+              ],
+            },
+          },
+        ],
+      },
+    });
+    expect(request.standings).toHaveLength(1);
+    const entries = request.standings[0]!.entries;
+    // Every group's entries are flattened into one table.
+    expect(entries).toHaveLength(3);
+    // Each row keeps its group label so the serve path can partition the table
+    // back into Group A / Group B (the bug: grouped tables rendered flat
+    // because the group label was dropped on ingest).
+    expect(entries.map((e) => ({ team: e.teamName, group: e.group }))).toEqual([
+      { team: 'Brazil', group: 'Group A' },
+      { team: 'Mexico', group: 'Group A' },
+      { team: 'France', group: 'Group B' },
+    ]);
+    // Two distinct groups → the standings render grouped rather than flat.
+    expect(new Set(entries.map((e) => e.group)).size).toBe(2);
+  });
+
+  it('derives a group label from the outer group index when the provider omits it', () => {
     const request = apiFootballIngestStandingsRequestFromStandings({
       replayId: 'replay',
       resourceId: 'standings-1-2026',
@@ -1005,6 +1075,7 @@ describe('API-Football standings mapping', () => {
                     team: { id: 6, name: 'Brazil' },
                     points: 9,
                     goalsDiff: 5,
+                    // group intentionally absent
                     all: { played: 3, win: 3, draw: 0, lose: 0, goals: { for: 7, against: 2 } },
                   },
                 ],
@@ -1014,6 +1085,7 @@ describe('API-Football standings mapping', () => {
                     team: { id: 2, name: 'France' },
                     points: 7,
                     goalsDiff: 4,
+                    // group intentionally absent
                     all: { played: 3, win: 2, draw: 1, lose: 0, goals: { for: 6, against: 2 } },
                   },
                 ],
@@ -1023,9 +1095,9 @@ describe('API-Football standings mapping', () => {
         ],
       },
     });
-    expect(request.standings).toHaveLength(1);
-    // Both groups' entries are flattened into one table.
-    expect(request.standings[0]!.entries).toHaveLength(2);
+    // Fallback: zero-based outer index + 1 → "Group 1", "Group 2", so a grouped
+    // table never collapses to a single flat bucket even with no provider label.
+    expect(request.standings[0]!.entries.map((e) => e.group)).toEqual(['Group 1', 'Group 2']);
   });
 
   it('drops a league whose entries are all malformed', () => {

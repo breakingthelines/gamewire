@@ -667,9 +667,17 @@ export function apiFootballIngestStandingsRequestFromStandings(options: {
       const seasonId =
         seasonResolved?.entityId ?? providerStorageId(providerId, 'season', seasonProviderId);
 
+      // league.standings is an array of GROUPS (each a ranked list of entries).
+      // Flatten to one entries list but tag each row with its group label so the
+      // serve path can partition the table by group. The label is the provider's
+      // per-entry `group` string ("Group A", or the league name for a single
+      // table); the outer group index is the fallback when a row omits it.
       const entries = (league.standings ?? [])
-        .flat()
-        .map((entry) => standingEntryFromApiFootball(entry, providerId, options.entityResolutions))
+        .flatMap((groupEntries, groupIndex) =>
+          (groupEntries ?? []).map((entry) =>
+            standingEntryFromApiFootball(entry, groupIndex, providerId, options.entityResolutions)
+          )
+        )
         .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
 
       if (entries.length === 0) {
@@ -702,9 +710,17 @@ export function apiFootballIngestStandingsRequestFromStandings(options: {
  * resolving the team to its canonical id via the resolution map (provider
  * storage id fallback). Returns null when the provider team id is missing so
  * the caller drops the malformed row rather than minting an entry with no team.
+ *
+ * The group label is taken from the provider's per-row `group` string when
+ * present (e.g. "Group A"); otherwise it falls back to "Group {N}" derived from
+ * the zero-based outer group index, so a grouped table never loses its
+ * partitioning even if a row omits the field. A single-table league still ends
+ * up with one group ("Premier League" or "Group 1"), which the serve path
+ * renders flat (it only partitions when two or more distinct groups exist).
  */
 function standingEntryFromApiFootball(
   entry: ApiFootballStandingEntry,
+  groupIndex: number,
   providerId: string,
   entityResolutions: ApiFootballEntityResolutionMap | undefined
 ) {
@@ -716,6 +732,7 @@ function standingEntryFromApiFootball(
   const all = entry.all;
   const goalsFor = all?.goals?.for ?? 0;
   const goalsAgainst = all?.goals?.against ?? 0;
+  const group = (entry.group ?? '').trim() || `Group ${groupIndex + 1}`;
   return create(FootballStandingEntrySchema, {
     teamId: resolved?.entityId ?? providerStorageId(providerId, 'team', providerTeamId),
     teamName: resolved?.label ?? entry.team.name,
@@ -728,6 +745,7 @@ function standingEntryFromApiFootball(
     goalsAgainst,
     goalDifference: entry.goalsDiff ?? goalsFor - goalsAgainst,
     points: entry.points ?? 0,
+    group,
   });
 }
 

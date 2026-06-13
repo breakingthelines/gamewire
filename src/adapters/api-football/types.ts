@@ -269,6 +269,11 @@ export interface ApiFootballStandingEntry {
     };
   };
   readonly goalsDiff: number;
+  // group is the standings group label the provider tags each row with, e.g.
+  // "Group A" for a World Cup group-phase table or the league name ("Premier
+  // League") for a single-table domestic competition. Carried through to
+  // FootballStandingEntry.group so the serve path can partition by group.
+  readonly group?: string;
 }
 
 export const API_FOOTBALL_PROVIDER_ID = 'api-football';
