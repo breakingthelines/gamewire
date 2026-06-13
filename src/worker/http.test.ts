@@ -307,6 +307,104 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     });
   });
 
+  const KERNEL_MESH_IDENTITY =
+    'kernel-service.btl-prod.serviceaccount.identity.linkerd.cluster.local';
+
+  it('authorises daily-anchor by a trusted mesh identity even when a verifier exists but no JWT is sent', async () => {
+    // Linkerd (prod) has no ext_authz to stamp btl-auth-context, so the kernel
+    // posts plain HTTP. Authorise it by the verified `l5d-client-id` the inbound
+    // proxy stamps, when that identity is on the allow-list. The mesh check runs
+    // BEFORE the JWT path, so a configured verifier + missing token still passes.
+    const meshConfig = {
+      ...config,
+      authContextTrustedMeshIdentities: [KERNEL_MESH_IDENTITY],
+    };
+    const { verifier } = makeVerifier();
+    const workflowLogger = vi.fn();
+    const rawBody = JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] });
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: JSON.parse(rawBody),
+        rawBody,
+        headers: { 'l5d-client-id': KERNEL_MESH_IDENTITY },
+      },
+      meshConfig,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+        workflowLogger,
+      }
+    );
+    expect(response.status).toBe(200);
+    expect(await finalCompleted(response)).toMatchObject({
+      event: 'completed',
+      workflow: 'daily-anchor',
+      status: 'ok',
+    });
+    // The non-JWT auth is audited so the prod rollout is verifiable in logs.
+    const acceptEvents = workflowLogger.mock.calls
+      .map((call) => call[0] as { event: string; reason?: string })
+      .filter((entry) => entry.event === 'workflow-auth-accepted');
+    expect(acceptEvents).toHaveLength(1);
+    expect(acceptEvents[0]?.reason).toBe(`mesh_identity:${KERNEL_MESH_IDENTITY}`);
+  });
+
+  it('rejects an l5d-client-id that is not on the trusted mesh allow-list', async () => {
+    // A meshed caller that is not the kernel falls through to the JWT path and,
+    // with no token, is rejected — the allow-list is not "any meshed pod".
+    const meshConfig = {
+      ...config,
+      authContextTrustedMeshIdentities: [KERNEL_MESH_IDENTITY],
+    };
+    const { verifier } = makeVerifier();
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] }),
+        headers: {
+          'l5d-client-id':
+            'intelligence-service.btl-prod.serviceaccount.identity.linkerd.cluster.local',
+        },
+      },
+      meshConfig,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({ status: 'unauthorized' });
+  });
+
+  it('ignores l5d-client-id entirely when the mesh allow-list is empty (staging)', async () => {
+    // On Envoy/Consul meshes the allow-list is unset and btl-auth-context is the
+    // only credential — a stray l5d-client-id must never grant access there.
+    const { verifier } = makeVerifier();
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/daily-anchor',
+        body: { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] },
+        rawBody: JSON.stringify({ nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] }),
+        headers: { 'l5d-client-id': KERNEL_MESH_IDENTITY },
+      },
+      config, // default config: authContextTrustedMeshIdentities === []
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({ status: 'unauthorized' });
+  });
+
   it('streams workflow logger events as NDJSON before the completed line', async () => {
     // The whole point of the streaming response is real-time progress so the
     // upstream Envoy HCM stream_idle_timeout (default 5m) cannot fire while

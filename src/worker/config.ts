@@ -53,6 +53,28 @@ export interface GamewireWorkerConfig {
    */
   authContextRequiredScope: string;
   /**
+   * Allow-list of trusted service-mesh caller identities permitted to invoke
+   * `/workflows/*` WITHOUT a btl-auth-context JWT. Each entry is a full
+   * Linkerd identity, e.g.
+   * `kernel-service.btl-prod.serviceaccount.identity.linkerd.cluster.local`,
+   * matched against the `l5d-client-id` header the inbound Linkerd proxy
+   * stamps from the peer's mTLS identity (and strips if client-supplied, so
+   * it cannot be forged in-mesh). Set via
+   * `GAMEWIRE_AUTH_CONTEXT_TRUSTED_MESH_IDENTITIES` (comma-separated).
+   *
+   * Empty by default. On meshes that stamp btl-auth-context at the inbound
+   * (Consul/Envoy ext_authz, staging) this stays unset and the JWT is the
+   * only accepted credential. It exists for Linkerd meshes (prod), where no
+   * ext_authz mints the header, so the kernel's plain POST is authorised by
+   * its verified mesh identity instead.
+   *
+   * Optional: absent ⇒ no mesh identities are trusted (the staging default),
+   * so the JWT stays the only credential. The loader always populates it (to
+   * `[]` when unset), but the field is optional so configs constructed by hand
+   * (tests, embedders) need not specify it.
+   */
+  authContextTrustedMeshIdentities?: readonly string[];
+  /**
    * Entity-imagery asset mirror config. The mirror stores CORS-clean copies
    * of provider entity images (crests/logos/player photos) in the EXISTING
    * content R2 bucket — under a `media/provider/` prefix — as a byproduct of
@@ -284,6 +306,7 @@ interface AuthContextConfig {
   authContextIssuer: string;
   authContextAudience: string;
   authContextRequiredScope: string;
+  authContextTrustedMeshIdentities: readonly string[];
 }
 
 const resolveAuthContextConfig = (env: GamewireWorkerEnv): AuthContextConfig => {
@@ -318,6 +341,12 @@ const resolveAuthContextConfig = (env: GamewireWorkerEnv): AuthContextConfig => 
     authContextIssuer: issuer as string,
     authContextAudience: audience as string,
     authContextRequiredScope: requiredScope as string,
+    // Optional: unset on Envoy/Consul meshes (staging) where the inbound
+    // stamps btl-auth-context; set on Linkerd (prod) to authorise the
+    // kernel's plain POST by its verified mesh identity.
+    authContextTrustedMeshIdentities: parseStringList(
+      env.GAMEWIRE_AUTH_CONTEXT_TRUSTED_MESH_IDENTITIES
+    ),
   };
 };
 
