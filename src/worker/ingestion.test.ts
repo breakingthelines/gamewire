@@ -77,17 +77,18 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'fixture-detail-fullTime': 6 * 60 * 60,
       'events-post-final': 6 * 60 * 60,
       'lineups-post-confirm': 60 * 60,
-      'team-match-stats': 6 * 60 * 60,
-      'player-match-stats': 6 * 60 * 60,
+      'team-match-stats': 2 * 60,
+      'player-match-stats': 2 * 60,
       'squad-list-fallback': 24 * 60 * 60,
       'competition-standings': 6 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
-    // Match-stats workloads are pulled on-demand (post-final + backfill), not
-    // on the steady-state cron — a 0 interval keeps `enqueueTick` from
-    // scheduling them so the cron cadence is unchanged.
+    // Match-stats workloads have no standalone cron tick: they ride the live
+    // fixture-detail sidecar (gated on in-play / finished status) and the
+    // on-demand post-final + backfill workflows. A 0 interval keeps
+    // `enqueueTick` from scheduling a separate stats poll.
     expect(INGESTION_TICK_INTERVAL_MS['team-match-stats']).toBe(0);
     expect(INGESTION_TICK_INTERVAL_MS['player-match-stats']).toBe(0);
     // Standings are swept by daily-anchor (and one-shot triggers), never on the
@@ -446,6 +447,74 @@ describe('ApiFootballIngestionLoop.start', () => {
     const urls = fetchFn.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes('/fixtures?id=1917'))).toBe(true);
     expect(urls.some((url) => url.includes('/fixtures/events?fixture=1917'))).toBe(true);
+    stop();
+  });
+
+  it('pulls team + player match stats as a sidecar for an in-play fixture-detail tick', async () => {
+    // A live (2H) fixture-detail tick is the trigger to refresh match stats.
+    // The provider serves stats on dedicated endpoints, so the loop must fetch
+    // /fixtures/statistics + /fixtures/players for the same fixture id. The
+    // bridge then ingests them into game-service.
+    const fetchFn = buildFetchMock({
+      response: [{ fixture: { id: 1489370, status: { short: '2H' } }, teams: {} }],
+    });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    const schedule = vi.fn(() => 'h');
+    const cancel = vi.fn();
+    const stop = loop.start({
+      bootstrapFixtureIds: ['1489370'],
+      runImmediately: true,
+      intervals: { 'fixture-detail-live': 1_000 },
+      schedule,
+      cancel,
+    });
+
+    for (let i = 0; i < 10 && fetchFn.mock.calls.length < 3; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const urls = fetchFn.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes('/fixtures?id=1489370'))).toBe(true);
+    expect(urls.some((url) => url.includes('/fixtures/statistics?fixture=1489370'))).toBe(true);
+    expect(urls.some((url) => url.includes('/fixtures/players?fixture=1489370'))).toBe(true);
+    stop();
+  });
+
+  it('does NOT pull match stats for a pre-kickoff (NS) fixture-detail tick', async () => {
+    // Pre-kickoff fixtures return empty stats payloads; fetching them would
+    // burn provider budget and poison the cache with an empty envelope. The
+    // sidecar is gated on in-play / finished status, so an NS tick must only
+    // fetch the detail (no /fixtures/statistics, no /fixtures/players).
+    const fetchFn = buildFetchMock({
+      response: [{ fixture: { id: 555, status: { short: 'NS' } }, teams: {} }],
+    });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    const schedule = vi.fn(() => 'h');
+    const cancel = vi.fn();
+    const stop = loop.start({
+      bootstrapFixtureIds: ['555'],
+      runImmediately: true,
+      intervals: { 'fixture-detail-live': 1_000 },
+      schedule,
+      cancel,
+    });
+
+    for (let i = 0; i < 6; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    const urls = fetchFn.mock.calls.map((call) => String(call[0]));
+    expect(urls.some((url) => url.includes('/fixtures?id=555'))).toBe(true);
+    expect(urls.some((url) => url.includes('/fixtures/statistics'))).toBe(false);
+    expect(urls.some((url) => url.includes('/fixtures/players'))).toBe(false);
     stop();
   });
 

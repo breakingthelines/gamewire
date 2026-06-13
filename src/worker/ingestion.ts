@@ -71,11 +71,17 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'fixture-detail-fullTime': 6 * 60 * 60,
   'events-post-final': 6 * 60 * 60,
   'lineups-post-confirm': 60 * 60,
-  // Team + player match stats settle alongside the post-final timeline; the
-  // same 6h TTL keeps a finalised fixture's stats warm without re-spending
-  // provider budget on a settled scoreline.
-  'team-match-stats': 6 * 60 * 60,
-  'player-match-stats': 6 * 60 * 60,
+  // Team + player match stats are pulled as a sidecar off the live
+  // fixture-detail tick (see `fetchMatchStatsForFixture`). A short 2-min TTL
+  // keeps the in-play numbers (possession, shots, ratings) refreshing during a
+  // match while still de-duping the 30s detail ticks down to one stats fetch
+  // every ~2 min per fixture (the singleflight + cache absorb the rest). The
+  // same short TTL also lets the FINAL settled stats land once the fixture
+  // reaches full-time, rather than freezing a mid-match snapshot for hours.
+  // The on-demand post-final + backfill workflows walk each fixture once, so
+  // the short TTL costs them nothing.
+  'team-match-stats': 2 * 60,
+  'player-match-stats': 2 * 60,
   'squad-list-fallback': 24 * 60 * 60,
   // Standings move at most once per fixture round; a 6h TTL keeps the First
   // Touch club picker's table warm without re-spending provider budget on a
@@ -107,10 +113,12 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   // calls (replay tooling, backfill workflows) continue to work.
   'events-post-final': 0,
   'lineups-post-confirm': 10 * 60 * 1000, // every 10 min after lineups confirmed
-  // Match stats are NOT on the steady-state polling cron: they are pulled
-  // on-demand by the webhook-completed (post-final) and season-backfill
-  // workflows once a fixture is finalised. A 0 interval keeps `enqueueTick`
-  // from ever scheduling them so the steady-state cadence is unchanged.
+  // Match stats have no standalone cron tick. They are driven as a sidecar off
+  // the live fixture-detail tick (`fetchMatchStatsForFixture`, gated on in-play
+  // / finished status) and pulled on-demand by the webhook-completed
+  // (post-final) and season-backfill workflows. A 0 interval keeps
+  // `enqueueTick` from scheduling a separate stats poll; the sidecar fetch
+  // rides the existing 30s `fixture-detail-live` cadence instead.
   'team-match-stats': 0,
   'player-match-stats': 0,
   'squad-list-fallback': 6 * 60 * 60 * 1000,
@@ -588,6 +596,18 @@ export class ApiFootballIngestionLoop {
             if (teamIds.length > 0) {
               fixtureTeamIds.set(id, teamIds);
             }
+            // Match-stats sidecar: a live (or just-finished) fixture-detail tick
+            // is the trigger to refresh team + player match stats for the same
+            // fixture. The provider exposes `/fixtures/statistics` +
+            // `/fixtures/players` only for in-play / finished fixtures, so this
+            // is gated on the detail payload's status. The short stats TTL keeps
+            // the live numbers fresh without re-spending budget every 30s tick;
+            // the bridge (`onFixtureFetched`) owns the canonical ingest into
+            // game-service. Skipped for pre-kickoff fixtures (empty payload).
+            const statusShort = statusShortFromFixtureDetail(result.data);
+            if (STATS_FETCH_FIXTURE_STATUSES.has(statusShort)) {
+              await fetchMatchStatsForFixture(id);
+            }
           }
           if (workload === 'lineups-post-confirm' && lineupsMissing(result.data)) {
             let teamIds = fixtureTeamIds.get(id) ?? [];
@@ -619,6 +639,20 @@ export class ApiFootballIngestionLoop {
           })
         )
       );
+    };
+
+    // Fetch team + player match stats for one fixture. The provider serves
+    // these on dedicated endpoints (`/fixtures/statistics`, `/fixtures/players`)
+    // — they are NOT embedded in the `/fixtures?id=N` detail payload the way
+    // the events[] timeline is, so they cannot be lifted inline. The bridge
+    // routes both workloads to game-service's IngestTeamMatchStats /
+    // IngestPlayerMatchStats. `allSettled` isolates one endpoint's failure from
+    // the other; the cache + singleflight + quota gates apply per workload.
+    const fetchMatchStatsForFixture = async (fixtureId: string): Promise<void> => {
+      await Promise.allSettled([
+        this.fetchWorkload({ workload: 'team-match-stats', resourceId: fixtureId }),
+        this.fetchWorkload({ workload: 'player-match-stats', resourceId: fixtureId }),
+      ]);
     };
 
     enqueueTick(
@@ -799,6 +833,20 @@ const FIXTURE_DISCOVERY_BEHIND_MS = 2 * 60 * 60 * 1_000;
 
 const LIVE_FIXTURE_STATUSES = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'INT', 'SUSP']);
 
+// Settled (full-time) fixture statuses. A fixture in one of these has a final
+// scoreline, so its match stats are settled and worth a last fetch.
+const FINISHED_FIXTURE_STATUSES = new Set(['FT', 'AET', 'PEN']);
+
+// Statuses for which the provider exposes match statistics worth ingesting.
+// In-play AND finished fixtures both carry a `/fixtures/statistics` +
+// `/fixtures/players` payload (live numbers accumulate during play and settle
+// at full-time). Pre-kickoff (NS) fixtures return empty arrays, so they are
+// excluded to avoid burning provider budget + caching an empty envelope.
+const STATS_FETCH_FIXTURE_STATUSES: ReadonlySet<string> = new Set([
+  ...LIVE_FIXTURE_STATUSES,
+  ...FINISHED_FIXTURE_STATUSES,
+]);
+
 function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): string {
   switch (workload) {
     case 'fixtures-next-7d':
@@ -923,6 +971,32 @@ function teamIdsFromFixtureDetail(data: unknown): readonly string[] {
     }
   }
   return [...ids];
+}
+
+/**
+ * Read the provider status short code off a `/fixtures?id=N` detail envelope
+ * (`response[0].fixture.status.short`), upper-cased. Returns an empty string
+ * when the payload is malformed or the status is absent. Used to gate the
+ * live match-stats fetch so it only fires for in-play / finished fixtures.
+ */
+function statusShortFromFixtureDetail(data: unknown): string {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return '';
+  }
+  for (const item of data.response) {
+    if (!isRecord(item) || !isRecord(item.fixture)) {
+      continue;
+    }
+    const status = item.fixture.status;
+    if (!isRecord(status)) {
+      continue;
+    }
+    const short = status.short;
+    if (typeof short === 'string' && short.trim() !== '') {
+      return short.trim().toUpperCase();
+    }
+  }
+  return '';
 }
 
 function lineupsMissing(data: unknown): boolean {
