@@ -324,11 +324,32 @@ interface WorkflowAuthOutcome {
  * returned to the client carries only `bad_auth_context` so we don't
  * oracle-leak which claim failed.
  */
+/**
+ * Header the inbound Linkerd proxy stamps with the caller's verified mTLS
+ * identity (e.g. `kernel-service.btl-prod.serviceaccount.identity.linkerd.cluster.local`).
+ * Client-supplied values are stripped by the proxy, so on a Linkerd mesh this
+ * header is trustworthy; it is simply absent on non-Linkerd meshes.
+ */
+const L5D_CLIENT_ID_HEADER = 'l5d-client-id';
+
 const authoriseWorkflowRequest = (
   cfg: GamewireWorkerConfig,
   headers: Record<string, string | undefined> | undefined,
   authContextVerifier: Verifier | undefined
 ): WorkflowAuthOutcome => {
+  // Mesh-identity fast path. Where the inbound doesn't mint a btl-auth-context
+  // JWT — Linkerd (prod) has no ext_authz extension, unlike staging's Envoy —
+  // authorise the caller by its verified service-mesh identity instead. The
+  // allow-list is empty on meshes that DO stamp the JWT (staging), so this is
+  // a no-op there and the JWT below remains the only accepted credential.
+  const trustedMeshIdentities = cfg.authContextTrustedMeshIdentities ?? [];
+  if (trustedMeshIdentities.length > 0) {
+    const meshIdentity = readHeader(headers, L5D_CLIENT_ID_HEADER);
+    if (meshIdentity !== undefined && trustedMeshIdentities.includes(meshIdentity)) {
+      return { authorised: true, reasonForLog: `mesh_identity:${meshIdentity}` };
+    }
+  }
+
   if (!authContextVerifier) {
     return {
       authorised: false,
@@ -653,6 +674,17 @@ export const handleWorkerRequest = async (
         });
       }
       return auth.response ?? jsonResponse(401, { status: 'unauthorized' });
+    }
+    if (options.workflowLogger && auth.reasonForLog) {
+      // Audit a successful invocation authorised by a non-JWT credential (a
+      // trusted mesh identity). JWT-authorised calls return no reason and stay
+      // unlogged, matching prior behaviour.
+      options.workflowLogger({
+        event: 'workflow-auth-accepted',
+        workflow: workflowNameFromPath(request.pathname),
+        reason: auth.reasonForLog,
+        message: `gamewire-worker workflow auth accepted via ${auth.reasonForLog}`,
+      });
     }
     const baseDeps = buildWorkflowDeps(options);
     if (!baseDeps) {
