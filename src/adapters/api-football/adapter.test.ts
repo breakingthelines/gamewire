@@ -11,6 +11,7 @@ import {
   GameParticipantRole,
   GameStatus,
 } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import { FootballPeriod } from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 
 import {
   API_FOOTBALL_BETA_COMPETITIONS,
@@ -401,6 +402,86 @@ describe('API-Football adapter', () => {
     expect(request.occurrences[0]?.payload.case).toBe('timeline');
     expect(request.occurrences[0]?.actors[0]?.providerRef?.providerResourceType).toBe('team');
     expect(request.occurrences[0]?.actors[1]?.providerRef?.providerResourceType).toBe('player');
+  });
+
+  describe('event timeline period is clamped by fixture status', () => {
+    const occurrenceFor = (
+      time: { elapsed: number; extra?: number },
+      status: string | undefined
+    ) => {
+      const request = apiFootballIngestOccurrencesRequestFromEvents({
+        replayId: 'live:fixture-detail-live:1538961',
+        resourceId: '1538961',
+        gameId: 'btl_football_game_g1538961',
+        fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+        status,
+        envelope: {
+          response: [
+            {
+              time,
+              team: { id: 49, name: 'Chelsea' },
+              player: { id: 152982, name: 'Cole Palmer' },
+              assist: null,
+              type: 'Goal',
+              detail: 'Normal Goal',
+              comments: null,
+            },
+          ],
+        },
+      });
+      return request.occurrences[0];
+    };
+
+    const periodsOf = (occurrence: ReturnType<typeof occurrenceFor>) => {
+      const sportClock = occurrence?.clock?.sportClock;
+      const nested =
+        sportClock?.case === 'football' ? sportClock.value.period : FootballPeriod.UNSPECIFIED;
+      return { top: occurrence?.clock?.period, nested };
+    };
+
+    it('clamps a raw 90+8 second-half stoppage event (2H, elapsed 98) to the second half', () => {
+      const occurrence = occurrenceFor({ elapsed: 98 }, '2H');
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.SECOND_HALF);
+      expect(nested).toBe(FootballPeriod.SECOND_HALF);
+      expect(occurrence?.clock?.display).toBe("98'");
+    });
+
+    it('keeps a split 90+8 second-half stoppage event (2H, elapsed 90 extra 8) in the second half', () => {
+      const occurrence = occurrenceFor({ elapsed: 90, extra: 8 }, '2H');
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.SECOND_HALF);
+      expect(nested).toBe(FootballPeriod.SECOND_HALF);
+      expect(occurrence?.clock?.display).toBe("90+8'");
+    });
+
+    it('leaves a real extra-time event (ET, elapsed 98) in the first extra-time period', () => {
+      const occurrence = occurrenceFor({ elapsed: 98 }, 'ET');
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.EXTRA_TIME_FIRST);
+      expect(nested).toBe(FootballPeriod.EXTRA_TIME_FIRST);
+    });
+
+    it('resolves a first-half event (1H, elapsed 7) to the first half', () => {
+      const occurrence = occurrenceFor({ elapsed: 7 }, '1H');
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.FIRST_HALF);
+      expect(nested).toBe(FootballPeriod.FIRST_HALF);
+    });
+
+    it('keeps a finished-fixture stoppage event (FT, elapsed 90 extra 8) in the second half', () => {
+      const occurrence = occurrenceFor({ elapsed: 90, extra: 8 }, 'FT');
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.SECOND_HALF);
+      expect(nested).toBe(FootballPeriod.SECOND_HALF);
+    });
+
+    it('falls back to the minute heuristic when the status is unknown (no clamp)', () => {
+      const occurrence = occurrenceFor({ elapsed: 98 }, undefined);
+      const { top, nested } = periodsOf(occurrence);
+      expect(top).toBe(FootballPeriod.EXTRA_TIME_FIRST);
+      expect(nested).toBe(FootballPeriod.EXTRA_TIME_FIRST);
+    });
   });
 
   it('normalizes API-Football lineups and leaves fixture 1538961 lineups missing when empty', () => {
