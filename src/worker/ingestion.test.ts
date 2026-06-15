@@ -651,3 +651,116 @@ describe('ApiFootballIngestionLoop.start', () => {
     );
   });
 });
+
+describe('fixturePhase (per-fixture workload routing)', () => {
+  const now = 1_700_000_000_000;
+  const min = 60 * 1000;
+  const hour = 60 * min;
+
+  it('classifies every in-play status as live', () => {
+    for (const status of ['1H', 'HT', '2H', 'ET', 'BT', 'P', 'INT', 'SUSP']) {
+      expect(
+        ingestionTest.fixturePhase({ status, kickoffMs: now - 10 * min, lastSeenMs: now }, now)
+      ).toBe('live');
+    }
+  });
+
+  it('adopts a not-started fixture into the live set around kickoff (provider status lag)', () => {
+    // KO 2 min away -> within the grace window -> live, so we catch the in-play flip.
+    expect(
+      ingestionTest.fixturePhase({ status: 'NS', kickoffMs: now + 2 * min, lastSeenMs: now }, now)
+    ).toBe('live');
+    // KO 1h ago but still flagged NS -> keep live-polling (un-flipped), bounded by the 3.5h window.
+    expect(
+      ingestionTest.fixturePhase({ status: 'NS', kickoffMs: now - hour, lastSeenMs: now }, now)
+    ).toBe('live');
+  });
+
+  it('polls pre-kickoff fixtures only inside the 90-min lead window', () => {
+    expect(
+      ingestionTest.fixturePhase({ status: 'NS', kickoffMs: now + 30 * min, lastSeenMs: now }, now)
+    ).toBe('preKO');
+    // 5h out -> tracked but NOT polled.
+    expect(
+      ingestionTest.fixturePhase({ status: 'NS', kickoffMs: now + 5 * hour, lastSeenMs: now }, now)
+    ).toBe('upcoming');
+  });
+
+  it('keeps a finished fixture in postFinal only within the 25-min window', () => {
+    expect(
+      ingestionTest.fixturePhase(
+        { status: 'FT', kickoffMs: now - 2 * hour, finalSinceMs: now - 10 * min, lastSeenMs: now },
+        now
+      )
+    ).toBe('postFinal');
+    expect(
+      ingestionTest.fixturePhase(
+        { status: 'FT', kickoffMs: now - 3 * hour, finalSinceMs: now - 40 * min, lastSeenMs: now },
+        now
+      )
+    ).toBe('settled');
+  });
+
+  it('settles postponed, never-started, and unknown fixtures (never polled)', () => {
+    expect(
+      ingestionTest.fixturePhase({ status: 'PST', kickoffMs: now, lastSeenMs: now }, now)
+    ).toBe('settled');
+    // NS but kickoff 4h gone (no-show) -> settled.
+    expect(
+      ingestionTest.fixturePhase({ status: 'NS', kickoffMs: now - 4 * hour, lastSeenMs: now }, now)
+    ).toBe('settled');
+    expect(ingestionTest.fixturePhase(undefined, now)).toBe('settled');
+  });
+});
+
+describe('fixtureLifecycleFromFixtureList', () => {
+  it('carries status + kickoff for discoverable fixtures and matches the id-only parser', () => {
+    const now = Date.parse('2026-06-16T18:00:00Z');
+    const data = {
+      response: [
+        { fixture: { id: 100, date: '2026-06-16T17:50:00Z', status: { short: '1H' } } }, // live
+        { fixture: { id: 200, date: '2026-06-16T20:00:00Z', status: { short: 'NS' } } }, // scheduled, in window
+        { fixture: { id: 300, date: '2026-07-30T20:00:00Z', status: { short: 'NS' } } }, // >7d ahead -> excluded
+      ],
+    };
+    const records = ingestionTest.fixtureLifecycleFromFixtureList(data, now);
+    // Same id set as the legacy id-only parser (window filtering is identical).
+    expect(records.map((r) => r.id).sort()).toEqual(
+      [...ingestionTest.fixtureIdsFromFixtureList(data, now)].sort()
+    );
+    expect(records).toHaveLength(2);
+    const live = records.find((r) => r.status === '1H');
+    expect(live).toBeDefined();
+    expect(live?.kickoffMs).toBe(Date.parse('2026-06-16T17:50:00Z'));
+  });
+});
+
+describe('mapWithConcurrency (bounded provider fan-out)', () => {
+  it('runs every item but never exceeds the concurrency limit', async () => {
+    const items = Array.from({ length: 20 }, (_, i) => i);
+    let inFlight = 0;
+    let peak = 0;
+    const seen: number[] = [];
+    await ingestionTest.mapWithConcurrency(items, 6, async (n: number) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen.push(n);
+      inFlight -= 1;
+    });
+    expect(seen.sort((a, b) => a - b)).toEqual(items);
+    expect(peak).toBeLessThanOrEqual(6);
+    expect(peak).toBeGreaterThan(1);
+  });
+
+  it('isolates a throwing item without dropping the rest', async () => {
+    const done: number[] = [];
+    await ingestionTest.mapWithConcurrency([1, 2, 3, 4], 2, async (n: number) => {
+      if (n === 2) {
+        throw new Error('boom');
+      }
+      done.push(n);
+    });
+    expect(done.sort((a, b) => a - b)).toEqual([1, 3, 4]);
+  });
+});
