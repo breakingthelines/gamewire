@@ -492,6 +492,9 @@ export class ApiFootballIngestionLoop {
     const fixtureIds = new Set(normaliseResourceIds(options.fixtureIds ?? []));
     const bootstrapFixtureIds = new Set(normaliseResourceIds(options.bootstrapFixtureIds ?? []));
     const fixtureTeamIds = new Map<string, readonly string[]>();
+    // Per-fixture lifecycle (status + kickoff + final-since): the routing source
+    // of truth that decides which workload, if any, polls each fixture.
+    const fixtureLifecycle = new Map<string, FixtureLifecycle>();
 
     const enqueueTick = (
       workload: IngestionWorkload,
@@ -522,10 +525,32 @@ export class ApiFootballIngestionLoop {
       });
     };
 
-    const addFixtureIds = (ids: readonly string[], source: string): void => {
+    // Upsert discovered/observed fixtures into the live-set + lifecycle map.
+    // Status + kickoff drive per-fixture workload ROUTING (see `fixturePhase`):
+    // a fixture is only polled by the workload matching its current phase, so
+    // the call budget scales with in-play matches, not the 7-day catalogue.
+    const upsertFixtures = (records: readonly DiscoveredFixture[], source: string): void => {
       const before = fixtureIds.size;
-      for (const id of normaliseResourceIds(ids)) {
+      const nowMs = this.#clock();
+      for (const record of records) {
+        const id = record.id.trim();
+        if (id === '') {
+          continue;
+        }
         fixtureIds.add(id);
+        const prev = fixtureLifecycle.get(id);
+        const status = record.status || prev?.status || '';
+        const isFinal = FINAL_FIXTURE_STATUSES.has(status);
+        fixtureLifecycle.set(id, {
+          status,
+          kickoffMs: Number.isFinite(record.kickoffMs)
+            ? record.kickoffMs
+            : (prev?.kickoffMs ?? Number.NaN),
+          // Stamp the first final sighting and preserve it; clear if a fixture
+          // somehow leaves a final status (it should not, but stay defensive).
+          finalSinceMs: isFinal ? (prev?.finalSinceMs ?? nowMs) : undefined,
+          lastSeenMs: nowMs,
+        });
       }
       const added = fixtureIds.size - before;
       if (added > 0) {
@@ -534,6 +559,52 @@ export class ApiFootballIngestionLoop {
           provider: this.#provider,
           source,
           added,
+          total: fixtureIds.size,
+        });
+      }
+    };
+
+    // Routing: partition the tracked set by lifecycle phase. Each polling
+    // workload fetches ONLY the fixtures in its phase(s), so a fixture that is
+    // days away, finished, or postponed is never live-polled.
+    const idsInPhase = (...phases: readonly FixturePhase[]): readonly string[] => {
+      const nowMs = this.#clock();
+      const wanted = new Set(phases);
+      const out: string[] = [];
+      for (const id of fixtureIds) {
+        if (wanted.has(fixturePhase(fixtureLifecycle.get(id), nowMs))) {
+          out.push(id);
+        }
+      }
+      return out;
+    };
+    // Bootstrap fixtures (deterministic staging smoke) are force-included in the
+    // boot fetch regardless of phase; on prod the bootstrap set is empty.
+    const withBootstrap = (ids: readonly string[]): readonly string[] => [
+      ...new Set([...ids, ...bootstrapFixtureIds]),
+    ];
+
+    // Drop settled fixtures (finished + past the post-final window, postponed, or
+    // kickoff long gone) so the in-memory set stays bounded over long uptimes
+    // instead of growing forever the way the old append-only path did.
+    const pruneSettledFixtures = (): void => {
+      const nowMs = this.#clock();
+      let pruned = 0;
+      // Deleting the current element from a Set during `for...of` is safe (the
+      // iterator is live and visits each member once in insertion order).
+      for (const id of fixtureIds) {
+        if (fixturePhase(fixtureLifecycle.get(id), nowMs) === 'settled') {
+          fixtureIds.delete(id);
+          fixtureLifecycle.delete(id);
+          fixtureTeamIds.delete(id);
+          pruned += 1;
+        }
+      }
+      if (pruned > 0) {
+        this.#log({
+          event: 'ingestion_fixtures_pruned',
+          provider: this.#provider,
+          pruned,
           total: fixtureIds.size,
         });
       }
@@ -571,15 +642,18 @@ export class ApiFootballIngestionLoop {
             resourceId: apiFootballCompetitionKey(competition),
             path,
           });
-          addFixtureIds(fixtureIdsFromFixtureList(result.data, this.#clock()), 'fixtures-next-7d');
+          upsertFixtures(
+            fixtureLifecycleFromFixtureList(result.data, this.#clock()),
+            'fixtures-next-7d'
+          );
         })
       );
+      // Drop settled fixtures so the in-memory set stays bounded over long
+      // uptimes instead of growing forever.
+      pruneSettledFixtures();
     };
     enqueueTick('fixtures-next-7d', discoverFixtures);
 
-    const fixtureIdsForImmediate = (): readonly string[] => [
-      ...new Set([...fixtureIds, ...bootstrapFixtureIds]),
-    ];
     const fetchFixtureWorkload = async (
       workload: Extract<
         IngestionWorkload,
@@ -591,46 +665,53 @@ export class ApiFootballIngestionLoop {
       >,
       ids: readonly string[]
     ): Promise<void> => {
-      await Promise.allSettled(
-        ids.map(async (id) => {
-          const result = await this.fetchWorkload({
-            workload,
-            resourceId: id,
-          });
-          if (FIXTURE_DETAIL_WORKLOADS.has(workload) && result.data !== undefined) {
-            const teamIds = teamIdsFromFixtureDetail(result.data);
+      // Bounded fan-out (was an unbounded `Promise.allSettled(ids.map(...))`):
+      // cap simultaneous in-flight provider calls so a busy slot spreads its
+      // requests instead of bursting them all and tripping the per-minute limit.
+      await mapWithConcurrency(ids, MAX_PROVIDER_FANOUT, async (id) => {
+        const result = await this.fetchWorkload({
+          workload,
+          resourceId: id,
+        });
+        if (FIXTURE_DETAIL_WORKLOADS.has(workload) && result.data !== undefined) {
+          const teamIds = teamIdsFromFixtureDetail(result.data);
+          if (teamIds.length > 0) {
+            fixtureTeamIds.set(id, teamIds);
+          }
+          const statusShort = statusShortFromFixtureDetail(result.data);
+          // Keep the lifecycle phase fresh from the live payload so an
+          // NS->1H->FT transition re-routes the fixture immediately, instead of
+          // waiting for the next hourly discovery sweep.
+          if (statusShort !== '') {
+            upsertFixtures([{ id, status: statusShort, kickoffMs: Number.NaN }], workload);
+          }
+          // Match-stats sidecar: a live (or just-finished) fixture-detail tick
+          // is the trigger to refresh team + player match stats for the same
+          // fixture. The provider exposes `/fixtures/statistics` +
+          // `/fixtures/players` only for in-play / finished fixtures, so this
+          // is gated on the detail payload's status. The short stats TTL keeps
+          // the live numbers fresh without re-spending budget every 30s tick;
+          // the bridge (`onFixtureFetched`) owns the canonical ingest into
+          // game-service. Skipped for pre-kickoff fixtures (empty payload).
+          if (STATS_FETCH_FIXTURE_STATUSES.has(statusShort)) {
+            await fetchMatchStatsForFixture(id);
+          }
+        }
+        if (workload === 'lineups-post-confirm' && lineupsMissing(result.data)) {
+          let teamIds = fixtureTeamIds.get(id) ?? [];
+          if (teamIds.length === 0) {
+            const fixtureDetail = await this.fetchWorkload({
+              workload: 'fixture-detail-fullTime',
+              resourceId: id,
+            });
+            teamIds = teamIdsFromFixtureDetail(fixtureDetail.data);
             if (teamIds.length > 0) {
               fixtureTeamIds.set(id, teamIds);
             }
-            // Match-stats sidecar: a live (or just-finished) fixture-detail tick
-            // is the trigger to refresh team + player match stats for the same
-            // fixture. The provider exposes `/fixtures/statistics` +
-            // `/fixtures/players` only for in-play / finished fixtures, so this
-            // is gated on the detail payload's status. The short stats TTL keeps
-            // the live numbers fresh without re-spending budget every 30s tick;
-            // the bridge (`onFixtureFetched`) owns the canonical ingest into
-            // game-service. Skipped for pre-kickoff fixtures (empty payload).
-            const statusShort = statusShortFromFixtureDetail(result.data);
-            if (STATS_FETCH_FIXTURE_STATUSES.has(statusShort)) {
-              await fetchMatchStatsForFixture(id);
-            }
           }
-          if (workload === 'lineups-post-confirm' && lineupsMissing(result.data)) {
-            let teamIds = fixtureTeamIds.get(id) ?? [];
-            if (teamIds.length === 0) {
-              const fixtureDetail = await this.fetchWorkload({
-                workload: 'fixture-detail-fullTime',
-                resourceId: id,
-              });
-              teamIds = teamIdsFromFixtureDetail(fixtureDetail.data);
-              if (teamIds.length > 0) {
-                fixtureTeamIds.set(id, teamIds);
-              }
-            }
-            await fetchSquadFallbacksForFixture(id, teamIds);
-          }
-        })
-      );
+          await fetchSquadFallbacksForFixture(id, teamIds);
+        }
+      });
     };
 
     const fetchSquadFallbacksForFixture = async (
@@ -664,46 +745,52 @@ export class ApiFootballIngestionLoop {
     enqueueTick(
       'fixture-detail-preKO',
       async () => {
-        await fetchFixtureWorkload('fixture-detail-preKO', [...fixtureIds]);
+        await fetchFixtureWorkload('fixture-detail-preKO', idsInPhase('preKO'));
       },
       async () => {
-        await fetchFixtureWorkload('fixture-detail-preKO', fixtureIdsForImmediate());
+        await fetchFixtureWorkload('fixture-detail-preKO', withBootstrap(idsInPhase('preKO')));
       }
     );
     enqueueTick(
       'fixture-detail-live',
       async () => {
-        await fetchFixtureWorkload('fixture-detail-live', [...fixtureIds]);
+        await fetchFixtureWorkload('fixture-detail-live', idsInPhase('live'));
       },
       async () => {
-        await fetchFixtureWorkload('fixture-detail-live', fixtureIdsForImmediate());
+        await fetchFixtureWorkload('fixture-detail-live', withBootstrap(idsInPhase('live')));
       }
     );
     enqueueTick(
       'fixture-detail-fullTime',
       async () => {
-        await fetchFixtureWorkload('fixture-detail-fullTime', [...fixtureIds]);
+        await fetchFixtureWorkload('fixture-detail-fullTime', idsInPhase('postFinal'));
       },
       async () => {
-        await fetchFixtureWorkload('fixture-detail-fullTime', fixtureIdsForImmediate());
+        await fetchFixtureWorkload(
+          'fixture-detail-fullTime',
+          withBootstrap(idsInPhase('postFinal'))
+        );
       }
     );
     enqueueTick(
       'events-post-final',
       async () => {
-        await fetchFixtureWorkload('events-post-final', [...fixtureIds]);
+        await fetchFixtureWorkload('events-post-final', idsInPhase('postFinal'));
       },
       async () => {
-        await fetchFixtureWorkload('events-post-final', fixtureIdsForImmediate());
+        await fetchFixtureWorkload('events-post-final', withBootstrap(idsInPhase('postFinal')));
       }
     );
     enqueueTick(
       'lineups-post-confirm',
       async () => {
-        await fetchFixtureWorkload('lineups-post-confirm', [...fixtureIds]);
+        await fetchFixtureWorkload('lineups-post-confirm', idsInPhase('preKO', 'postFinal'));
       },
       async () => {
-        await fetchFixtureWorkload('lineups-post-confirm', fixtureIdsForImmediate());
+        await fetchFixtureWorkload(
+          'lineups-post-confirm',
+          withBootstrap(idsInPhase('preKO', 'postFinal'))
+        );
       }
     );
 
@@ -852,6 +939,85 @@ const FIXTURE_DISCOVERY_BEHIND_MS = 2 * 60 * 60 * 1_000;
 
 const LIVE_FIXTURE_STATUSES = new Set(['1H', 'HT', '2H', 'ET', 'BT', 'P', 'INT', 'SUSP']);
 
+// Final (played-to-completion) statuses. A fixture is post-final-polled for a
+// short window after the first final sighting, then settles out of the set.
+const FINAL_FIXTURE_STATUSES = new Set(['FT', 'AET', 'PEN']);
+
+// Terminal non-played statuses. These never produce a live timeline, so they are
+// dropped from the polling set immediately.
+const TERMINAL_NO_PLAY_STATUSES = new Set(['PST', 'CANC', 'ABD', 'AWD', 'WO']);
+
+// Per-fixture workload ROUTING windows. A fixture is only polled by the workload
+// matching its lifecycle phase (see `fixturePhase`), so the provider call budget
+// scales with the handful of matches actually near kickoff / in play, NOT the
+// full 7-day discovery catalogue.
+const PRE_KICKOFF_LEAD_MS = 90 * 60 * 1_000; // pre-KO polling starts 90m out (lineups land ~60m before)
+const KICKOFF_GRACE_MS = 5 * 60 * 1_000; // adopt into the live set 5m before KO to catch the in-play flip
+const MAX_LIVE_WINDOW_MS = 3.5 * 60 * 60 * 1_000; // stop live-polling an un-flipped fixture 3.5h after KO (covers ET+pens; bounds no-shows)
+const POST_FINAL_WINDOW_MS = 25 * 60 * 1_000; // keep polling final/lineups for 25m after FT, then settle
+
+// Max simultaneous in-flight provider fetches per workload tick. Caps the
+// instantaneous burst so a busy slot (many concurrent kickoffs) spreads its
+// calls instead of firing them all at once and tripping the per-minute limit.
+const MAX_PROVIDER_FANOUT = 6;
+
+type FixturePhase = 'live' | 'preKO' | 'postFinal' | 'upcoming' | 'settled';
+
+interface FixtureLifecycle {
+  /** Provider status short code (e.g. NS, 1H, FT), upper-cased. */
+  readonly status: string;
+  /** Scheduled kickoff epoch ms (NaN when undated). */
+  readonly kickoffMs: number;
+  /** First epoch ms we observed a final status (drives the post-final window). */
+  readonly finalSinceMs?: number;
+  /** Last tick that referenced this fixture. */
+  readonly lastSeenMs: number;
+}
+
+interface DiscoveredFixture {
+  readonly id: string;
+  readonly status: string;
+  readonly kickoffMs: number;
+}
+
+/**
+ * Classify a fixture into the workload phase that should poll it. This is the
+ * single source of routing truth: live ticks poll `live`, the pre-KO tick polls
+ * `preKO`, the full-time/lineup ticks poll `postFinal`. `upcoming` (far-future)
+ * and `settled` (finished + windowed-out, postponed, or kickoff long gone) are
+ * NEVER polled, which is what bounds the daily call budget.
+ */
+function fixturePhase(rec: FixtureLifecycle | undefined, nowMs: number): FixturePhase {
+  if (!rec) {
+    return 'settled';
+  }
+  const { status, kickoffMs, finalSinceMs } = rec;
+  if (LIVE_FIXTURE_STATUSES.has(status)) {
+    return 'live';
+  }
+  if (FINAL_FIXTURE_STATUSES.has(status)) {
+    return nowMs <= (finalSinceMs ?? nowMs) + POST_FINAL_WINDOW_MS ? 'postFinal' : 'settled';
+  }
+  if (TERMINAL_NO_PLAY_STATUSES.has(status)) {
+    return 'settled';
+  }
+  // Scheduled / NS / TBD / unknown: route by the kickoff clock so a fixture is
+  // adopted into the live set right at kickoff, even before the provider flips
+  // its status to 1H.
+  if (Number.isFinite(kickoffMs)) {
+    if (nowMs > kickoffMs + MAX_LIVE_WINDOW_MS) {
+      return 'settled';
+    }
+    if (nowMs >= kickoffMs - KICKOFF_GRACE_MS) {
+      return 'live';
+    }
+    if (nowMs >= kickoffMs - PRE_KICKOFF_LEAD_MS) {
+      return 'preKO';
+    }
+  }
+  return 'upcoming';
+}
+
 // Settled (full-time) fixture statuses. A fixture in one of these has a final
 // scoreline, so its match stats are settled and worth a last fetch.
 const FINISHED_FIXTURE_STATUSES = new Set(['FT', 'AET', 'PEN']);
@@ -937,6 +1103,77 @@ function fixtureIdsFromFixtureList(data: unknown, nowMs: number): readonly strin
     }
   }
   return [...ids];
+}
+
+function fixtureKickoffMs(fixture: Record<string, unknown>): number {
+  const rawDate = fixture.date;
+  if (typeof rawDate !== 'string' || rawDate.trim() === '') {
+    return Number.NaN;
+  }
+  return Date.parse(rawDate);
+}
+
+/**
+ * Parse a `/fixtures` LIST envelope into per-fixture lifecycle records (id +
+ * status + kickoff), filtered to the discovery window. Parallel to
+ * `fixtureIdsFromFixtureList`, but carries the status + kickoff that drive
+ * per-fixture workload routing instead of just the id.
+ */
+function fixtureLifecycleFromFixtureList(
+  data: unknown,
+  nowMs: number
+): readonly DiscoveredFixture[] {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return [];
+  }
+  const out = new Map<string, DiscoveredFixture>();
+  for (const item of data.response) {
+    if (!isRecord(item) || !isRecord(item.fixture)) {
+      continue;
+    }
+    const fixture = item.fixture;
+    const id = providerGameIdFromFixture(fixture);
+    if (id === '' || !isDiscoverableFixture(fixture, nowMs)) {
+      continue;
+    }
+    const status = isRecord(fixture.status) ? String(fixture.status.short ?? '').toUpperCase() : '';
+    out.set(id, { id, status, kickoffMs: fixtureKickoffMs(fixture) });
+  }
+  return [...out.values()];
+}
+
+/**
+ * Run `fn` over `items` with at most `limit` in flight at once. Replaces the
+ * unbounded `Promise.allSettled(ids.map(...))` fan-out so a busy slot spreads
+ * its provider calls instead of bursting them all simultaneously. Per-item
+ * throws are swallowed: one bad fetch must never wedge the tick.
+ */
+async function mapWithConcurrency<T>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) {
+    return;
+  }
+  let cursor = 0;
+  const workerCount = Math.max(1, Math.min(limit, items.length));
+  const workers = Array.from({ length: workerCount }, async () => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      const item = items[index];
+      if (item === undefined) {
+        continue;
+      }
+      try {
+        await fn(item);
+      } catch {
+        // Isolated per-item failure; the loop must never wedge on one fetch.
+      }
+    }
+  });
+  await Promise.all(workers);
 }
 
 function isDiscoverableFixture(fixture: Record<string, unknown>, nowMs: number): boolean {
@@ -1054,7 +1291,10 @@ export const PROVIDER_ID = API_FOOTBALL_PROVIDER_ID;
 export const __test = {
   apiFootballPathFor,
   fixtureIdsFromFixtureList,
+  fixtureLifecycleFromFixtureList,
+  fixturePhase,
   lineupsMissing,
+  mapWithConcurrency,
   squadListResourceId,
   teamIdsFromFixtureDetail,
   SECONDS_TO_MS,
