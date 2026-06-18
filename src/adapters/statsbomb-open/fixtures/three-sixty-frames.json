@@ -1,0 +1,14 @@
+[
+  {
+    "event_uuid": "545c2c84-018f-4570-a01c-753823feaeac",
+    "visible_area": [
+      99.5492448455322, 74.7074998664235, 74.7727201615584, 62.7221483384712, 89.0215123310233, 0,
+      120, 0, 120, 46.7249468196075, 99.5492448455322, 74.7074998664235
+    ],
+    "freeze_frame": [
+      { "teammate": true, "actor": false, "keeper": false, "location": [76.061, 59.808] },
+      { "teammate": true, "actor": false, "keeper": false, "location": [83.02, 40.071] },
+      { "teammate": false, "actor": false, "keeper": true, "location": [118.5, 39.2] }
+    ]
+  }
+]

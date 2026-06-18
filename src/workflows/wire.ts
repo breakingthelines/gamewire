@@ -28,6 +28,8 @@ import type {
   SeasonBackfillWireResult,
   SquadSweepOutput,
   SquadSweepWireResult,
+  StatsBombBackfillOutput,
+  StatsBombBackfillWireResult,
   SweepMissingPayloadsOutput,
   SweepMissingPayloadsWireResult,
   WebhookCompletedOutput,
@@ -143,4 +145,25 @@ export const sweepMissingPayloadsToWire = (
   finalQuota: output.finalQuota,
   dryRun: output.dryRun,
   reason: output.reason,
+});
+
+/**
+ * StatsBomb-backfill output drops the per-match `matches` list at the wire
+ * boundary. A full 64-match World Cup run produces one entry per match; that
+ * list folded into a single trailing NDJSON line risks kernel-side scanner
+ * buffer overflow. Per-match detail remains available via the streamed logger
+ * events (each line is bounded in size).
+ */
+export const statsbombBackfillToWire = (
+  output: StatsBombBackfillOutput
+): StatsBombBackfillWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  status: output.status,
+  matchesDiscovered: output.matchesDiscovered,
+  matchesProcessed: output.matchesProcessed,
+  matchesOk: output.matchesOk,
+  matchesFailed: output.matchesFailed,
+  matchesSkipped: output.matchesSkipped,
+  dryRun: output.dryRun,
 });

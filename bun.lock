@@ -6,7 +6,7 @@
       "name": "@breakingthelines/gamewire",
       "dependencies": {
         "@breakingthelines/auth-sdk": "0.0.19",
-        "@breakingthelines/protos": "0.58.0",
+        "@breakingthelines/protos": "0.76.0",
         "@bufbuild/protobuf": "^2.0.0",
         "@connectrpc/connect": "^2.1.1",
         "@connectrpc/connect-node": "^2.1.1",
@@ -37,7 +37,7 @@
 
     "@breakingthelines/auth-sdk": ["@breakingthelines/auth-sdk@0.0.19", "https://npm.pkg.github.com/download/@breakingthelines/auth-sdk/0.0.19/a8f74e43e9d4d951b50f077bd706370b97024739", { "dependencies": { "@breakingthelines/protos": "0.7.0", "@bufbuild/protobuf": "^2.11.0", "@connectrpc/connect": "^2.1.1", "@connectrpc/connect-web": "^2.1.1" } }, "sha512-u4sxd9PalJl/ZicaISSy1tkWhN92izoMWTRlWCJsonzRxwzVJKW9u4qIpkSDxGOMsbY48UfEROiXcZYS2GzUQA=="],
 
-    "@breakingthelines/protos": ["@breakingthelines/protos@0.58.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.58.0/76c7c3567e5dc4aa7d592199b018eace9e60e63d", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-psi9jkwXBej1HqthdGVhjBQluqmlanaYXlD3KCHswQWun1qJkBJjO/MlrASAE70vZ/+tlguWIrec/CUELZNEvw=="],
+    "@breakingthelines/protos": ["@breakingthelines/protos@0.76.0", "https://npm.pkg.github.com/download/@breakingthelines/protos/0.76.0/1077203267482a6b7c367892078a000f459a661b", { "peerDependencies": { "@bufbuild/protobuf": "^2.0.0", "@connectrpc/connect": "^2.0.0" } }, "sha512-LGj5tpDm9J3UvvDrI9wPD048V9N+hXTfZEkbVgGCxetQcobunPrbPmFTTlaDp1mh08MjqZA2rGny6bS6jrhkmQ=="],
 
     "@bufbuild/protobuf": ["@bufbuild/protobuf@2.11.0", "", {}, "sha512-sBXGT13cpmPR5BMgHE6UEEfEaShh5Ror6rfN3yEK5si7QVrtZg8LEPQb0VVhiLRUslD2yLnXtnRzG035J/mZXQ=="],
 

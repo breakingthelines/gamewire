@@ -1,0 +1,45 @@
+[
+  {
+    "id": "545c2c84-018f-4570-a01c-753823feaeac",
+    "index": 192,
+    "period": 1,
+    "timestamp": "00:04:40.798",
+    "minute": 4,
+    "second": 40,
+    "type": { "id": 16, "name": "Shot" },
+    "possession": 14,
+    "possession_team": { "id": 779, "name": "Argentina" },
+    "play_pattern": { "id": 1, "name": "Regular Play" },
+    "team": { "id": 779, "name": "Argentina" },
+    "player": { "id": 27886, "name": "Alexis Mac Allister" },
+    "position": { "id": 15, "name": "Left Center Midfield" },
+    "location": [92.4, 30],
+    "shot": {
+      "statsbomb_xg": 0.024542088,
+      "end_location": [117.3, 38.3, 0.8],
+      "outcome": { "id": 100, "name": "Saved" },
+      "type": { "id": 87, "name": "Open Play" },
+      "body_part": { "id": 40, "name": "Right Foot" },
+      "freeze_frame": [
+        {
+          "location": [101, 48],
+          "player": { "id": 6704, "name": "Theo Bernard François Hernández" },
+          "position": { "id": 6, "name": "Left Back" },
+          "teammate": false
+        },
+        {
+          "location": [117.4, 38.5],
+          "player": { "id": 3099, "name": "Hugo Lloris" },
+          "position": { "id": 1, "name": "Goalkeeper" },
+          "teammate": false
+        },
+        {
+          "location": [88, 40],
+          "player": { "id": 27886, "name": "Alexis Mac Allister" },
+          "position": { "id": 15, "name": "Left Center Midfield" },
+          "teammate": true
+        }
+      ]
+    }
+  }
+]
