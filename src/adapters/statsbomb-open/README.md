@@ -62,10 +62,10 @@ match first. `gameFromStatsBombOpen` converts a single match-envelope entry
 Game whose participants resolve to existing BTL teams attaches to the existing
 canonical game, otherwise a new one is minted.
 
-| Name      | Type                          | Description                          |
-| --------- | ----------------------------- | ------------------------------------ |
-| `match`   | `StatsBombMatch`              | One match object from `matches/…json` |
-| `options` | `GameFromStatsBombOpenOptions`| Replay id + raw payload pointer       |
+| Name      | Type                           | Description                           |
+| --------- | ------------------------------ | ------------------------------------- |
+| `match`   | `StatsBombMatch`               | One match object from `matches/…json` |
+| `options` | `GameFromStatsBombOpenOptions` | Replay id + raw payload pointer       |
 
 The minted `Game` carries:
 
