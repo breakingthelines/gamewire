@@ -14,12 +14,30 @@
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
 import type {
   FootballGameIngestClient,
+  FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
 } from '../worker/clients/game-service.js';
 import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
 import type { MatchConcludedPublisher } from '../worker/match-concluded-publisher.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
+
+/**
+ * Minimal fetch surface used by the StatsBomb backfill workflow to pull
+ * open-data JSON files (matches / events / three-sixty) directly over HTTPS.
+ *
+ * StatsBomb Open Data is a static file set on GitHub, NOT the api-football
+ * HTTP provider — so it deliberately does NOT flow through the
+ * cache → singleflight → quota → provider-HTTP `fetchWorkload` pipeline (which
+ * is bound to the api-football key + daily quota). This boundary is injected
+ * so tests can stub it without a live network call; production defaults to the
+ * global `fetch`.
+ */
+export type StatsBombFetch = (url: string) => Promise<{
+  readonly ok: boolean;
+  readonly status: number;
+  json(): Promise<unknown>;
+}>;
 
 /**
  * Calendar window for matchday detection. UTC weekday is 0-6 where
@@ -118,6 +136,21 @@ export interface WorkflowDeps {
    * resolves it at read time).
    */
   readonly identity?: FootballIdentityLookupClient;
+  /**
+   * Game-service lookup client used by {@link statsbombBackfillWorkflow} to
+   * translate a provider fixture id into the BTL canonical `game_id` via
+   * `LookupGameByFixture` (the same crosswalk the match-concluded bridge
+   * uses). Wired in `worker/server.ts` from the same gRPC transport that backs
+   * `gameService`. When unset, the StatsBomb backfill cannot resolve canonical
+   * ids and skips ingest.
+   */
+  readonly gameLookup?: FootballGameLookupClient;
+  /**
+   * Fetch boundary for StatsBomb Open Data JSON files used by
+   * {@link statsbombBackfillWorkflow}. Defaults to the global `fetch` when
+   * unset; injected in tests to avoid a live network call.
+   */
+  readonly statsbombFetch?: StatsBombFetch;
 }
 
 export interface WorkflowLogEntry {
@@ -128,7 +161,8 @@ export interface WorkflowLogEntry {
     | 'webhook-completed'
     | 'season-backfill'
     | 'sweep-missing-payloads'
-    | 'squad-sweep';
+    | 'squad-sweep'
+    | 'statsbomb-backfill';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -555,5 +589,104 @@ export interface SquadSweepWireResult {
   readonly callsUsed: number;
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
+}
+
+// ── StatsBomb Open Data Backfill ───────────────────────────────────────────
+
+export interface StatsBombBackfillInput {
+  /**
+   * Explicit list of StatsBomb open-data match ids to import. When omitted,
+   * the workflow enumerates the full WC2022 competition (competition 43,
+   * season 106) from `data/matches/43/106.json`.
+   */
+  readonly matchIds?: readonly number[];
+  /**
+   * StatsBomb competition id. Defaults to 43 (FIFA World Cup) — only used for
+   * the matches-list path when `matchIds` is omitted.
+   */
+  readonly competitionId?: number;
+  /**
+   * StatsBomb season id. Defaults to 106 (2022) — only used for the
+   * matches-list path when `matchIds` is omitted.
+   */
+  readonly seasonId?: number;
+  /**
+   * Maximum matches to process this run. Defaults to 64 (a full World Cup).
+   */
+  readonly maxMatchesPerRun?: number;
+  /**
+   * Per-match inter-fetch delay in milliseconds. Defaults to 0 — StatsBomb
+   * open data is static GitHub-hosted content with no quota, so throttling is
+   * only useful to be a polite client. Tests pass 0.
+   */
+  readonly intercallDelayMs?: number;
+  /**
+   * When true, enumerate + resolve canonical ids but skip the events/360 fetch
+   * and the game-service ingest. Useful to preview coverage without writes.
+   */
+  readonly dryRun?: boolean;
+  /**
+   * Base URL for the StatsBomb open-data repository raw files. Defaults to the
+   * public GitHub raw host. Overridable for tests / a mirror.
+   */
+  readonly baseUrl?: string;
+  /**
+   * Override the `statsbomb_match_id → api_football_fixture_id` crosswalk.
+   * Merged over the built-in static map (input entries win). Until the static
+   * WC2022 crosswalk is populated (a follow-on data task), an operator can
+   * supply known mappings here to exercise specific matches end-to-end.
+   */
+  readonly fixtureMap?: Readonly<Record<string, number>>;
+  /** ISO-8601 instant used as "now" for metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+/** Per-match result in a StatsBomb backfill run. */
+export interface StatsBombBackfillMatchResult {
+  readonly statsbombMatchId: number;
+  /** The api-football fixture id this match maps to, when known. */
+  readonly apiFootballFixtureId?: string;
+  /** Canonical BTL game id once resolved via LookupGameByFixture. */
+  readonly gameId?: string;
+  readonly status: 'ok' | 'failed' | 'skipped';
+  readonly reason?: string;
+  /** Occurrences ingested (accepted) for this match. */
+  readonly acceptedCount?: number;
+  readonly updatedCount?: number;
+  /** True when a 360 frame set was found + applied for this match. */
+  readonly threeSixtyApplied?: boolean;
+}
+
+export interface StatsBombBackfillOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  /** `completed` = all matches attempted, no failures; `partial` = some failures. */
+  readonly status: 'completed' | 'partial';
+  readonly matchesDiscovered: number;
+  readonly matchesProcessed: number;
+  readonly matchesOk: number;
+  readonly matchesFailed: number;
+  readonly matchesSkipped: number;
+  /** Per-match result list. Dropped at the wire boundary to stay under NDJSON limits. */
+  readonly matches: readonly StatsBombBackfillMatchResult[];
+  readonly dryRun: boolean;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the StatsBomb backfill workflow.
+ * The per-match `matches` list is dropped at the wire boundary so a 64-match
+ * World Cup run cannot exceed kernel-side `bufio.Scanner.MaxScanTokenSize`;
+ * per-match detail remains available via the streamed logger events.
+ */
+export interface StatsBombBackfillWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: StatsBombBackfillOutput['status'];
+  readonly matchesDiscovered: number;
+  readonly matchesProcessed: number;
+  readonly matchesOk: number;
+  readonly matchesFailed: number;
+  readonly matchesSkipped: number;
   readonly dryRun: boolean;
 }

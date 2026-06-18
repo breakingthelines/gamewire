@@ -2,11 +2,16 @@
  * StatsBomb Open Data adapter.
  */
 
-export { fromStatsBombOpen, type FromStatsBombOpenOptions } from './adapter.js';
+export {
+  fromStatsBombOpen,
+  type FromStatsBombOpenOptions,
+  STATSBOMB_OPEN_PROVIDER_ID,
+} from './adapter.js';
 
 export type {
   StatsBombEvent,
   StatsBombShot,
+  StatsBombFreezeFrame,
   StatsBombPass,
   StatsBombCarry,
   StatsBombDuel,
@@ -15,6 +20,8 @@ export type {
   StatsBombRef,
   StatsBombLocation,
   StatsBombLocation3D,
+  StatsBombThreeSixtyFrame,
+  StatsBombThreeSixtyPlayer,
 } from './types.js';
 
 export {

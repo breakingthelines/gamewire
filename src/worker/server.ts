@@ -419,6 +419,11 @@ const server = createServer(async (request, response) => {
       // GetTeamSquad). gameServiceLookupClient is a FootballGameBridgeClient,
       // which is a superset of FootballGameIngestClient.
       gameService: gameServiceLookupClient,
+      // The statsbomb-backfill workflow resolves a provider fixture id to the
+      // canonical BTL game id via LookupGameByFixture before ingesting
+      // occurrences. Same FootballGameBridgeClient (superset of the lookup
+      // client) the match-concluded bridge uses.
+      gameLookup: gameServiceLookupClient,
       identity: identityClient,
       workflowLogger: (entry) => {
         console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);

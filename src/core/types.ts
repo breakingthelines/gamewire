@@ -8,21 +8,30 @@ export {
 export {
   type GameClock,
   type GameOccurrence,
+  type EntityResolutionRef,
+  type ProviderRef,
+  type ProviderEntitySnapshot,
   type ProviderAttribution,
   type SportActionPayload,
   GameClockSchema,
   GameOccurrenceKind,
   GameOccurrenceSchema,
+  EntityResolutionRefSchema,
+  ProviderRefSchema,
+  ProviderEntitySnapshotSchema,
   OccurrenceRevisionState,
   ProviderAttributionSchema,
   ResolutionState,
   SportActionPayloadSchema,
 } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
 
+export { type SubjectRef, SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
+
 export {
   type FootballActionPayload,
   type PitchCoordinates,
   type ShotEventData,
+  type FreezeFramePlayer,
   type PassEventData,
   type TackleEventData,
   type CarryEventData,
@@ -35,6 +44,7 @@ export {
   PassHeight,
   PassOutcome,
   ShotEventDataSchema,
+  FreezeFramePlayerSchema,
   ShotOutcome,
   PassEventDataSchema,
   TackleEventDataSchema,

@@ -32,6 +32,11 @@ export type {
   SquadSweepOutput,
   SquadSweepTeamResult,
   SquadSweepWireResult,
+  StatsBombBackfillInput,
+  StatsBombBackfillMatchResult,
+  StatsBombBackfillOutput,
+  StatsBombBackfillWireResult,
+  StatsBombFetch,
   SweepMissingPayloadKind,
   SweepMissingPayloadsInput,
   SweepMissingPayloadsOutput,
@@ -48,6 +53,7 @@ export {
   hourlyMatchdayToWire,
   seasonBackfillToWire,
   squadSweepToWire,
+  statsbombBackfillToWire,
   sweepMissingPayloadsToWire,
   webhookCompletedToWire,
 } from './wire.js';
@@ -69,3 +75,7 @@ export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
 export { squadSweepWorkflow } from './squad-sweep.js';
+export {
+  statsbombBackfillWorkflow,
+  WC2022_STATSBOMB_TO_API_FOOTBALL,
+} from './statsbomb-backfill.js';

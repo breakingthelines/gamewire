@@ -10,6 +10,7 @@ import { apiFootballFixturePath, apiFootballStatusPath } from '../adapters/api-f
 import type { ApiFootballIngestionLoop } from './ingestion.js';
 import type {
   FootballGameIngestClient,
+  FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
 } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
@@ -29,6 +30,8 @@ import {
   seasonBackfillWorkflow,
   squadSweepToWire,
   squadSweepWorkflow,
+  statsbombBackfillToWire,
+  statsbombBackfillWorkflow,
   sweepMissingPayloadsToWire,
   sweepMissingPayloadsWorkflow,
   webhookCompletedToWire,
@@ -39,6 +42,7 @@ import {
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
   type SquadSweepInput,
+  type StatsBombBackfillInput,
   type SweepMissingPayloadKind,
   type SweepMissingPayloadsInput,
   type WebhookCompletedInput,
@@ -151,7 +155,8 @@ type WorkflowName =
   | 'webhook-completed'
   | 'season-backfill'
   | 'sweep-missing-payloads'
-  | 'squad-sweep';
+  | 'squad-sweep'
+  | 'statsbomb-backfill';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -266,6 +271,12 @@ export interface WorkerHttpHandlerOptions {
    * standing squad rosters via IngestFootballSquadLists.
    */
   readonly gameService?: FootballGameIngestClient;
+  /**
+   * Game-service lookup client used by the statsbomb-backfill workflow to
+   * resolve a provider fixture id to the canonical BTL game id via
+   * LookupGameByFixture.
+   */
+  readonly gameLookup?: FootballGameLookupClient;
   /**
    * Identity-server client used by the squad-sweep workflow to resolve
    * provider team ids to canonical btl_football_team_* ids.
@@ -398,6 +409,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/squad-sweep') {
     return 'squad-sweep';
   }
+  if (pathname === '/workflows/statsbomb-backfill') {
+    return 'statsbomb-backfill';
+  }
   return 'daily-anchor';
 };
 
@@ -411,6 +425,7 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
     logger: options.workflowLogger,
     gameServiceMissingPayloads: options.gameServiceMissingPayloads,
     gameService: options.gameService,
+    gameLookup: options.gameLookup,
     identity: options.identity,
   };
 };
@@ -452,6 +467,19 @@ const asNumberList = (value: unknown): readonly number[] | undefined => {
 
 const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
+
+const asNumberRecord = (value: unknown): Readonly<Record<string, number>> | undefined => {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  const out: Record<string, number> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      out[key] = raw;
+    }
+  }
+  return out;
+};
 
 const parseSeasonBackfillTargets = (
   value: unknown
@@ -582,6 +610,23 @@ const parseSquadSweepInput = (body: unknown): SquadSweepInput => {
   };
 };
 
+const parseStatsBombBackfillInput = (body: unknown): StatsBombBackfillInput => {
+  if (!isRecord(body)) {
+    return {};
+  }
+  return {
+    matchIds: asNumberList(body.matchIds),
+    competitionId: asNumber(body.competitionId),
+    seasonId: asNumber(body.seasonId),
+    maxMatchesPerRun: asNumber(body.maxMatchesPerRun),
+    intercallDelayMs: asNumber(body.intercallDelayMs),
+    dryRun: asBoolean(body.dryRun),
+    baseUrl: asString(body.baseUrl),
+    fixtureMap: asNumberRecord(body.fixtureMap),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -659,7 +704,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/webhook-completed' ||
       request.pathname === '/workflows/season-backfill' ||
       request.pathname === '/workflows/sweep-missing-payloads' ||
-      request.pathname === '/workflows/squad-sweep')
+      request.pathname === '/workflows/squad-sweep' ||
+      request.pathname === '/workflows/statsbomb-backfill')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -763,6 +809,18 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => squadSweepWorkflow(input, { ...baseDeps, logger }),
           toWire: squadSweepToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/statsbomb-backfill') {
+      const input = parseStatsBombBackfillInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => statsbombBackfillWorkflow(input, { ...baseDeps, logger }),
+          toWire: statsbombBackfillToWire,
         })
       );
     }

@@ -88,6 +88,44 @@ export interface StatsBombFreezeFrame {
 }
 
 // =============================================================================
+// 360 FRAMES (from three-sixty/<matchId>.json)
+// =============================================================================
+
+/**
+ * A single 360 freeze-frame player. StatsBomb's 360 data is a SEPARATE feed
+ * from the per-event `shot.freeze_frame`: it covers many event types (not just
+ * shots) and uses a slightly different per-player shape — there is no nested
+ * `player`/`position` ref, only flat `actor`/`keeper`/`teammate` booleans and a
+ * location. The richer player identity in the shot's own freeze-frame is
+ * preferred for shots; the 360 frame is used for the camera `visible_area`
+ * polygon (and as a freeze-frame fallback for non-shot events).
+ *
+ * @see https://github.com/statsbomb/open-data/blob/master/doc/StatsBomb%20Open%20Data%20360%20Specification%20v1.1.pdf
+ */
+export interface StatsBombThreeSixtyPlayer {
+  /** [x, y] in the 120×80 StatsBomb pitch frame. */
+  location: StatsBombLocation;
+  /** True for the player performing the event this frame is attached to. */
+  actor?: boolean;
+  /** True when this player is on the same team as the actor. */
+  teammate?: boolean;
+  /** True when this player is the goalkeeper. */
+  keeper?: boolean;
+}
+
+/**
+ * A 360 frame, keyed to an event by `event_uuid`. `visible_area` is a flat
+ * coordinate list `[x0, y0, x1, y1, ...]` describing the camera-visible
+ * polygon in the 120×80 frame; it is mapped to BTL 0-100 pairwise.
+ */
+export interface StatsBombThreeSixtyFrame {
+  event_uuid: string;
+  /** Flattened polygon vertices: [x0, y0, x1, y1, ...] in 120×80 coords. */
+  visible_area: number[];
+  freeze_frame: StatsBombThreeSixtyPlayer[];
+}
+
+// =============================================================================
 // PASS
 // =============================================================================
 
