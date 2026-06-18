@@ -52,6 +52,36 @@ interface FromStatsBombOpenOptions {
 }
 ```
 
+### `gameFromStatsBombOpen(match, options)`
+
+StatsBomb is a STANDALONE data source: it mints its own canonical game rather
+than depending on another provider (e.g. api-football) having ingested the
+match first. `gameFromStatsBombOpen` converts a single match-envelope entry
+(one element of `matches/<competition>/<season>.json`) into a
+`btl.game.v1.IngestGamesRequest`. `GameService.IngestGames` is find-or-mint: a
+Game whose participants resolve to existing BTL teams attaches to the existing
+canonical game, otherwise a new one is minted.
+
+| Name      | Type                           | Description                           |
+| --------- | ------------------------------ | ------------------------------------- |
+| `match`   | `StatsBombMatch`               | One match object from `matches/…json` |
+| `options` | `GameFromStatsBombOpenOptions` | Replay id + raw payload pointer       |
+
+The minted `Game` carries:
+
+- `provider_game_id = String(match_id)` (the crosswalk key
+  `LookupGameByFixture('statsbomb-open', match_id)` reads back),
+- two participants (HOME, AWAY), each an UNRESOLVED provider `resolution_ref`
+  (the StatsBomb team id under the `statsbomb-open` provider) with `subject`
+  left unset for game-service to resolve to a BTL team + crest via the identity
+  crosswalk,
+- `competition` / `season` as provider-scoped fallback `SubjectRef`s,
+- `scheduled_start` from `match_date` + `kick_off` (UTC),
+- `status` + `score` from the final scoreline when present, else `SCHEDULED`.
+
+The `statsbomb-backfill` workflow uses this to mint each WC2022 game, then reads
+back the canonical id and ingests occurrences (above) under it.
+
 ## Output Shape
 
 The adapter returns the same proto request that `gamewire-worker` hands to

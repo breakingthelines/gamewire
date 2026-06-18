@@ -596,19 +596,22 @@ export interface SquadSweepWireResult {
 
 export interface StatsBombBackfillInput {
   /**
-   * Explicit list of StatsBomb open-data match ids to import. When omitted,
-   * the workflow enumerates the full WC2022 competition (competition 43,
-   * season 106) from `data/matches/43/106.json`.
+   * Optional FILTER over the enumerated WC2022 matches — the slice of match ids
+   * to import (e.g. `[3869685]` for just the final). When omitted, every match
+   * in the matches file is imported. The matches file
+   * (`data/matches/<comp>/<season>.json`) is fetched either way: StatsBomb mints
+   * its own canonical game from each match's metadata (teams / competition /
+   * kickoff), so a match id with no row in the file is dropped (it can't be
+   * minted).
    */
   readonly matchIds?: readonly number[];
   /**
-   * StatsBomb competition id. Defaults to 43 (FIFA World Cup) — only used for
-   * the matches-list path when `matchIds` is omitted.
+   * StatsBomb competition id for the matches file. Defaults to 43 (FIFA World
+   * Cup).
    */
   readonly competitionId?: number;
   /**
-   * StatsBomb season id. Defaults to 106 (2022) — only used for the
-   * matches-list path when `matchIds` is omitted.
+   * StatsBomb season id for the matches file. Defaults to 106 (2022).
    */
   readonly seasonId?: number;
   /**
@@ -622,8 +625,9 @@ export interface StatsBombBackfillInput {
    */
   readonly intercallDelayMs?: number;
   /**
-   * When true, enumerate + resolve canonical ids but skip the events/360 fetch
-   * and the game-service ingest. Useful to preview coverage without writes.
+   * When true, mint the canonical game + read back its id but skip the
+   * events/360 fetch and the occurrence ingest. Useful to preview coverage
+   * (and exercise the mint) without writing occurrences.
    */
   readonly dryRun?: boolean;
   /**
@@ -631,13 +635,6 @@ export interface StatsBombBackfillInput {
    * public GitHub raw host. Overridable for tests / a mirror.
    */
   readonly baseUrl?: string;
-  /**
-   * Override the `statsbomb_match_id → api_football_fixture_id` crosswalk.
-   * Merged over the built-in static map (input entries win). Until the static
-   * WC2022 crosswalk is populated (a follow-on data task), an operator can
-   * supply known mappings here to exercise specific matches end-to-end.
-   */
-  readonly fixtureMap?: Readonly<Record<string, number>>;
   /** ISO-8601 instant used as "now" for metadata. Defaults to clock. */
   readonly nowUtc?: string;
 }
@@ -645,9 +642,10 @@ export interface StatsBombBackfillInput {
 /** Per-match result in a StatsBomb backfill run. */
 export interface StatsBombBackfillMatchResult {
   readonly statsbombMatchId: number;
-  /** The api-football fixture id this match maps to, when known. */
-  readonly apiFootballFixtureId?: string;
-  /** Canonical BTL game id once resolved via LookupGameByFixture. */
+  /**
+   * Canonical BTL game id once minted (IngestGames find-or-mint) and read back
+   * via `LookupGameByFixture('statsbomb-open', match_id)`.
+   */
   readonly gameId?: string;
   readonly status: 'ok' | 'failed' | 'skipped';
   readonly reason?: string;

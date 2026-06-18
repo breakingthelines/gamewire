@@ -201,29 +201,68 @@ export interface StatsBombLineupPlayer {
 }
 
 // =============================================================================
-// MATCH INFO (from matches.json)
+// MATCH INFO (from matches/<competition>/<season>.json)
 // =============================================================================
 
+/**
+ * The competition descriptor on a match envelope. StatsBomb uses suffixed keys
+ * here (`competition_id` / `competition_name`), NOT the generic `{id, name}`
+ * {@link StatsBombRef} shape. `country_name` is the competition's country.
+ * @see matches/43/106.json
+ */
+export interface StatsBombCompetitionInfo {
+  competition_id: number;
+  competition_name: string;
+  country_name?: string;
+}
+
+/**
+ * The season descriptor on a match envelope. As with the competition, StatsBomb
+ * uses suffixed keys (`season_id` / `season_name`).
+ * @see matches/43/106.json
+ */
+export interface StatsBombSeasonInfo {
+  season_id: number;
+  season_name: string;
+}
+
+/**
+ * A single match object from `matches/<competition>/<season>.json`.
+ *
+ * Verified against the StatsBomb open-data WC2022 file
+ * (`matches/43/106.json`): `home_team`/`away_team` use PREFIXED flat keys
+ * (`home_team_id`, `home_team_name`, …), and `competition`/`season` use
+ * suffixed keys (`competition_id`, `season_id`, …) rather than the generic
+ * `{id, name}` {@link StatsBombRef}. `home_score`/`away_score` carry the final
+ * scoreline; `kick_off` is a local-time `HH:MM:SS.mmm` string paired with the
+ * `match_date` calendar date.
+ */
 export interface StatsBombMatch {
   match_id: number;
   match_date: string;
-  kick_off: string;
-  competition: StatsBombRef;
-  season: StatsBombRef;
+  kick_off?: string;
+  competition: StatsBombCompetitionInfo;
+  season: StatsBombSeasonInfo;
   home_team: StatsBombTeam;
   away_team: StatsBombTeam;
-  home_score: number;
-  away_score: number;
-  match_status: string;
-  match_status_360: string;
-  last_updated: string;
-  last_updated_360: string;
-  match_week: number;
-  competition_stage: StatsBombRef;
-  stadium: StatsBombRef;
-  referee: StatsBombRef;
+  home_score?: number;
+  away_score?: number;
+  match_status?: string;
+  match_status_360?: string;
+  last_updated?: string;
+  last_updated_360?: string;
+  match_week?: number;
+  competition_stage?: StatsBombRef;
+  stadium?: StatsBombRef;
+  referee?: StatsBombRef;
 }
 
+/**
+ * A team descriptor on a match envelope. StatsBomb prefixes every field with
+ * the side (`home_team_*` / `away_team_*`), so a single object carries only one
+ * side's populated keys. The {@link teamSideFromMatchTeam} accessor in the game
+ * adapter reads the right side off this shape.
+ */
 export interface StatsBombTeam {
   home_team_id?: number;
   away_team_id?: number;
@@ -233,7 +272,7 @@ export interface StatsBombTeam {
   away_team_gender?: string;
   home_team_group?: string | null;
   away_team_group?: string | null;
-  country: StatsBombRef;
+  country?: StatsBombRef;
   managers?: StatsBombManager[];
 }
 

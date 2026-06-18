@@ -8,6 +8,14 @@ export {
   STATSBOMB_OPEN_PROVIDER_ID,
 } from './adapter.js';
 
+export {
+  gameFromStatsBombOpen,
+  gameFromStatsBombMatch,
+  kickoffMsFromMatch,
+  teamSideFromMatchTeam,
+  type GameFromStatsBombOpenOptions,
+} from './game.js';
+
 export type {
   StatsBombEvent,
   StatsBombShot,
@@ -17,6 +25,9 @@ export type {
   StatsBombDuel,
   StatsBombInterception,
   StatsBombMatch,
+  StatsBombCompetitionInfo,
+  StatsBombSeasonInfo,
+  StatsBombTeam,
   StatsBombRef,
   StatsBombLocation,
   StatsBombLocation3D,
