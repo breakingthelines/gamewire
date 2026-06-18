@@ -75,7 +75,4 @@ export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
 export { squadSweepWorkflow } from './squad-sweep.js';
-export {
-  statsbombBackfillWorkflow,
-  WC2022_STATSBOMB_TO_API_FOOTBALL,
-} from './statsbomb-backfill.js';
+export { statsbombBackfillWorkflow } from './statsbomb-backfill.js';

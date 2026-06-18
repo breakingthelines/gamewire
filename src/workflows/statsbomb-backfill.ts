@@ -7,6 +7,25 @@
  * plus a separate 360 feed — the exact data the platform's "Moment" block
  * (shot freeze-frame + lit camera `visible_area`) renders.
  *
+ * StatsBomb is a STANDALONE data source
+ * -------------------------------------
+ * StatsBomb mints its OWN canonical game; it does not depend on api-football
+ * having ingested the match first. Earlier this workflow resolved the canonical
+ * game id by mapping each StatsBomb match to an api-football fixture id and
+ * calling `LookupGameByFixture('api-football', …)` — but api-football has NO
+ * WC2022 data, so that lookup always missed and nothing ingested. StatsBomb
+ * ships everything needed to mint the game (match metadata + the two teams), so
+ * per match the workflow now:
+ *   1. `IngestGames([gameFromStatsBombOpen(match)])` — game-service `IngestGames`
+ *      is find-or-mint (a Game with resolved participants either attaches to an
+ *      existing canonical game or mints a new one),
+ *   2. `LookupGameByFixture('statsbomb-open', String(match_id))` — read back the
+ *      canonical id game-service assigned (the crosswalk row `IngestGames` just
+ *      wrote under the `statsbomb-open` provider),
+ *   3. fetch `events/<id>.json` + `three-sixty/<id>.json`,
+ *   4. run `fromStatsBombOpen` (occurrences + freeze_frame + 360 visible_area),
+ *   5. `IngestGameOccurrences` under that canonical game id.
+ *
  * Why a separate workflow (not the api-football season-backfill)
  * --------------------------------------------------------------
  * StatsBomb Open Data is a STATIC FILE SET on GitHub, not the api-football
@@ -21,41 +40,27 @@
  *
  * What it reuses
  * --------------
+ *   - `gameFromStatsBombOpen` for the match-envelope → canonical `Game`
+ *     (IngestGames) mapping, with both teams as unresolved provider refs that
+ *     game-service resolves to BTL teams + crests via the identity crosswalk.
  *   - The StatsBomb adapter (`fromStatsBombOpen`) for the events → occurrences
- *     mapping, including the new freeze_frame + 360 `visible_area` handling.
- *   - The same game-service crosswalk the match-concluded bridge uses:
- *     `LookupGameByFixture` (`deps.gameLookup`) to resolve a provider fixture
- *     id → canonical BTL `game_id`, then `IngestGameOccurrences`
- *     (`deps.gameService`). The crosswalk lives in `provider_game_mappings`,
- *     populated by the api-football `IngestGames` path — so a StatsBomb match
- *     must be mapped to its api-football fixture id first (see the static map
- *     below).
+ *     mapping, including the freeze_frame + 360 `visible_area` handling.
+ *   - `IngestGameOccurrences` (`deps.gameService`) under the canonical id.
  *
  * Idempotency
  * -----------
- * Occurrence ids are the stable StatsBomb event UUIDs (`GameOccurrence.id =
- * event.id` in the adapter). game-service upserts occurrences `ON CONFLICT
- * (id)`, so re-running the backfill re-feeds the same UUIDs and updates in
- * place — no duplicates.
- *
- * Mapping caveat (follow-on data task)
- * ------------------------------------
- * The canonical-id lookup is keyed by `(provider, provider_fixture_id)`, and
- * the crosswalk is populated under the api-football provider. StatsBomb match
- * ids are NOT api-football fixture ids, so we need a
- * `statsbomb_match_id → api_football_fixture_id` map to resolve the canonical
- * game. {@link WC2022_STATSBOMB_TO_API_FOOTBALL} is a TODO-marked STUB; until
- * it is populated, matches without a mapping are reported `skipped`
- * (`reason: 'no_fixture_mapping'`) and nothing is ingested for them. Populating
- * the full WC2022 crosswalk is a separate data task.
- *
- * This workflow does NOT need to be RUN against a live stack to land; it is
- * authored to compile + typecheck and mirror the season-backfill structure.
+ * `Game.provider_game_id = String(match_id)` and the crosswalk key
+ * `(statsbomb-open, match_id)` are stable, so re-ingesting a match finds the
+ * same canonical game (upsert) rather than minting a duplicate. Occurrence ids
+ * are the stable StatsBomb event UUIDs (`GameOccurrence.id = event.id`); both
+ * IngestGames and IngestGameOccurrences upsert `ON CONFLICT`, so re-running the
+ * backfill updates in place.
  *
  * Triggering
  * ----------
  * POST /workflows/statsbomb-backfill with a service-principal auth-context
- * header. Body is optional (defaults to the full WC2022 competition):
+ * header. Body is optional (defaults to the full WC2022 competition); pass
+ * `matchIds` to run just a slice (e.g. the final, match_id 3869685):
  *
  *   curl -X POST https://gamewire-worker/workflows/statsbomb-backfill \
  *     -H 'x-btl-auth-context: <token>' \
@@ -68,11 +73,12 @@ import { LookupGameByFixtureRequestSchema } from '@breakingthelines/protos/btl/g
 
 import {
   fromStatsBombOpen,
+  gameFromStatsBombOpen,
   STATSBOMB_OPEN_PROVIDER_ID,
   type StatsBombEvent,
+  type StatsBombMatch,
   type StatsBombThreeSixtyFrame,
 } from '../adapters/statsbomb-open/index.js';
-import { API_FOOTBALL_PROVIDER_ID } from '../adapters/api-football/index.js';
 import type {
   StatsBombBackfillInput,
   StatsBombBackfillMatchResult,
@@ -93,28 +99,6 @@ const WC_SEASON_ID = 106;
 /** Default cap on matches processed per run (a full World Cup is 64). */
 const DEFAULT_MAX_MATCHES_PER_RUN = 64;
 
-/**
- * STUB: `statsbomb_match_id → api_football_fixture_id` for WC2022.
- *
- * The canonical game lookup (`LookupGameByFixture`) is keyed by the
- * api-football provider fixture id (that is the id the api-football ingest
- * path wrote into `provider_game_mappings`). StatsBomb match ids are a
- * different id space, so each StatsBomb match must be mapped to the
- * api-football fixture id for the same real-world game.
- *
- * This map is intentionally a small stub: populating the full 64-match WC2022
- * crosswalk (by matching `home_team`/`away_team`/`match_date` against the
- * api-football WC2022 fixtures) is a FOLLOW-ON DATA TASK, not part of this
- * code change. The single seeded entry (the WC2022 final, StatsBomb 3869685)
- * is a placeholder shape — `0` marks it as not-yet-verified so the workflow
- * skips it rather than ingesting against a wrong fixture.
- *
- * TODO(data): populate WC2022 statsbomb→api-football fixture id crosswalk.
- */
-export const WC2022_STATSBOMB_TO_API_FOOTBALL: Readonly<Record<number, number>> = {
-  // 3869685: <api_football_fixture_id>, // WC2022 final — TODO verify
-};
-
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 
@@ -133,8 +117,7 @@ const threeSixtyPath = (baseUrl: string, matchId: number): string =>
 /**
  * Fetch + parse a StatsBomb open-data JSON file. Returns `undefined` on any
  * non-OK response or parse failure so a single missing file (e.g. a match with
- * no 360 feed) never aborts the run. `optional` toggles whether a miss is
- * logged as an error or a quiet skip.
+ * no 360 feed) never aborts the run.
  */
 const fetchJson = async (fetcher: StatsBombFetch, url: string): Promise<unknown | undefined> => {
   try {
@@ -149,25 +132,35 @@ const fetchJson = async (fetcher: StatsBombFetch, url: string): Promise<unknown 
 };
 
 /**
- * Extract StatsBomb match ids from a `matches/<comp>/<season>.json` envelope
- * (a flat array of match objects, each with a numeric `match_id`).
+ * Parse a `matches/<comp>/<season>.json` envelope (a flat array of match
+ * objects) into match-id → {@link StatsBombMatch} entries. Tolerant of
+ * malformed elements (non-object, missing/invalid `match_id`) — those are
+ * skipped so one bad row never breaks enumeration.
  */
-export const matchIdsFromMatchesEnvelope = (data: unknown): readonly number[] => {
+export const matchesFromEnvelope = (data: unknown): ReadonlyMap<number, StatsBombMatch> => {
+  const byId = new Map<number, StatsBombMatch>();
   if (!Array.isArray(data)) {
-    return [];
+    return byId;
   }
-  const ids: number[] = [];
   for (const item of data) {
     if (!isRecord(item)) {
       continue;
     }
     const raw = item.match_id;
     if (typeof raw === 'number' && Number.isFinite(raw) && raw > 0) {
-      ids.push(raw);
+      byId.set(raw, item as unknown as StatsBombMatch);
     }
   }
-  return ids;
+  return byId;
 };
+
+/**
+ * Extract StatsBomb match ids from a matches envelope (kept for callers /
+ * tests that only need the id list). Order follows the envelope.
+ */
+export const matchIdsFromMatchesEnvelope = (data: unknown): readonly number[] => [
+  ...matchesFromEnvelope(data).keys(),
+];
 
 /** Narrow an unknown parsed events payload to the adapter's event array. */
 const eventsFromPayload = (data: unknown): StatsBombEvent[] => {
@@ -189,13 +182,11 @@ const threeSixtyFromPayload = (data: unknown): StatsBombThreeSixtyFrame[] | unde
 /**
  * Main StatsBomb Open Data backfill workflow.
  *
- * Enumerates WC2022 matches (or an explicit `matchIds` list), and for each:
- *   1. maps the StatsBomb match id → api-football fixture id (static stub),
- *   2. resolves that fixture id → canonical BTL `game_id` via
- *      `LookupGameByFixture`,
- *   3. fetches `events/<id>.json` + `three-sixty/<id>.json`,
- *   4. runs `fromStatsBombOpen` (occurrences + freeze_frame + 360 visible_area),
- *   5. calls `IngestGameOccurrences` under the canonical game id.
+ * Enumerates the WC2022 matches file into match metadata, optionally filters to
+ * an explicit `matchIds` slice, and for each match mints its canonical game
+ * (IngestGames find-or-mint), reads back the canonical id
+ * (`LookupGameByFixture('statsbomb-open', …)`), fetches events + 360, and
+ * ingests occurrences under that id.
  *
  * Sequential per-match (the open-data files are large); the per-match delay is
  * 0 by default since there is no provider quota to respect.
@@ -218,12 +209,6 @@ export const statsbombBackfillWorkflow = async (
       : DEFAULT_MAX_MATCHES_PER_RUN;
   const intercallDelayMs = input.intercallDelayMs !== undefined ? input.intercallDelayMs : 0;
   const dryRun = input.dryRun ?? false;
-  // Input mappings win over the built-in static stub so an operator can
-  // exercise specific matches before the full crosswalk data task lands.
-  const fixtureMap: Readonly<Record<string, number>> = {
-    ...WC2022_STATSBOMB_TO_API_FOOTBALL,
-    ...input.fixtureMap,
-  };
 
   log({
     event: 'statsbomb_backfill.started',
@@ -233,14 +218,19 @@ export const statsbombBackfillWorkflow = async (
       : `competition ${competitionId} season ${seasonId}`,
   });
 
-  // 1. Enumerate match ids.
-  let matchIds: readonly number[];
-  if (input.matchIds && input.matchIds.length > 0) {
-    matchIds = dedupeMatchIds(input.matchIds);
-  } else {
-    const matchesData = await fetchJson(fetcher, matchesPath(baseUrl, competitionId, seasonId));
-    matchIds = matchIdsFromMatchesEnvelope(matchesData);
-  }
+  // 1. Enumerate match metadata from the matches file. StatsBomb mints its own
+  //    canonical game from this metadata, so the matches envelope is always
+  //    required (the optional `matchIds` is a FILTER over it, not a way to skip
+  //    the fetch — we need each match's teams/competition/kickoff to mint).
+  const matchesData = await fetchJson(fetcher, matchesPath(baseUrl, competitionId, seasonId));
+  const matchesById = matchesFromEnvelope(matchesData);
+
+  // Optional matchIds filter (e.g. just the final). Preserves the input order
+  // for an explicit slice; otherwise follows the envelope order. Filter ids
+  // with no metadata in the file are dropped (cannot mint without metadata).
+  const filterIds = dedupeMatchIds(input.matchIds ?? []);
+  let matchIds: readonly number[] =
+    filterIds.length > 0 ? filterIds.filter((id) => matchesById.has(id)) : [...matchesById.keys()];
 
   if (matchIds.length > maxMatchesPerRun) {
     matchIds = matchIds.slice(0, maxMatchesPerRun);
@@ -258,9 +248,10 @@ export const statsbombBackfillWorkflow = async (
   let matchesSkipped = 0;
 
   for (const statsbombMatchId of matchIds) {
+    const match = matchesById.get(statsbombMatchId);
     const result = await processMatch({
       statsbombMatchId,
-      apiFootballFixtureId: fixtureMap[statsbombMatchId],
+      match,
       deps,
       fetcher,
       baseUrl,
@@ -307,8 +298,8 @@ export const statsbombBackfillWorkflow = async (
 
 interface ProcessMatchArgs {
   readonly statsbombMatchId: number;
-  /** api-football fixture id this match maps to (from the merged crosswalk). */
-  readonly apiFootballFixtureId: number | undefined;
+  /** Match metadata from the matches file (undefined if the row was missing). */
+  readonly match: StatsBombMatch | undefined;
   readonly deps: WorkflowDeps;
   readonly fetcher: StatsBombFetch;
   readonly baseUrl: string;
@@ -317,39 +308,81 @@ interface ProcessMatchArgs {
 }
 
 const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMatchResult> => {
-  const { statsbombMatchId, apiFootballFixtureId, deps, fetcher, baseUrl, dryRun, log } = args;
+  const { statsbombMatchId, match, deps, fetcher, baseUrl, dryRun, log } = args;
 
-  // Map StatsBomb match id → api-football fixture id (the crosswalk key).
-  if (apiFootballFixtureId === undefined || apiFootballFixtureId <= 0) {
+  // Need the match metadata to mint the canonical game. A filter id with no
+  // row in the matches file (or a malformed row) can't be minted.
+  if (match === undefined) {
     log({
       event: 'statsbomb_backfill.match_skipped',
       workflow: 'statsbomb-backfill',
-      reason: `statsbombMatchId=${statsbombMatchId}: no_fixture_mapping`,
+      reason: `statsbombMatchId=${statsbombMatchId}: no_match_metadata`,
     });
     return {
       statsbombMatchId,
       status: 'skipped',
-      reason: 'no_fixture_mapping',
+      reason: 'no_match_metadata',
     };
   }
-  const providerFixtureId = String(apiFootballFixtureId);
 
-  // Resolve the canonical BTL game id via the same crosswalk the
-  // match-concluded bridge uses (LookupGameByFixture, keyed under the
-  // api-football provider).
+  // The game-service clients gate the whole mint→lookup→ingest flow; without
+  // them there is nothing to do.
+  if (!deps.gameService) {
+    return {
+      statsbombMatchId,
+      status: 'skipped',
+      reason: 'game_service_not_wired',
+    };
+  }
   if (!deps.gameLookup) {
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       status: 'skipped',
       reason: 'game_lookup_not_wired',
     };
   }
+
+  // 1. Mint (find-or-mint) the canonical game from the StatsBomb match envelope.
+  //    A malformed match yields an empty games array; treat that as a skip.
+  const ingestGamesRequest = gameFromStatsBombOpen(match, {
+    replayId: `statsbomb-open:wc2022:game:${statsbombMatchId}`,
+    rawPayloadRef: matchesPathForMatch(baseUrl, match),
+  });
+  if (ingestGamesRequest.games.length === 0) {
+    log({
+      event: 'statsbomb_backfill.match_skipped',
+      workflow: 'statsbomb-backfill',
+      reason: `statsbombMatchId=${statsbombMatchId}: unmintable_match`,
+    });
+    return {
+      statsbombMatchId,
+      status: 'skipped',
+      reason: 'unmintable_match',
+    };
+  }
+  try {
+    await deps.gameService.ingestGames(ingestGamesRequest);
+    log({
+      event: 'statsbomb_backfill.game_minted',
+      workflow: 'statsbomb-backfill',
+      reason: `statsbombMatchId=${statsbombMatchId} provider=${STATSBOMB_OPEN_PROVIDER_ID}`,
+    });
+  } catch (err) {
+    return {
+      statsbombMatchId,
+      status: 'failed',
+      reason: `ingest_games: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  // 2. Read back the canonical id game-service assigned, via the crosswalk row
+  //    IngestGames just wrote under the statsbomb-open provider.
+  const providerFixtureId = String(statsbombMatchId);
   let gameId: string;
   try {
     const lookup = await deps.gameLookup.lookupGameByFixture(
       create(LookupGameByFixtureRequestSchema, {
-        provider: API_FOOTBALL_PROVIDER_ID,
+        provider: STATSBOMB_OPEN_PROVIDER_ID,
         providerFixtureId,
       })
     );
@@ -357,11 +390,10 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
       log({
         event: 'statsbomb_backfill.game_not_found',
         workflow: 'statsbomb-backfill',
-        reason: `statsbombMatchId=${statsbombMatchId} fixtureId=${providerFixtureId}`,
+        reason: `statsbombMatchId=${statsbombMatchId} provider=${STATSBOMB_OPEN_PROVIDER_ID}`,
       });
       return {
         statsbombMatchId,
-        apiFootballFixtureId: providerFixtureId,
         status: 'skipped',
         reason: 'game_not_found',
       };
@@ -370,9 +402,8 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
   } catch (err) {
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       status: 'failed',
-      reason: err instanceof Error ? err.message : String(err),
+      reason: `lookup_game: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
 
@@ -384,14 +415,13 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
     });
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       gameId,
       status: 'skipped',
       reason: 'dry_run',
     };
   }
 
-  // Fetch events (required) + 360 frames (optional).
+  // 3. Fetch events (required) + 360 frames (optional).
   const eventsData = await fetchJson(fetcher, eventsPath(baseUrl, statsbombMatchId));
   const events = eventsFromPayload(eventsData);
   if (events.length === 0) {
@@ -402,7 +432,6 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
     });
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       gameId,
       status: 'failed',
       reason: 'empty_or_missing_events',
@@ -411,8 +440,8 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
   const threeSixtyData = await fetchJson(fetcher, threeSixtyPath(baseUrl, statsbombMatchId));
   const threeSixtyFrames = threeSixtyFromPayload(threeSixtyData);
 
-  // Map → occurrences (with freeze_frame + 360 visible_area). Occurrence ids
-  // are the stable StatsBomb event UUIDs, so ingest is idempotent.
+  // 4. Map → occurrences (with freeze_frame + 360 visible_area). Occurrence ids
+  //    are the stable StatsBomb event UUIDs, so ingest is idempotent.
   const request = fromStatsBombOpen(events, {
     gameId,
     replayId: `statsbomb-open:wc2022:${statsbombMatchId}`,
@@ -422,7 +451,6 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
   if (request.occurrences.length === 0) {
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       gameId,
       status: 'skipped',
       reason: 'no_normalized_occurrences',
@@ -430,16 +458,7 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
     };
   }
 
-  if (!deps.gameService) {
-    return {
-      statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
-      gameId,
-      status: 'skipped',
-      reason: 'game_service_not_wired',
-    };
-  }
-
+  // 5. Ingest occurrences under the canonical game id.
   try {
     const response = await deps.gameService.ingestGameOccurrences(request);
     log({
@@ -449,7 +468,6 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
     });
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       gameId,
       status: 'ok',
       acceptedCount: response.acceptedCount,
@@ -459,12 +477,22 @@ const processMatch = async (args: ProcessMatchArgs): Promise<StatsBombBackfillMa
   } catch (err) {
     return {
       statsbombMatchId,
-      apiFootballFixtureId: providerFixtureId,
       gameId,
       status: 'failed',
-      reason: err instanceof Error ? err.message : String(err),
+      reason: `ingest_occurrences: ${err instanceof Error ? err.message : String(err)}`,
     };
   }
+};
+
+/**
+ * The raw-payload pointer for a match's source row. Points at the matches file
+ * the match metadata was read from (the canonical-game source), distinct from
+ * the per-match events file pointer used for occurrences.
+ */
+const matchesPathForMatch = (baseUrl: string, match: StatsBombMatch): string => {
+  const competitionId = match.competition?.competition_id ?? WC_COMPETITION_ID;
+  const seasonId = match.season?.season_id ?? WC_SEASON_ID;
+  return matchesPath(baseUrl, competitionId, seasonId);
 };
 
 const dedupeMatchIds = (ids: readonly number[]): readonly number[] => {
@@ -479,8 +507,8 @@ const dedupeMatchIds = (ids: readonly number[]): readonly number[] => {
 
 /** Test-only exports. */
 export const __test = {
+  matchesFromEnvelope,
   matchIdsFromMatchesEnvelope,
-  WC2022_STATSBOMB_TO_API_FOOTBALL,
   WC_COMPETITION_ID,
   WC_SEASON_ID,
   DEFAULT_MAX_MATCHES_PER_RUN,

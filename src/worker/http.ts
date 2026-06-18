@@ -468,19 +468,6 @@ const asNumberList = (value: unknown): readonly number[] | undefined => {
 const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined;
 
-const asNumberRecord = (value: unknown): Readonly<Record<string, number>> | undefined => {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const out: Record<string, number> = {};
-  for (const [key, raw] of Object.entries(value)) {
-    if (typeof raw === 'number' && Number.isFinite(raw)) {
-      out[key] = raw;
-    }
-  }
-  return out;
-};
-
 const parseSeasonBackfillTargets = (
   value: unknown
 ): readonly SeasonBackfillTarget[] | undefined => {
@@ -622,7 +609,6 @@ const parseStatsBombBackfillInput = (body: unknown): StatsBombBackfillInput => {
     intercallDelayMs: asNumber(body.intercallDelayMs),
     dryRun: asBoolean(body.dryRun),
     baseUrl: asString(body.baseUrl),
-    fixtureMap: asNumberRecord(body.fixtureMap),
     nowUtc: asString(body.nowUtc),
   };
 };
