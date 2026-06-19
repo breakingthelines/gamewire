@@ -164,6 +164,8 @@ describe('StatsBomb Open adapter', () => {
         STATSBOMB_EVENT_TYPES.PASS,
         STATSBOMB_EVENT_TYPES.CARRY,
         STATSBOMB_EVENT_TYPES.INTERCEPTION,
+        STATSBOMB_EVENT_TYPES.PRESSURE,
+        STATSBOMB_EVENT_TYPES.BALL_RECOVERY,
       ] as const;
       const supportedRawCount = events.filter((e) =>
         (supportedTypeIds as readonly number[]).includes(e.type.id)
