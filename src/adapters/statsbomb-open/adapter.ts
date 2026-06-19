@@ -377,6 +377,10 @@ function getActionType(event: StatsBombEvent): FootballActionType | null {
       return null;
     case STATSBOMB_EVENT_TYPES.INTERCEPTION:
       return FootballActionType.INTERCEPTION;
+    case STATSBOMB_EVENT_TYPES.PRESSURE:
+      return FootballActionType.PRESSURE;
+    case STATSBOMB_EVENT_TYPES.BALL_RECOVERY:
+      return FootballActionType.RECOVERY;
     default:
       return null;
   }
