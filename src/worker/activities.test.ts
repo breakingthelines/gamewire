@@ -53,6 +53,15 @@ describe('gamewire-worker activities', () => {
       '/fixtures?league=78&season=2025',
       '/fixtures?league=61&season=2025',
       '/fixtures?league=1&season=2026',
+      '/fixtures?league=144&season=2025',
+      '/fixtures?league=94&season=2025',
+      '/fixtures?league=88&season=2025',
+      '/fixtures?league=45&season=2025',
+      '/fixtures?league=48&season=2025',
+      '/fixtures?league=143&season=2025',
+      '/fixtures?league=137&season=2025',
+      '/fixtures?league=81&season=2025',
+      '/fixtures?league=66&season=2025',
     ]);
     expect(result.runtime.request.redactedHeaders).toContain('x-apisports-key');
     expect(result.response.replayId).toBe('replay-1');

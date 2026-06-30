@@ -39,7 +39,7 @@ import {
 } from './index.js';
 
 describe('API-Football adapter', () => {
-  it('defines the beta top-five plus World Cup coverage plan', () => {
+  it('defines the top-five + World Cup + Scope A leagues and cups coverage plan', () => {
     expect(API_FOOTBALL_BETA_COMPETITIONS.map((competition) => competition.label)).toEqual([
       'Premier League',
       'La Liga',
@@ -47,9 +47,20 @@ describe('API-Football adapter', () => {
       'Bundesliga',
       'Ligue 1',
       'FIFA World Cup',
+      // Scope A — additional first divisions.
+      'Pro League',
+      'Primeira Liga',
+      'Eredivisie',
+      // Scope A — domestic cups.
+      'FA Cup',
+      'EFL Cup',
+      'Copa del Rey',
+      'Coppa Italia',
+      'DFB Pokal',
+      'Coupe de France',
     ]);
-    expect(apiFootballFixtureSyncPaths()).toHaveLength(6);
-    expect(apiFootballStandingSyncPaths()).toHaveLength(6);
+    expect(apiFootballFixtureSyncPaths()).toHaveLength(15);
+    expect(apiFootballStandingSyncPaths()).toHaveLength(15);
     expect(apiFootballLivePath()).toBe('/fixtures?live=all');
     expect(apiFootballStatusPath()).toBe('/status');
     expect(apiFootballSquadPath('10379')).toBe('/players/squads?team=10379');
