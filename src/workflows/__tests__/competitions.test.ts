@@ -28,6 +28,12 @@ describe('PHASE_A_COMPETITIONS catalogue', () => {
       'caf-qualifiers',
       'concacaf-qualifiers',
       'fifa-world-cup-2026',
+      'fa-cup',
+      'efl-cup',
+      'copa-del-rey',
+      'coppa-italia',
+      'dfb-pokal',
+      'coupe-de-france',
     ]);
   });
 
