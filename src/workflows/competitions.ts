@@ -206,6 +206,64 @@ export const PHASE_A_COMPETITIONS: readonly CompetitionEntry[] = [
     calendar: INTERNATIONAL_WINDOWS,
     tier: 'international',
   },
+
+  // Domestic cups. Already listed in `API_FOOTBALL_BETA_COMPETITIONS`
+  // (which drives live discovery + the call budget); adding them here
+  // brings them under the daily-anchor + hourly sweeps and the season
+  // fill's catalogue expansion, so an off-season finished cup is no
+  // longer invisible to the rolling window. The two catalogues should
+  // eventually converge to one source of truth. Knockout cups have no
+  // league table, so the standings sweep returns an empty table the
+  // competition page renders gracefully. Cup ties cluster on weekend +
+  // midweek-replay slots, so they share the domestic calendar.
+  {
+    key: 'fa-cup',
+    label: 'FA Cup',
+    apiFootballLeagueId: 45,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
+  {
+    key: 'efl-cup',
+    label: 'EFL Cup',
+    apiFootballLeagueId: 48,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
+  {
+    key: 'copa-del-rey',
+    label: 'Copa del Rey',
+    apiFootballLeagueId: 143,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
+  {
+    key: 'coppa-italia',
+    label: 'Coppa Italia',
+    apiFootballLeagueId: 137,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
+  {
+    key: 'dfb-pokal',
+    label: 'DFB Pokal',
+    apiFootballLeagueId: 81,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
+  {
+    key: 'coupe-de-france',
+    label: 'Coupe de France',
+    apiFootballLeagueId: 66,
+    season: 2025,
+    calendar: WEEKEND_AND_MIDWEEK,
+    tier: 'domestic',
+  },
 ];
 
 export const PHASE_A_COMPETITIONS_BY_KEY: ReadonlyMap<string, CompetitionEntry> = new Map(
