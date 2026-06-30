@@ -25,6 +25,8 @@ import {
   dailyAnchorWorkflow,
   hourlyMatchdayToWire,
   hourlyMatchdayWorkflow,
+  identityGapScanToWire,
+  identityGapScanWorkflow,
   PHASE_A_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
@@ -39,6 +41,7 @@ import {
   type CompetitionEntry,
   type DailyAnchorInput,
   type HourlyMatchdayInput,
+  type IdentityGapScanInput,
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
   type SquadSweepInput,
@@ -156,7 +159,8 @@ type WorkflowName =
   | 'season-backfill'
   | 'sweep-missing-payloads'
   | 'squad-sweep'
-  | 'statsbomb-backfill';
+  | 'statsbomb-backfill'
+  | 'identity-gap-scan';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -412,6 +416,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/statsbomb-backfill') {
     return 'statsbomb-backfill';
   }
+  if (pathname === '/workflows/identity-gap-scan') {
+    return 'identity-gap-scan';
+  }
   return 'daily-anchor';
 };
 
@@ -613,6 +620,16 @@ const parseStatsBombBackfillInput = (body: unknown): StatsBombBackfillInput => {
   };
 };
 
+const parseIdentityGapScanInput = (body: unknown): IdentityGapScanInput => {
+  if (!isRecord(body)) {
+    return {};
+  }
+  return {
+    maxEntitiesPerRun: asNumber(body.maxEntitiesPerRun),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -691,7 +708,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/season-backfill' ||
       request.pathname === '/workflows/sweep-missing-payloads' ||
       request.pathname === '/workflows/squad-sweep' ||
-      request.pathname === '/workflows/statsbomb-backfill')
+      request.pathname === '/workflows/statsbomb-backfill' ||
+      request.pathname === '/workflows/identity-gap-scan')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -807,6 +825,18 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => statsbombBackfillWorkflow(input, { ...baseDeps, logger }),
           toWire: statsbombBackfillToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/identity-gap-scan') {
+      const input = parseIdentityGapScanInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => identityGapScanWorkflow(input, { ...baseDeps, logger }),
+          toWire: identityGapScanToWire,
         })
       );
     }

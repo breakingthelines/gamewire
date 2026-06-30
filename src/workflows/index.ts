@@ -21,6 +21,10 @@ export type {
   HourlyMatchdayInput,
   HourlyMatchdayOutput,
   HourlyMatchdayWireResult,
+  IdentityGap,
+  IdentityGapScanInput,
+  IdentityGapScanOutput,
+  IdentityGapScanWireResult,
   MatchdayCalendar,
   MatchdayWindow,
   SeasonBackfillInput,
@@ -51,6 +55,7 @@ export type {
 export {
   dailyAnchorToWire,
   hourlyMatchdayToWire,
+  identityGapScanToWire,
   seasonBackfillToWire,
   squadSweepToWire,
   statsbombBackfillToWire,
@@ -76,3 +81,4 @@ export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
 export { squadSweepWorkflow } from './squad-sweep.js';
 export { statsbombBackfillWorkflow } from './statsbomb-backfill.js';
+export { identityGapScanWorkflow } from './identity-gap-scan.js';

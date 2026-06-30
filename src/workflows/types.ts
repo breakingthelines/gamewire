@@ -162,7 +162,8 @@ export interface WorkflowLogEntry {
     | 'season-backfill'
     | 'sweep-missing-payloads'
     | 'squad-sweep'
-    | 'statsbomb-backfill';
+    | 'statsbomb-backfill'
+    | 'identity-gap-scan';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -175,6 +176,14 @@ export interface WorkflowLogEntry {
   readonly action?: DegradeAction;
   readonly reason?: string;
   readonly message?: string;
+  // identity-gap-scan fields.
+  readonly entityType?: 'team' | 'competition';
+  readonly providerId?: string;
+  readonly label?: string;
+  readonly leagueId?: number;
+  readonly entitiesChecked?: number;
+  readonly gapsFound?: number;
+  readonly gapsByLeague?: Readonly<Record<string, number>>;
 }
 
 export type WorkflowLogger = (entry: WorkflowLogEntry) => void;
@@ -590,6 +599,63 @@ export interface SquadSweepWireResult {
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
   readonly dryRun: boolean;
+}
+
+// ── Identity Gap Scan ──────────────────────────────────────────────────────
+
+export interface IdentityGapScanInput {
+  /**
+   * Maximum number of distinct provider entities (teams + competitions) to
+   * resolve per run. Defaults to 1000 — comfortably above the full known-team
+   * universe; a guard against a runaway cache, not a real limit.
+   */
+  readonly maxEntitiesPerRun?: number;
+  /** ISO-8601 instant used as "now" for the report timestamps. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+/** One unresolved provider entity surfaced by the gap scan. */
+export interface IdentityGap {
+  readonly entityType: 'team' | 'competition';
+  /** API-Football provider id (the value identity.resolve was queried with). */
+  readonly providerId: string;
+  /** Best-effort display label from the fixture envelope (provider name). */
+  readonly label: string;
+  /** API-Football league id this entity was seen under (for grouping). */
+  readonly leagueId?: number;
+}
+
+export interface IdentityGapScanOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: 'completed' | 'partial';
+  /** Distinct provider entities resolved (teams + competitions). */
+  readonly entitiesChecked: number;
+  readonly teamsChecked: number;
+  readonly competitionsChecked: number;
+  /** Count of entities that identity could NOT resolve (the gaps). */
+  readonly gapsFound: number;
+  /** Per-league gap counts, e.g. `{ "39": 0, "45": 3 }`. */
+  readonly gapsByLeague: Readonly<Record<string, number>>;
+  /** The full gap list (dropped at the wire boundary; see the wire result). */
+  readonly gaps: readonly IdentityGap[];
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the identity-gap-scan workflow.
+ * The full `gaps` list is dropped at the wire boundary so a large scan cannot
+ * exceed the kernel-side scanner limit; per-gap detail remains in the streamed
+ * `identity_gap` logger events and the per-league summary survives here.
+ */
+export interface IdentityGapScanWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: IdentityGapScanOutput['status'];
+  readonly entitiesChecked: number;
+  readonly teamsChecked: number;
+  readonly competitionsChecked: number;
+  readonly gapsFound: number;
+  readonly gapsByLeague: Readonly<Record<string, number>>;
 }
 
 // ── StatsBomb Open Data Backfill ───────────────────────────────────────────
