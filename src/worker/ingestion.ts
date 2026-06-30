@@ -72,16 +72,27 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'events-post-final': 6 * 60 * 60,
   'lineups-post-confirm': 60 * 60,
   // Team + player match stats are pulled as a sidecar off the live
-  // fixture-detail tick (see `fetchMatchStatsForFixture`). A short 2-min TTL
-  // keeps the in-play numbers (possession, shots, ratings) refreshing during a
-  // match while still de-duping the 30s detail ticks down to one stats fetch
-  // every ~2 min per fixture (the singleflight + cache absorb the rest). The
-  // same short TTL also lets the FINAL settled stats land once the fixture
-  // reaches full-time, rather than freezing a mid-match snapshot for hours.
-  // The on-demand post-final + backfill workflows walk each fixture once, so
-  // the short TTL costs them nothing.
-  'team-match-stats': 2 * 60,
-  'player-match-stats': 2 * 60,
+  // fixture-detail tick (see `fetchMatchStatsForFixture`). A 60s TTL keeps the
+  // in-play numbers (possession, shots, ratings) within ~1 min of live while
+  // still de-duping the 30s detail ticks down to one stats fetch every other
+  // tick per fixture (the singleflight + cache absorb the rest). The same short
+  // TTL lets the FINAL settled stats land once the fixture reaches full-time,
+  // rather than freezing a mid-match snapshot for hours. The on-demand
+  // post-final + backfill workflows walk each fixture once, so it costs them
+  // nothing.
+  //
+  // Quota: a refresh = 2 calls (team + player), cache-first, so the TTL — not
+  // the 30s tick — sets the provider rate. At 60s a full 5-league domestic
+  // gameweek (~48 fixtures, the busiest realistic day) costs ~11.5k stats
+  // calls/day; with scores + the rest of the fleet that totals ~24k/day, well
+  // under the 60k soft cap and clear of the per-minute limit at peak
+  // concurrency. 30s was affordable on the daily cap (~36k total) but sat at
+  // the soft-cap line and pushed per-minute pressure on a packed Saturday slot,
+  // so 60s is the deliberate midpoint: half the staleness of the old 2-min for
+  // a fraction of 30s's cost. The frontend Stats tab polls at 15s, so it
+  // surfaces each 60s backend refresh promptly.
+  'team-match-stats': 60,
+  'player-match-stats': 60,
   'squad-list-fallback': 24 * 60 * 60,
   // Standings move at most once per fixture round; a 6h TTL keeps the First
   // Touch club picker's table warm without re-spending provider budget on a
