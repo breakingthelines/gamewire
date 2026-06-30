@@ -166,6 +166,78 @@ describe('API-Football adapter', () => {
     expect(request.games[0]?.sportPayload.value?.matchday).toBe(1);
   });
 
+  it('captures the penalty-shootout tally on score.penalty while keeping the goals scoreline', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail-fullTime:1918',
+      resourceId: '1918',
+      fetchedAtMs: Date.parse('2026-06-28T22:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1918,
+              date: '2026-06-28T19:00:00+00:00',
+              status: { short: 'PEN', elapsed: 120 },
+            },
+            league: { id: 1, name: 'World Cup', season: 2026, round: 'Round of 32' },
+            teams: {
+              home: { id: 25, name: 'Germany', code: 'GER', country: 'Germany' },
+              away: { id: 26, name: 'Paraguay', code: 'PAR', country: 'Paraguay' },
+            },
+            // Tie 1-1 after extra time, Paraguay win the shootout 4-3.
+            goals: { home: 1, away: 1 },
+            score: {
+              halftime: { home: 0, away: 1 },
+              fulltime: { home: 1, away: 1 },
+              extratime: { home: 0, away: 0 },
+              penalty: { home: 3, away: 4 },
+            },
+          },
+        ],
+      },
+    });
+
+    const score = request.games[0]?.score;
+    // The scoreline stays the 1-1 draw (penalties do not change it).
+    expect(score?.display).toBe('1-1');
+    expect(score?.sportScore.case).toBe('football');
+    const football = score?.sportScore.value as { penalties?: { home: number; away: number } };
+    // The shootout tally is carried separately so surfaces can show "4-3 on pens".
+    expect(football.penalties).toBeDefined();
+    expect(football.penalties?.home).toBe(3);
+    expect(football.penalties?.away).toBe(4);
+  });
+
+  it('leaves penalties unset for a normal full-time result (no shootout)', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail-fullTime:1919',
+      resourceId: '1919',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1919,
+              date: '2026-05-11T19:00:00+00:00',
+              status: { short: 'FT', elapsed: 90 },
+            },
+            league: { id: 39, name: 'Premier League', season: 2025, round: 'Regular Season - 1' },
+            teams: {
+              home: { id: 42, name: 'Arsenal', code: 'ARS', country: 'England' },
+              away: { id: 49, name: 'Chelsea', code: 'CHE', country: 'England' },
+            },
+            goals: { home: 2, away: 1 },
+            score: { fulltime: { home: 2, away: 1 }, penalty: { home: null, away: null } },
+          },
+        ],
+      },
+    });
+    const football = request.games[0]?.score?.sportScore.value as {
+      penalties?: { home: number; away: number };
+    };
+    expect(football.penalties).toBeUndefined();
+  });
+
   it('uses identity-resolved subjects when supplied and keeps unresolved provider refs honest', () => {
     const request = apiFootballIngestGamesRequestFromFixtures({
       replayId: 'live:fixture-detail-fullTime:1917',

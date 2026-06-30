@@ -65,6 +65,12 @@ export interface ApiFootballTeamRef {
   readonly winner?: boolean | null;
 }
 
+/** A home/away score pair as API-Football reports each phase under `score`. */
+export interface ApiFootballScoreLine {
+  readonly home?: number | null;
+  readonly away?: number | null;
+}
+
 export interface ApiFootballFixtureResponse {
   readonly fixture: ApiFootballFixtureRef;
   readonly league: ApiFootballLeagueRef;
@@ -75,6 +81,16 @@ export interface ApiFootballFixtureResponse {
   readonly goals?: {
     readonly home?: number | null;
     readonly away?: number | null;
+  };
+  // Per-phase scores. `penalty` carries the shootout tally for a tie decided on
+  // penalties (e.g. {home: 3, away: 4}); null/absent when there was no shootout.
+  // `goals` above stays the running/aggregate score (1-1) so the shootout result
+  // is surfaced separately rather than folded into the scoreline.
+  readonly score?: {
+    readonly halftime?: ApiFootballScoreLine | null;
+    readonly fulltime?: ApiFootballScoreLine | null;
+    readonly extratime?: ApiFootballScoreLine | null;
+    readonly penalty?: ApiFootballScoreLine | null;
   };
 }
 
