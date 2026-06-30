@@ -4,10 +4,10 @@ import { API_FOOTBALL_BETA_COMPETITIONS } from '../adapters/api-football/index.j
 import { estimateMatchdayCallBudget } from './call-budget.js';
 
 describe('gamewire-worker call budget model', () => {
-  it('defaults to top five European leagues plus World Cup coverage', () => {
+  it('defaults to the top five + World Cup + Scope A leagues and cups coverage', () => {
     const estimate = estimateMatchdayCallBudget('api-football');
 
-    expect(estimate.assumptions.competitions).toBe(6);
+    expect(estimate.assumptions.competitions).toBe(15);
     expect(API_FOOTBALL_BETA_COMPETITIONS.map((competition) => competition.label)).toEqual([
       'Premier League',
       'La Liga',
@@ -15,6 +15,15 @@ describe('gamewire-worker call budget model', () => {
       'Bundesliga',
       'Ligue 1',
       'FIFA World Cup',
+      'Pro League',
+      'Primeira Liga',
+      'Eredivisie',
+      'FA Cup',
+      'EFL Cup',
+      'Copa del Rey',
+      'Coppa Italia',
+      'DFB Pokal',
+      'Coupe de France',
     ]);
   });
 
