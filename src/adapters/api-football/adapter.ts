@@ -56,6 +56,7 @@ import {
   FootballScorePayloadSchema,
   FootballLineupsSchema,
   FootballPeriod,
+  PenaltyShootoutScoreSchema,
   FootballSquadListPlayerSchema,
   FootballSquadListSchema,
   FootballSquadListTeamSchema,
@@ -1014,6 +1015,14 @@ function liveGame(
   const homeGoals = nullableNumber(response.goals?.home);
   const awayGoals = nullableNumber(response.goals?.away);
   const hasScore = homeGoals !== undefined || awayGoals !== undefined;
+
+  // Penalty shootout tally (a tie decided on penalties). API-Football reports
+  // it on `score.penalty` separately from the running `goals` scoreline, so we
+  // keep `goals` as the 1-1 result and carry the shootout as its own sub-score.
+  // Present only when at least one side has a value (both null = no shootout).
+  const penHome = nullableNumber(response.score?.penalty?.home);
+  const penAway = nullableNumber(response.score?.penalty?.away);
+  const hasShootout = penHome !== undefined || penAway !== undefined;
   const status = gameStatusFromApiFootball(response.fixture.status.short);
   const finalScore = status === GameStatus.FINISHED || status === GameStatus.AWARDED;
   const gameResolutionRef = entityResolutionRef(
@@ -1073,6 +1082,14 @@ function liveGame(
             value: create(FootballScorePayloadSchema, {
               homeGoals: homeGoals ?? 0,
               awayGoals: awayGoals ?? 0,
+              ...(hasShootout
+                ? {
+                    penalties: create(PenaltyShootoutScoreSchema, {
+                      home: penHome ?? 0,
+                      away: penAway ?? 0,
+                    }),
+                  }
+                : {}),
             }),
           },
         })
