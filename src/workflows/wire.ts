@@ -24,6 +24,8 @@ import type {
   DailyAnchorWireResult,
   HourlyMatchdayOutput,
   HourlyMatchdayWireResult,
+  IdentityGapScanOutput,
+  IdentityGapScanWireResult,
   SeasonBackfillOutput,
   SeasonBackfillWireResult,
   SquadSweepOutput,
@@ -166,4 +168,23 @@ export const statsbombBackfillToWire = (
   matchesFailed: output.matchesFailed,
   matchesSkipped: output.matchesSkipped,
   dryRun: output.dryRun,
+});
+
+/**
+ * Identity-gap-scan output drops the full `gaps` list at the wire boundary.
+ * A scan over a fully-uncovered lower tier could surface hundreds of gaps;
+ * the per-league summary (`gapsByLeague`) + counts survive, and per-gap detail
+ * remains in the streamed `identity_gap` logger events.
+ */
+export const identityGapScanToWire = (
+  output: IdentityGapScanOutput
+): IdentityGapScanWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  status: output.status,
+  entitiesChecked: output.entitiesChecked,
+  teamsChecked: output.teamsChecked,
+  competitionsChecked: output.competitionsChecked,
+  gapsFound: output.gapsFound,
+  gapsByLeague: output.gapsByLeague,
 });
