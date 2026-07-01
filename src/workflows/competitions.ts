@@ -61,7 +61,12 @@ export const PHASE_A_COMPETITIONS: readonly CompetitionEntry[] = [
     key: 'premier-league',
     label: 'Premier League',
     apiFootballLeagueId: 39,
-    season: 2025,
+    // Rolled to the 2026/27 season: 2025/26 finished May 2026, and the steady-state
+    // standings poll keys off this literal, so it must advance for gamewire to
+    // ingest the new season's table once api-football publishes it. (Other entries
+    // below are still 2025 — same latent rollover per the header note; bump as each
+    // new season becomes the front door.)
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic',
     // Baseline verified fixture for the rotation. Used by adapter and
