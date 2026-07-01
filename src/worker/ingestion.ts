@@ -103,6 +103,19 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
 } as const;
 
 /**
+ * TTL for an EMPTY `lineups-post-confirm` response (`{ response: [] }`), i.e.
+ * lineups not published yet during the pre-kickoff window. The full
+ * `lineups-post-confirm` TTL (1h) is right for a POPULATED lineup — confirmed XIs
+ * don't change — but caching the empty for 1h masks the real lineup for up to an
+ * hour: the next ~6 ten-minute polls all hit the stale empty and never re-ask the
+ * provider. Premier League lineups typically publish ~T-60 to T-75; a short empty
+ * TTL (< the 10-min poll interval) lets the next tick re-fetch and surface them
+ * at the provider's earliest availability. Quota cost is trivial (~+5 calls per
+ * fixture across the pre-match window).
+ */
+export const LINEUPS_EMPTY_TTL_SECONDS = 5 * 60;
+
+/**
  * Loop tick cadence per workload. Live fixtures poll at the TTL; metadata
  * workloads tick once per day. Polling cadence is independent of TTL so a
  * cache hit short-circuits the provider call.
@@ -448,7 +461,15 @@ export class ApiFootballIngestionLoop {
       this.#metrics.recordOutcome('fetched');
       const json = fetchResult.json;
       if (json !== undefined) {
-        await this.#cache.set(cacheKey, json, ttlSeconds);
+        // An empty pre-kickoff lineups response means "not published yet" — a
+        // transient state that flips within the pre-match window. Cache it briefly
+        // (not the full 1h) so the next poll re-hits the provider and catches
+        // lineups the moment they land. A populated lineup keeps the full TTL.
+        const effectiveTtl =
+          workload === 'lineups-post-confirm' && lineupsMissing(json)
+            ? Math.min(ttlSeconds, LINEUPS_EMPTY_TTL_SECONDS)
+            : ttlSeconds;
+        await this.#cache.set(cacheKey, json, effectiveTtl);
       }
 
       this.#log({

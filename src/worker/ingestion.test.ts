@@ -7,6 +7,7 @@ import {
   ApiFootballIngestionLoop,
   INGESTION_TICK_INTERVAL_MS,
   INGESTION_TTL_SECONDS,
+  LINEUPS_EMPTY_TTL_SECONDS,
   PROVIDER_ID,
   __test as ingestionTest,
 } from './ingestion.js';
@@ -320,6 +321,50 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'api-football:fixtures-next-7d:top',
       expect.objectContaining({ response: expect.any(Array) }),
       INGESTION_TTL_SECONDS['fixtures-next-7d']
+    );
+  });
+
+  it('caches an EMPTY lineups response with the short empty-TTL, not the full 1h', async () => {
+    const cache = new InMemoryProviderCache();
+    const setSpy = vi.spyOn(cache, 'set');
+    // Pre-kickoff: lineups not published yet → provider returns { response: [] }.
+    const fetchFn = buildFetchMock({ response: [] });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      cache,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    await loop.fetchWorkload({ workload: 'lineups-post-confirm', resourceId: '1538961' });
+    // Short TTL so the next 10-min poll re-hits the provider and catches lineups
+    // when they publish — NOT the 1h TTL that would mask them for the window.
+    expect(setSpy).toHaveBeenCalledWith(
+      'api-football:lineups-post-confirm:1538961',
+      expect.objectContaining({ response: [] }),
+      LINEUPS_EMPTY_TTL_SECONDS
+    );
+    expect(LINEUPS_EMPTY_TTL_SECONDS).toBeLessThan(INGESTION_TTL_SECONDS['lineups-post-confirm']);
+  });
+
+  it('caches a POPULATED lineups response with the full workload TTL', async () => {
+    const cache = new InMemoryProviderCache();
+    const setSpy = vi.spyOn(cache, 'set');
+    const fetchFn = buildFetchMock({
+      response: [{ team: { id: 1 }, startXI: [{ player: { id: 9 } }] }],
+    });
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      cache,
+      fetchFn,
+      logger: quietLogger,
+    });
+
+    await loop.fetchWorkload({ workload: 'lineups-post-confirm', resourceId: '1538961' });
+    expect(setSpy).toHaveBeenCalledWith(
+      'api-football:lineups-post-confirm:1538961',
+      expect.objectContaining({ response: expect.any(Array) }),
+      INGESTION_TTL_SECONDS['lineups-post-confirm']
     );
   });
 
