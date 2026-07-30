@@ -131,7 +131,13 @@ export interface FetchFootballGameLookupClientOptions {
   readonly interceptors?: readonly Interceptor[];
 }
 
-const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 5_000;
+// Batched ingests (a 380-game league is one transaction) queue behind game-service's
+// connection pool during the hourly fixtures burst. A 5s deadline killed any call that
+// didn't win a connection in time (deadline_exceeded → the client RST_STREAMs → the peer
+// sees NGHTTP2_CANCEL), which also dropped the live-tick occurrence writes on the same
+// channel and froze in-play matches. Successes complete in 1–4s, so a 30s ceiling costs
+// nothing on the happy path and lets queued calls survive the burst.
+const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 30_000;
 
 /**
  * Build a `FootballGameLookupClient` backed by a real gRPC transport.
