@@ -197,7 +197,8 @@ export interface WorkflowLogEntry {
     | 'sweep-missing-payloads'
     | 'squad-sweep'
     | 'statsbomb-backfill'
-    | 'identity-gap-scan';
+    | 'identity-gap-scan'
+    | 'competition-payload-backfill';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -787,4 +788,121 @@ export interface StatsBombBackfillWireResult {
   readonly matchesFailed: number;
   readonly matchesSkipped: number;
   readonly dryRun: boolean;
+}
+
+// ── Competition Payload Backfill ───────────────────────────────────────────
+
+/**
+ * Payload kinds the competition-scoped backfill can fill. A strict subset of
+ * {@link SweepMissingPayloadKind}: the domestic-cup coverage gap this
+ * workflow exists to close (competitions that entered ingest coverage after
+ * their fixtures were already played) only ever lacks post-match events and
+ * lineups — the fixtures themselves, team-match-stats, and player-match-stats
+ * were all backfilled from the fixtures endpoint already. Narrowing the type
+ * (rather than reusing the full `SweepMissingPayloadKind`) keeps an operator
+ * from accidentally invoking this competition-scoped path for a kind it was
+ * never designed to reason about.
+ */
+export type CompetitionBackfillKind = 'events' | 'lineups';
+
+export interface CompetitionPayloadBackfillInput {
+  /**
+   * Catalogue competition key (e.g. `'coppa-italia'`), resolved against
+   * `deps.competitions`. Either this or `apiFootballLeagueId` is required.
+   */
+  readonly competitionKey?: string;
+  /**
+   * Explicit API-Football league id. When both this and `competitionKey`
+   * are supplied the explicit league id wins (the key is then used only as
+   * the human label in the report), mirroring
+   * {@link SeasonBackfillTarget}'s resolution rule.
+   */
+  readonly apiFootballLeagueId?: number;
+  /** Which payload kind to backfill. */
+  readonly kind: CompetitionBackfillKind;
+  /** Maximum number of matching fixtures to process this run. Defaults to 100, max 500. */
+  readonly limit?: number;
+  /** ISO-8601 lower bound on scheduled_start_at. */
+  readonly since?: string;
+  /** ISO-8601 upper bound on scheduled_start_at. */
+  readonly until?: string;
+  /**
+   * When true (the default — opposite of {@link SweepMissingPayloadsInput}),
+   * the workflow enumerates and reports the matching fixtures but performs
+   * zero provider fetches and zero game-service writes. Pass `false`
+   * explicitly to execute. This tool exists specifically to let an operator
+   * prove a domestic-cup backfill on the smallest competition first, so a
+   * bare invocation must never write.
+   */
+  readonly dryRun?: boolean;
+  /** Per-fixture inter-call delay in milliseconds; forwarded to the sweep. */
+  readonly intercallDelayMs?: number;
+  /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+/** A single fixture matched to the target competition by this run. */
+export interface CompetitionPayloadBackfillFixture {
+  readonly gameId: string;
+  readonly providerFixtureId: string;
+  /** ISO-8601 kickoff, when the entry carried one. */
+  readonly scheduledStartAt?: string;
+}
+
+export interface CompetitionPayloadBackfillOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly competitionKey?: string;
+  readonly apiFootballLeagueId: number;
+  readonly kind: CompetitionBackfillKind;
+  /**
+   * Total entries returned by ListGamesMissingPayloads for this kind across
+   * every page scanned this run, BEFORE the competition filter — i.e. the
+   * size of the whole cross-competition gap, for context.
+   */
+  readonly fixturesConsidered: number;
+  /** Entries that matched the target competition (the actual backfill set). */
+  readonly fixturesMatched: number;
+  /** The matched fixtures themselves — what this run would fetch (dry run) or fetched (executed). */
+  readonly fixtures: readonly CompetitionPayloadBackfillFixture[];
+  readonly fixturesProcessed: number;
+  readonly fixturesOk: number;
+  readonly fixturesSkipped: number;
+  readonly fixturesFailed: number;
+  readonly callsUsed: number;
+  readonly status: 'completed' | 'partial' | 'aborted';
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly errors: readonly string[];
+  readonly dryRun: boolean;
+  readonly reason?: string;
+}
+
+/**
+ * NDJSON `event: 'completed'` payload for the competition-payload-backfill
+ * workflow. Drops the `fixtures` list — bounded at 500 short strings so it
+ * would never itself exceed the kernel-side scanner limit, but per-fixture
+ * detail is still surfaced as streamed `competition_payload_backfill.*`
+ * logger events (one per matched fixture), matching how every other sweep
+ * in this layer keeps its trailing summary line small and pushes per-item
+ * detail onto the NDJSON stream instead.
+ */
+export interface CompetitionPayloadBackfillWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly competitionKey?: string;
+  readonly apiFootballLeagueId: number;
+  readonly kind: CompetitionBackfillKind;
+  readonly fixturesConsidered: number;
+  readonly fixturesMatched: number;
+  readonly fixturesProcessed: number;
+  readonly fixturesOk: number;
+  readonly fixturesSkipped: number;
+  readonly fixturesFailed: number;
+  readonly callsUsed: number;
+  readonly status: CompetitionPayloadBackfillOutput['status'];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
+  readonly reason?: string;
 }

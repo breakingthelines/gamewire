@@ -18,6 +18,8 @@
  * workflow lands, the author writes its `toWire` next to the others.
  */
 import type {
+  CompetitionPayloadBackfillOutput,
+  CompetitionPayloadBackfillWireResult,
   CompetitionRunResult,
   CompetitionRunSummary,
   DailyAnchorOutput,
@@ -187,4 +189,36 @@ export const identityGapScanToWire = (
   competitionsChecked: output.competitionsChecked,
   gapsFound: output.gapsFound,
   gapsByLeague: output.gapsByLeague,
+});
+
+/**
+ * Competition-payload-backfill output drops the per-fixture `fixtures` list
+ * at the wire boundary. Bounded at 500 short strings, it would never itself
+ * risk the kernel-side scanner limit — but per-fixture detail is dropped
+ * here anyway for consistency with every other sweep in this layer: it is
+ * still fully available, both on the in-process `CompetitionPayloadBackfillOutput`
+ * this function receives and via the streamed
+ * `competition_payload_backfill.would_fetch` / `.matched` logger events
+ * (one per fixture).
+ */
+export const competitionPayloadBackfillToWire = (
+  output: CompetitionPayloadBackfillOutput
+): CompetitionPayloadBackfillWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  competitionKey: output.competitionKey,
+  apiFootballLeagueId: output.apiFootballLeagueId,
+  kind: output.kind,
+  fixturesConsidered: output.fixturesConsidered,
+  fixturesMatched: output.fixturesMatched,
+  fixturesProcessed: output.fixturesProcessed,
+  fixturesOk: output.fixturesOk,
+  fixturesSkipped: output.fixturesSkipped,
+  fixturesFailed: output.fixturesFailed,
+  callsUsed: output.callsUsed,
+  status: output.status,
+  degradeFlags: output.degradeFlags,
+  finalQuota: output.finalQuota,
+  dryRun: output.dryRun,
+  reason: output.reason,
 });

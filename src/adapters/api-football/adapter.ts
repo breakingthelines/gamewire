@@ -2071,7 +2071,15 @@ function providerResourceTypeFor(kind: ApiFootballEntityKind): string {
   }
 }
 
-function providerStorageId(
+/**
+ * Deterministic provider-storage fallback id used wherever a canonical
+ * identity resolution is unavailable (see the call sites above). Exported so
+ * callers outside this module — e.g. the competition-scoped backfill
+ * workflow, which needs to recognise a `competition_id` that was never
+ * resolved by identity — can reconstruct the exact same fallback format
+ * instead of duplicating the string layout.
+ */
+export function providerStorageId(
   providerId: string,
   resourceType: string,
   providerIdValue: unknown

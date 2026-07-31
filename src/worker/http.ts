@@ -21,6 +21,8 @@ import {
   type ProviderJsonFetchResult,
 } from './provider-http.js';
 import {
+  competitionPayloadBackfillToWire,
+  competitionPayloadBackfillWorkflow,
   dailyAnchorToWire,
   dailyAnchorWorkflow,
   hourlyMatchdayToWire,
@@ -38,7 +40,9 @@ import {
   sweepMissingPayloadsWorkflow,
   webhookCompletedToWire,
   webhookCompletedWorkflow,
+  type CompetitionBackfillKind,
   type CompetitionEntry,
+  type CompetitionPayloadBackfillInput,
   type DailyAnchorInput,
   type HourlyMatchdayInput,
   type IdentityGapScanInput,
@@ -160,7 +164,8 @@ type WorkflowName =
   | 'sweep-missing-payloads'
   | 'squad-sweep'
   | 'statsbomb-backfill'
-  | 'identity-gap-scan';
+  | 'identity-gap-scan'
+  | 'competition-payload-backfill';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -419,6 +424,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/identity-gap-scan') {
     return 'identity-gap-scan';
   }
+  if (pathname === '/workflows/competition-payload-backfill') {
+    return 'competition-payload-backfill';
+  }
   return 'daily-anchor';
 };
 
@@ -630,6 +638,43 @@ const parseIdentityGapScanInput = (body: unknown): IdentityGapScanInput => {
   };
 };
 
+const COMPETITION_BACKFILL_KINDS: readonly CompetitionBackfillKind[] = ['events', 'lineups'];
+
+const parseCompetitionBackfillKind = (value: unknown): CompetitionBackfillKind | undefined => {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  for (const kind of COMPETITION_BACKFILL_KINDS) {
+    if (kind === value) {
+      return kind;
+    }
+  }
+  return undefined;
+};
+
+const parseCompetitionPayloadBackfillInput = (
+  body: unknown
+): CompetitionPayloadBackfillInput | undefined => {
+  if (!isRecord(body)) {
+    return undefined;
+  }
+  const kind = parseCompetitionBackfillKind(body.kind);
+  if (kind === undefined) {
+    return undefined;
+  }
+  return {
+    competitionKey: asString(body.competitionKey),
+    apiFootballLeagueId: asNumber(body.apiFootballLeagueId),
+    kind,
+    limit: asNumber(body.limit),
+    since: asString(body.since),
+    until: asString(body.until),
+    dryRun: asBoolean(body.dryRun),
+    intercallDelayMs: asNumber(body.intercallDelayMs),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -709,7 +754,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/sweep-missing-payloads' ||
       request.pathname === '/workflows/squad-sweep' ||
       request.pathname === '/workflows/statsbomb-backfill' ||
-      request.pathname === '/workflows/identity-gap-scan')
+      request.pathname === '/workflows/identity-gap-scan' ||
+      request.pathname === '/workflows/competition-payload-backfill')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -837,6 +883,24 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => identityGapScanWorkflow(input, { ...baseDeps, logger }),
           toWire: identityGapScanToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/competition-payload-backfill') {
+      const input = parseCompetitionPayloadBackfillInput(request.body);
+      if (!input) {
+        return jsonResponse(400, {
+          status: 'bad_request',
+          reason: 'missing_or_invalid_kind',
+        });
+      }
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => competitionPayloadBackfillWorkflow(input, { ...baseDeps, logger }),
+          toWire: competitionPayloadBackfillToWire,
         })
       );
     }

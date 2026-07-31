@@ -13,7 +13,12 @@ export {
   isMatchdayWindow,
 } from './competitions.js';
 export type {
+  CompetitionBackfillKind,
   CompetitionEntry,
+  CompetitionPayloadBackfillFixture,
+  CompetitionPayloadBackfillInput,
+  CompetitionPayloadBackfillOutput,
+  CompetitionPayloadBackfillWireResult,
   CompetitionRunResult,
   CompetitionRunSummary,
   DailyAnchorInput,
@@ -56,6 +61,7 @@ export type {
   WorkflowLogger,
 } from './types.js';
 export {
+  competitionPayloadBackfillToWire,
   dailyAnchorToWire,
   hourlyMatchdayToWire,
   identityGapScanToWire,
@@ -79,6 +85,7 @@ export {
 export type { DegradeResult } from './degrade.js';
 export { dailyAnchorWorkflow } from './daily-anchor.js';
 export { sweepMissingPayloadsWorkflow } from './sweep-missing-payloads.js';
+export { competitionPayloadBackfillWorkflow } from './competition-payload-backfill.js';
 export { hourlyMatchdayWorkflow } from './hourly-matchday.js';
 export { webhookCompletedWorkflow } from './webhook-completed.js';
 export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-backfill.js';
