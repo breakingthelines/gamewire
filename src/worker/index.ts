@@ -22,7 +22,6 @@ export {
   type CallBudgetLine,
 } from './call-budget.js';
 export {
-  API_FOOTBALL_BETA_COMPETITIONS,
   apiFootballCompetitionKey,
   apiFootballEventPath,
   apiFootballFixturePath,
@@ -38,7 +37,6 @@ export {
   apiFootballSeasonProviderId,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
-  type ApiFootballCompetitionPlan,
   type ApiFootballEntityKind,
   type ApiFootballEntityResolutionMap,
   type ApiFootballEnvelope,
@@ -58,6 +56,7 @@ export {
 } from './config.js';
 export {
   createProviderRuntimeReport,
+  liveIngestionCoverageCount,
   type ProviderRequestPlan,
   type ProviderRuntimeReport,
 } from './runtime.js';

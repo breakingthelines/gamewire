@@ -16,7 +16,6 @@
  */
 
 import {
-  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
   apiFootballCompetitionKey,
   apiFootballEventPath,
@@ -29,6 +28,7 @@ import {
   apiFootballStandingPath,
   providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import type { ProviderCache } from './cache.js';
 import { InMemoryProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
@@ -647,7 +647,7 @@ export class ApiFootballIngestionLoop {
     // end of `start`) so a restart re-establishes the in-flight fixture set.
     const discoverFixtures = async (): Promise<void> => {
       // Sweep EVERY competition in the catalogue, not just the first. The
-      // fixture-sync paths line up 1:1 with `API_FOOTBALL_BETA_COMPETITIONS`,
+      // fixture-sync paths line up 1:1 with `LIVE_INGESTION_COMPETITIONS`,
       // so each league is fetched under its own `league-<id>-season-<season>`
       // resourceId. This is what lands SCHEDULED games for upcoming-only
       // competitions — most importantly FIFA World Cup 2026 (league 1 /
@@ -664,7 +664,7 @@ export class ApiFootballIngestionLoop {
       // re-adopts in-play matches after a restart.
       const paths = apiFootballFixtureSyncPaths();
       await Promise.allSettled(
-        API_FOOTBALL_BETA_COMPETITIONS.map(async (competition, index) => {
+        LIVE_INGESTION_COMPETITIONS.map(async (competition, index) => {
           const path = paths[index];
           if (path === undefined) {
             return;

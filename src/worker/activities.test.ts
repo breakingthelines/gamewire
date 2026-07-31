@@ -45,17 +45,31 @@ describe('gamewire-worker activities', () => {
     expect(result.request.metadata?.replayId).toBe('replay-1');
     expect(result.request.games).toHaveLength(1);
     expect(result.runtime.request.cacheKey).toContain('api-football:fixtures');
-    expect(result.runtime.request.path).toBe('/fixtures?league=39&season=2025');
+    // Premier League is now 2026 across every consumer (the unified catalogue
+    // resolves the season-drift bug: the old BETA list, which fed this live
+    // path, still carried the stale 2025 value). The related-paths list now
+    // covers the full 24-competition catalogue, not just the 15-league BETA
+    // subset.
+    expect(result.runtime.request.path).toBe('/fixtures?league=39&season=2026');
     expect(result.runtime.request.relatedPaths).toEqual([
-      '/fixtures?league=39&season=2025',
+      '/fixtures?league=39&season=2026',
+      '/fixtures?league=40&season=2025',
+      '/fixtures?league=41&season=2025',
+      '/fixtures?league=42&season=2025',
       '/fixtures?league=140&season=2025',
-      '/fixtures?league=135&season=2025',
       '/fixtures?league=78&season=2025',
+      '/fixtures?league=135&season=2025',
       '/fixtures?league=61&season=2025',
-      '/fixtures?league=1&season=2026',
+      '/fixtures?league=88&season=2025',
+      '/fixtures?league=71&season=2026',
       '/fixtures?league=144&season=2025',
       '/fixtures?league=94&season=2025',
-      '/fixtures?league=88&season=2025',
+      '/fixtures?league=32&season=2025',
+      '/fixtures?league=34&season=2025',
+      '/fixtures?league=29&season=2025',
+      '/fixtures?league=31&season=2025',
+      '/fixtures?league=30&season=2025',
+      '/fixtures?league=1&season=2026',
       '/fixtures?league=45&season=2025',
       '/fixtures?league=48&season=2025',
       '/fixtures?league=143&season=2025',

@@ -1,23 +1,32 @@
 import { describe, expect, it } from 'vitest';
 
-import { API_FOOTBALL_BETA_COMPETITIONS } from '../adapters/api-football/index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import { estimateMatchdayCallBudget } from './call-budget.js';
 
 describe('gamewire-worker call budget model', () => {
-  it('defaults to the top five + World Cup + Scope A leagues and cups coverage', () => {
+  it('defaults to the full unified-catalogue live-ingestion coverage (24 competitions)', () => {
     const estimate = estimateMatchdayCallBudget('api-football');
 
-    expect(estimate.assumptions.competitions).toBe(15);
-    expect(API_FOOTBALL_BETA_COMPETITIONS.map((competition) => competition.label)).toEqual([
+    expect(estimate.assumptions.competitions).toBe(24);
+    expect(LIVE_INGESTION_COMPETITIONS.map((competition) => competition.label)).toEqual([
       'Premier League',
+      'EFL Championship',
+      'EFL League One',
+      'EFL League Two',
       'La Liga',
-      'Serie A',
       'Bundesliga',
+      'Serie A',
       'Ligue 1',
-      'FIFA World Cup',
-      'Pro League',
-      'Primeira Liga',
       'Eredivisie',
+      'Brasileirão Série A',
+      'Belgian Pro League',
+      'Primeira Liga',
+      'UEFA World Cup Qualifiers',
+      'CONMEBOL World Cup Qualifiers',
+      'AFC World Cup Qualifiers',
+      'CAF World Cup Qualifiers',
+      'CONCACAF World Cup Qualifiers',
+      'FIFA World Cup 2026',
       'FA Cup',
       'EFL Cup',
       'Copa del Rey',

@@ -1,21 +1,12 @@
 /**
- * API-Football provider types and launch coverage configuration.
+ * API-Football provider types.
+ *
+ * The competition coverage catalogue lives in `src/workflows/competitions.ts`
+ * (`COMPETITIONS`, `LIVE_INGESTION_COMPETITIONS`, `STEADY_STATE_COMPETITIONS`)
+ * — not here. This module is provider wire-shape types only.
  *
  * @see https://www.api-football.com/documentation-v3
  */
-
-export interface ApiFootballCompetitionPlan {
-  readonly label: string;
-  readonly country: string;
-  readonly leagueId: number;
-  readonly season: number;
-  // `tier` is documentary only — no ingestion behaviour (poll cadence, sweep
-  // gating, budget) branches on it. `domestic-top-five` = the original five;
-  // `domestic-league` = other covered first divisions; `domestic-cup` = national
-  // knockout cups (no league table — the standings sweep returns empty, handled
-  // gracefully); `international` = World Cup et al.
-  readonly tier: 'domestic-top-five' | 'domestic-league' | 'domestic-cup' | 'international';
-}
 
 export interface ApiFootballEnvelope<TResponse = unknown> {
   readonly get?: string;
@@ -298,53 +289,3 @@ export interface ApiFootballStandingEntry {
 }
 
 export const API_FOOTBALL_PROVIDER_ID = 'api-football';
-
-export const API_FOOTBALL_BETA_COMPETITIONS: readonly ApiFootballCompetitionPlan[] = [
-  {
-    label: 'Premier League',
-    country: 'England',
-    leagueId: 39,
-    season: 2025,
-    tier: 'domestic-top-five',
-  },
-  { label: 'La Liga', country: 'Spain', leagueId: 140, season: 2025, tier: 'domestic-top-five' },
-  { label: 'Serie A', country: 'Italy', leagueId: 135, season: 2025, tier: 'domestic-top-five' },
-  {
-    label: 'Bundesliga',
-    country: 'Germany',
-    leagueId: 78,
-    season: 2025,
-    tier: 'domestic-top-five',
-  },
-  { label: 'Ligue 1', country: 'France', leagueId: 61, season: 2025, tier: 'domestic-top-five' },
-  { label: 'FIFA World Cup', country: 'World', leagueId: 1, season: 2026, tier: 'international' },
-
-  // Scope A — additional covered first divisions (clubs enriched in identity
-  // v0.24.0). Belgium/Portugal/Netherlands top flights.
-  { label: 'Pro League', country: 'Belgium', leagueId: 144, season: 2025, tier: 'domestic-league' },
-  {
-    label: 'Primeira Liga',
-    country: 'Portugal',
-    leagueId: 94,
-    season: 2025,
-    tier: 'domestic-league',
-  },
-  {
-    label: 'Eredivisie',
-    country: 'Netherlands',
-    leagueId: 88,
-    season: 2025,
-    tier: 'domestic-league',
-  },
-
-  // Scope A — domestic cups. Knockout (no league table): the standings sweep
-  // returns an empty table, which the competition page renders gracefully. Their
-  // lower-tier clubs are crosswalked in identity v0.24.0 from the round the
-  // top-flight clubs enter; earlier-round minnows degrade to monograms.
-  { label: 'FA Cup', country: 'England', leagueId: 45, season: 2025, tier: 'domestic-cup' },
-  { label: 'EFL Cup', country: 'England', leagueId: 48, season: 2025, tier: 'domestic-cup' },
-  { label: 'Copa del Rey', country: 'Spain', leagueId: 143, season: 2025, tier: 'domestic-cup' },
-  { label: 'Coppa Italia', country: 'Italy', leagueId: 137, season: 2025, tier: 'domestic-cup' },
-  { label: 'DFB Pokal', country: 'Germany', leagueId: 81, season: 2025, tier: 'domestic-cup' },
-  { label: 'Coupe de France', country: 'France', leagueId: 66, season: 2025, tier: 'domestic-cup' },
-];

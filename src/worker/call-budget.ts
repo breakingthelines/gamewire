@@ -1,4 +1,4 @@
-import { API_FOOTBALL_BETA_COMPETITIONS } from '../adapters/api-football/index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 
 export interface MatchdayBudgetAssumptions {
   readonly competitions: number;
@@ -22,7 +22,7 @@ export interface CallBudgetEstimate {
 }
 
 const defaultAssumptions: MatchdayBudgetAssumptions = {
-  competitions: API_FOOTBALL_BETA_COMPETITIONS.length,
+  competitions: LIVE_INGESTION_COMPETITIONS.length,
   fixturesPerMatchday: 50,
   simultaneousLiveGames: 20,
   fixtureWindowDays: 7,

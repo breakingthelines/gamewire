@@ -4,10 +4,13 @@
  * POSTs to gamewire-worker HTTP endpoints at fire time.
  */
 export {
-  PHASE_A_COMPETITIONS,
-  PHASE_A_COMPETITIONS_BY_KEY,
+  COMPETITIONS,
+  COMPETITIONS_BY_KEY,
+  LIVE_INGESTION_COMPETITIONS,
+  NO_LIVE_INGESTION_ALLOWLIST,
+  STEADY_STATE_COMPETITIONS,
+  collectVerifiedFixtureIds,
   isMatchdayWindow,
-  phaseAVerifiedFixtureIds,
 } from './competitions.js';
 export type {
   CompetitionEntry,

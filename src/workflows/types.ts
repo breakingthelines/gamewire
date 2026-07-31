@@ -52,14 +52,48 @@ export interface MatchdayWindow {
 
 export type MatchdayCalendar = readonly MatchdayWindow[];
 
+/**
+ * The single competition catalogue entry type. Replaces the former split
+ * between `PHASE_A_COMPETITIONS` (steady-state sweeps) and
+ * `API_FOOTBALL_BETA_COMPETITIONS` (live ingestion) — those two
+ * hand-maintained lists drifted (9 leagues had steady-state coverage but no
+ * live ingestion; Premier League carried two different `season` values
+ * across the lists). One catalogue, one entry type: every field below is
+ * REQUIRED (`verifiedFixtureIds` excepted) so a new entry cannot silently
+ * omit a coverage decision the way the old split let it.
+ */
 export interface CompetitionEntry {
   /** Short kebab key, e.g. `'premier-league'`. Stable across season changes. */
   readonly key: string;
   readonly label: string;
+  /** Display-only country/confederation label, e.g. `'England'`, `'International'`, `'World'`. */
+  readonly country: string;
   readonly apiFootballLeagueId: number;
   readonly season: number;
-  readonly calendar: MatchdayCalendar;
-  readonly tier: 'domestic' | 'international';
+  /**
+   * Matchday calendar used by `hourly-matchday.ts` to decide whether a
+   * competition is in-window for a given tick. `null` means the competition
+   * has no weekly template that fits (e.g. international windows, or a
+   * domestic league whose kickoff times fall outside the Euro-tuned
+   * calendars) and is therefore treated as always in-window. The
+   * daily-anchor sweep ignores this field entirely and touches every entry.
+   */
+  readonly calendar: MatchdayCalendar | null;
+  readonly tier: 'domestic-top-five' | 'domestic-league' | 'domestic-cup' | 'international';
+  /**
+   * Whether the always-on live loop (pre-kickoff lineups, live events, the
+   * global live-fixture feed) covers this competition. This is the field the
+   * unified catalogue exists to make impossible to get wrong silently: a
+   * competition with steady-state sweep coverage but `liveIngestion: false`
+   * must be a deliberate, visible choice — see
+   * `NO_LIVE_INGESTION_ALLOWLIST` in `competitions.ts`, which must name it
+   * explicitly. That allow-list is the only sanctioned way to have
+   * `steadyStateSweep: true` and `liveIngestion: false` together; anything
+   * else is a regression of the original bug this catalogue collapse fixed.
+   */
+  readonly liveIngestion: boolean;
+  /** Whether the daily-anchor/hourly-matchday/squad-sweep/identity-gap-scan steady-state sweeps cover this competition. */
+  readonly steadyStateSweep: boolean;
   /**
    * Provider fixture IDs known to be safe for the verified-rotation
    * bootstrap. The worker seeds these into its ingestion loop on boot
@@ -268,8 +302,8 @@ export interface CompetitionRunSummary {
  *
  * The full {@link DailyAnchorOutput} embeds per-competition `fetches`
  * arrays whose entries carry raw provider responses (`data`/`fetch`,
- * hundreds of KB each on cold-cache). Aggregated across a Phase A
- * sweep (15 competitions) the single trailing wire line otherwise
+ * hundreds of KB each on cold-cache). Aggregated across a full
+ * steady-state sweep (24 competitions) the single trailing wire line otherwise
  * exceeds kernel-side `bufio.Scanner.MaxScanTokenSize` and fails the
  * activity deterministically. The wire type strips that detail at the
  * workflow boundary; kernel sees only the summary it actually
@@ -340,15 +374,15 @@ export interface SeasonBackfillTarget {
 export interface SeasonBackfillInput {
   /**
    * Explicit list of competition+season targets. When omitted, the
-   * workflow expands `deps.competitions` (the Phase A catalogue by
-   * default) across {@link SeasonBackfillInput.seasons}.
+   * workflow expands `deps.competitions` (the unified competition catalogue
+   * by default) across {@link SeasonBackfillInput.seasons}.
    */
   readonly targets?: readonly SeasonBackfillTarget[];
   /**
    * Seasons to expand `deps.competitions` over when `targets` is
    * omitted. Defaults to each competition's catalogue `season` only.
    * Example: `[2024, 2025]` backfills the recent + current season for
-   * every Phase A competition.
+   * every catalogue competition.
    */
   readonly seasons?: readonly number[];
   /**
@@ -534,7 +568,7 @@ export interface SquadSweepInput {
   readonly teamIds?: readonly string[];
   /**
    * Maximum number of teams to process per run. Defaults to 500. A full
-   * Phase A sweep is ~120 teams; 500 handles the full WC + qualifier
+   * catalogue sweep is ~120 teams; 500 handles the full WC + qualifier
    * universe in one shot.
    */
   readonly maxTeamsPerRun?: number;

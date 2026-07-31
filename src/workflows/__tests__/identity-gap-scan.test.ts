@@ -23,19 +23,25 @@ import type { CompetitionEntry, WorkflowDeps } from '../types.js';
 const COMP_A: CompetitionEntry = {
   key: 'premier-league',
   label: 'Premier League',
+  country: 'England',
   apiFootballLeagueId: 39,
   season: 2025,
   calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-top-five',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 const COMP_CUP: CompetitionEntry = {
   key: 'fa-cup',
   label: 'FA Cup',
+  country: 'England',
   apiFootballLeagueId: 45,
   season: 2025,
   calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-cup',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 /** A /fixtures?league&season envelope with home + away team ids. */

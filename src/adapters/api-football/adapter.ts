@@ -70,13 +70,14 @@ import {
   ShotOutcome,
 } from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 
+import { LIVE_INGESTION_COMPETITIONS } from '../../workflows/competitions.js';
+import type { CompetitionEntry } from '../../workflows/types.js';
+
 import {
-  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
   type ApiFootballEnvelope,
   type ApiFootballEventResponse,
   type ApiFootballLeagueRef,
-  type ApiFootballCompetitionPlan,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
   type ApiFootballPlayerStatistics,
@@ -123,8 +124,8 @@ const provider = create(ProviderAttributionSchema, {
   attributionText: 'Data from API-Football replay fixture',
 });
 
-export function apiFootballCompetitionKey(competition: ApiFootballCompetitionPlan): string {
-  return `league-${competition.leagueId}-season-${competition.season}`;
+export function apiFootballCompetitionKey(competition: CompetitionEntry): string {
+  return `league-${competition.apiFootballLeagueId}-season-${competition.season}`;
 }
 
 export function apiFootballSeasonProviderId(
@@ -135,18 +136,20 @@ export function apiFootballSeasonProviderId(
 }
 
 export function apiFootballFixtureSyncPaths(
-  competitions: readonly ApiFootballCompetitionPlan[] = API_FOOTBALL_BETA_COMPETITIONS
+  competitions: readonly CompetitionEntry[] = LIVE_INGESTION_COMPETITIONS
 ): readonly string[] {
   return competitions.map(
-    (competition) => `/fixtures?league=${competition.leagueId}&season=${competition.season}`
+    (competition) =>
+      `/fixtures?league=${competition.apiFootballLeagueId}&season=${competition.season}`
   );
 }
 
 export function apiFootballStandingSyncPaths(
-  competitions: readonly ApiFootballCompetitionPlan[] = API_FOOTBALL_BETA_COMPETITIONS
+  competitions: readonly CompetitionEntry[] = LIVE_INGESTION_COMPETITIONS
 ): readonly string[] {
   return competitions.map(
-    (competition) => `/standings?league=${competition.leagueId}&season=${competition.season}`
+    (competition) =>
+      `/standings?league=${competition.apiFootballLeagueId}&season=${competition.season}`
   );
 }
 

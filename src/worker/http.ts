@@ -27,7 +27,7 @@ import {
   hourlyMatchdayWorkflow,
   identityGapScanToWire,
   identityGapScanWorkflow,
-  PHASE_A_COMPETITIONS,
+  STEADY_STATE_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
   squadSweepToWire,
@@ -428,7 +428,7 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
   }
   return {
     ingestion: options.ingestion,
-    competitions: options.competitions ?? PHASE_A_COMPETITIONS,
+    competitions: options.competitions ?? STEADY_STATE_COMPETITIONS,
     logger: options.workflowLogger,
     gameServiceMissingPayloads: options.gameServiceMissingPayloads,
     gameService: options.gameService,

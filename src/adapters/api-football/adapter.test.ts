@@ -14,7 +14,6 @@ import {
 import { FootballPeriod } from '@breakingthelines/protos/btl/game/v1/types/football/football_pb';
 
 import {
-  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_REPLAY_FIXTURE_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
   apiFootballFixturePlayersPath,
@@ -37,21 +36,32 @@ import {
   apiFootballStatusPath,
   providerGameIdFromFixture,
 } from './index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../../workflows/competitions.js';
 
 describe('API-Football adapter', () => {
-  it('defines the top-five + World Cup + Scope A leagues and cups coverage plan', () => {
-    expect(API_FOOTBALL_BETA_COMPETITIONS.map((competition) => competition.label)).toEqual([
+  it('defines the full unified-catalogue live-ingestion coverage plan (24 competitions)', () => {
+    // Live ingestion now matches the full catalogue (previously a 15-league
+    // BETA subset of the 24-league steady-state catalogue, which silently
+    // left 9 leagues with no live coverage).
+    expect(LIVE_INGESTION_COMPETITIONS.map((competition) => competition.label)).toEqual([
       'Premier League',
+      'EFL Championship',
+      'EFL League One',
+      'EFL League Two',
       'La Liga',
-      'Serie A',
       'Bundesliga',
+      'Serie A',
       'Ligue 1',
-      'FIFA World Cup',
-      // Scope A — additional first divisions.
-      'Pro League',
-      'Primeira Liga',
       'Eredivisie',
-      // Scope A — domestic cups.
+      'Brasileirão Série A',
+      'Belgian Pro League',
+      'Primeira Liga',
+      'UEFA World Cup Qualifiers',
+      'CONMEBOL World Cup Qualifiers',
+      'AFC World Cup Qualifiers',
+      'CAF World Cup Qualifiers',
+      'CONCACAF World Cup Qualifiers',
+      'FIFA World Cup 2026',
       'FA Cup',
       'EFL Cup',
       'Copa del Rey',
@@ -59,8 +69,8 @@ describe('API-Football adapter', () => {
       'DFB Pokal',
       'Coupe de France',
     ]);
-    expect(apiFootballFixtureSyncPaths()).toHaveLength(15);
-    expect(apiFootballStandingSyncPaths()).toHaveLength(15);
+    expect(apiFootballFixtureSyncPaths()).toHaveLength(24);
+    expect(apiFootballStandingSyncPaths()).toHaveLength(24);
     expect(apiFootballLivePath()).toBe('/fixtures?live=all');
     expect(apiFootballStatusPath()).toBe('/status');
     expect(apiFootballSquadPath('10379')).toBe('/players/squads?team=10379');
