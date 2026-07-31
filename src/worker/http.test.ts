@@ -234,10 +234,13 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
   const COMPETITION: CompetitionEntry = {
     key: 'unit-test',
     label: 'Unit Test League',
+    country: 'England',
     apiFootballLeagueId: 9999,
     season: 2025,
     calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-    tier: 'domestic',
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
   };
 
   const makeVerifier = (): { verifier: Verifier; privateKey: KeyObject } => {

@@ -13,7 +13,6 @@ export {
   type FromStatsBombOpenOptions,
 } from './adapters/statsbomb-open/index.js';
 export {
-  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
   API_FOOTBALL_REPLAY_ID,
@@ -30,6 +29,5 @@ export {
   apiFootballReplayStandingsRequest,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
-  type ApiFootballCompetitionPlan,
   type ApiFootballEnvelope,
 } from './adapters/api-football/index.js';

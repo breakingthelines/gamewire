@@ -35,7 +35,7 @@ import {
   createBunRedisStreamClient,
   type BunRedisLike,
 } from './redis-stream-consumer.js';
-import { PHASE_A_COMPETITIONS, phaseAVerifiedFixtureIds } from '../workflows/index.js';
+import { STEADY_STATE_COMPETITIONS, collectVerifiedFixtureIds } from '../workflows/index.js';
 
 interface ReadBodyResult {
   readonly body: unknown;
@@ -349,7 +349,7 @@ const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
 // `GAMEWIRE_BOOTSTRAP_FIXTURE_IDS` is unset. Operator overrides take
 // precedence by order (env first, catalogue second); duplicates are
 // dropped by `normaliseResourceIds` inside `ingestion.start`.
-const verifiedFixtureSeed = phaseAVerifiedFixtureIds();
+const verifiedFixtureSeed = collectVerifiedFixtureIds();
 const seededFixtureIds: readonly string[] = [...config.bootstrapFixtureIds, ...verifiedFixtureSeed];
 
 let stopIngestion: (() => void) | undefined;
@@ -408,7 +408,7 @@ const server = createServer(async (request, response) => {
     config,
     {
       ingestion,
-      competitions: PHASE_A_COMPETITIONS,
+      competitions: STEADY_STATE_COMPETITIONS,
       authContextVerifier,
       gameServiceMissingPayloads: gameServiceLookupClient,
       // The squad-sweep workflow ingests standing rosters via

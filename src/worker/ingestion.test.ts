@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { API_FOOTBALL_BETA_COMPETITIONS } from '../adapters/api-football/index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import { InMemoryProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
 import {
@@ -635,7 +635,7 @@ describe('ApiFootballIngestionLoop.start', () => {
       cancel,
     });
 
-    const expectedCount = API_FOOTBALL_BETA_COMPETITIONS.length;
+    const expectedCount = LIVE_INGESTION_COMPETITIONS.length;
     for (let i = 0; i < 10 && fetchFn.mock.calls.length < expectedCount; i += 1) {
       await new Promise<void>((resolve) => setImmediate(resolve));
     }
@@ -644,11 +644,11 @@ describe('ApiFootballIngestionLoop.start', () => {
     // One fixtures fetch per competition (the only workload with an interval).
     expect(urls).toHaveLength(expectedCount);
     // Every catalogue league+season pair is fetched, including World Cup 2026.
-    for (const competition of API_FOOTBALL_BETA_COMPETITIONS) {
+    for (const competition of LIVE_INGESTION_COMPETITIONS) {
       expect(
         urls.some(
           (url) =>
-            url.includes(`league=${competition.leagueId}`) &&
+            url.includes(`league=${competition.apiFootballLeagueId}`) &&
             url.includes(`season=${competition.season}`)
         )
       ).toBe(true);

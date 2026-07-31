@@ -42,9 +42,7 @@ export {
 } from './adapter.js';
 
 export {
-  API_FOOTBALL_BETA_COMPETITIONS,
   API_FOOTBALL_PROVIDER_ID,
-  type ApiFootballCompetitionPlan,
   type ApiFootballEnvelope,
   type ApiFootballEventResponse,
   type ApiFootballFixtureRef,

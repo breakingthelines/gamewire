@@ -13,19 +13,25 @@ import type { CompetitionEntry, SeasonBackfillInput, WorkflowDeps } from '../typ
 const COMPETITION_A: CompetitionEntry = {
   key: 'comp-a',
   label: 'Competition A',
+  country: 'England',
   apiFootballLeagueId: 39,
   season: 2025,
   calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-top-five',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 const COMPETITION_B: CompetitionEntry = {
   key: 'comp-b',
   label: 'Competition B',
+  country: 'Spain',
   apiFootballLeagueId: 140,
   season: 2025,
   calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-top-five',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 const baseQuota = (overrides: Partial<ProviderQuotaSnapshot> = {}): ProviderQuotaSnapshot => ({

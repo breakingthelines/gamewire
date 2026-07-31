@@ -16,19 +16,25 @@ const MONDAY_03UTC = new Date('2026-05-25T03:00:00Z');
 const inWindowComp: CompetitionEntry = {
   key: 'in-window',
   label: 'In Window',
+  country: 'England',
   apiFootballLeagueId: 39,
   season: 2025,
   calendar: [{ utcWeekday: 6, utcHourStart: 12, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-top-five',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 const outOfWindowComp: CompetitionEntry = {
   key: 'out-of-window',
   label: 'Out of Window',
+  country: 'England',
   apiFootballLeagueId: 40,
   season: 2025,
   calendar: [{ utcWeekday: 2, utcHourStart: 18, utcHourEnd: 22 }],
-  tier: 'domestic',
+  tier: 'domestic-league',
+  liveIngestion: true,
+  steadyStateSweep: true,
 };
 
 const baseQuota = (overrides: Partial<ProviderQuotaSnapshot> = {}): ProviderQuotaSnapshot => ({

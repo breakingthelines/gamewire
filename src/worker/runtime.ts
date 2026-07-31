@@ -1,5 +1,4 @@
 import {
-  API_FOOTBALL_BETA_COMPETITIONS,
   apiFootballEventPath,
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
@@ -8,6 +7,7 @@ import {
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
 } from '../adapters/api-football/index.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 
 export type ProviderRuntimeMode = 'replay' | 'live';
 
@@ -171,8 +171,8 @@ function relatedPathsFor(
   }
 }
 
-export function apiFootballBetaCoverageCount(): number {
-  return API_FOOTBALL_BETA_COMPETITIONS.length;
+export function liveIngestionCoverageCount(): number {
+  return LIVE_INGESTION_COMPETITIONS.length;
 }
 
 function genericProviderPathFor(workload: string, resourceId: string): string {
