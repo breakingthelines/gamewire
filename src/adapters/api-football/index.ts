@@ -36,6 +36,7 @@ export {
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
   providerGameIdFromFixture,
+  providerStorageId,
   type ApiFootballEntityKind,
   type ApiFootballEntityResolutionMap,
   type ApiFootballResolvedEntity,
