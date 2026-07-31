@@ -40,6 +40,7 @@ import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   createMatchConcludedBridge,
   decodeFixtureEnvelope,
+  decodeLineupEnvelope,
   isFixtureDetailWorkload,
   type MatchConcludedBridgeLogEntry,
 } from './match-concluded-bridge.js';
@@ -151,6 +152,41 @@ const buildLineupResponse = (): unknown => ({
         },
       ],
       substitutes: [],
+    },
+  ],
+});
+
+/**
+ * Reproduces the live prod shape traced against fixtures 1486145 / 1486143
+ * (Pontevedra vs Eibar, a domestic-cup tie): API-Football returns a
+ * COMPLETE team sheet — full 11-player startXI + substitutes — but
+ * `formation: null` because the provider never annotated a tactical shape
+ * for the fixture. Regression fixture for the formation-null lineup bug:
+ * `decodeLineupEnvelope` (and the adapter's `isApiFootballLineupResponse`)
+ * used to require `typeof formation === 'string'`, which discarded both
+ * complete team sheets below over one cosmetic null field.
+ */
+const buildNullFormationLineupResponse = (): unknown => ({
+  response: [
+    {
+      team: { id: 7979, name: 'Pontevedra' },
+      formation: null,
+      startXI: Array.from({ length: 11 }, (_, i) => ({
+        player: { id: 100 + i, name: `Pontevedra Player ${i + 1}`, number: i + 1, pos: 'MF' },
+      })),
+      substitutes: Array.from({ length: 3 }, (_, i) => ({
+        player: { id: 200 + i, name: `Pontevedra Sub ${i + 1}`, number: 12 + i, pos: 'FW' },
+      })),
+    },
+    {
+      team: { id: 8371, name: 'Eibar' },
+      formation: null,
+      startXI: Array.from({ length: 11 }, (_, i) => ({
+        player: { id: 300 + i, name: `Eibar Player ${i + 1}`, number: i + 1, pos: 'MF' },
+      })),
+      substitutes: Array.from({ length: 3 }, (_, i) => ({
+        player: { id: 400 + i, name: `Eibar Sub ${i + 1}`, number: 12 + i, pos: 'FW' },
+      })),
     },
   ],
 });
@@ -744,6 +780,70 @@ describe('createMatchConcludedBridge', () => {
     );
     expect(logs.some((entry) => entry.event === 'bridge_lineups_ingested')).toBe(true);
     expect(logs.some((entry) => entry.event === 'bridge_lineups_missing')).toBe(true);
+  });
+
+  // Tripwire: prod fixtures 1486145 / 1486143 (domestic cup ties) returned
+  // complete team sheets — 11 named starters + subs — with `formation: null`.
+  // The predicate this guards was `typeof formation === 'string' &&
+  // Array.isArray(startXI) && Array.isArray(substitutes)`, so both
+  // real lineups below were silently discarded before the fix (measured in
+  // prod: 1,096 finished games missing lineups; a diagnostic sweep of 10
+  // fixtures reported "10 OK / 0 failed" but wrote exactly 1 row).
+  it('treats a null-formation lineup with a full XI as a usable lineup — formation is cosmetic, not a validity gate', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1486145' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({
+      workload: 'lineups-post-confirm',
+      resourceId: '1486145',
+      data: buildNullFormationLineupResponse(),
+    });
+
+    expect(gameService.lookupCalls.map((call) => call.providerFixtureId)).toEqual(['1486145']);
+    expect(gameService.lineupCalls).toHaveLength(1);
+    const teamSheets = gameService.lineupCalls[0]?.lineups[0]?.teamSheets;
+    // Both team sheets survive — 11 starters + 3 subs each — with formation
+    // degraded to the proto3-idiomatic empty string, NOT dropped.
+    expect(teamSheets).toHaveLength(2);
+    expect(teamSheets?.[0]?.players).toHaveLength(14);
+    expect(teamSheets?.[0]?.formation).toBe('');
+    expect(teamSheets?.[1]?.players).toHaveLength(14);
+    expect(teamSheets?.[1]?.formation).toBe('');
+    expect(logs.some((entry) => entry.event === 'bridge_lineups_ingested')).toBe(true);
+    expect(logs.some((entry) => entry.event === 'bridge_lineups_missing')).toBe(false);
+  });
+
+  it('decodeLineupEnvelope keeps null/absent formation but still rejects a malformed formation type', () => {
+    const decoded = decodeLineupEnvelope(buildNullFormationLineupResponse());
+    expect(decoded).toHaveLength(2);
+    expect(decoded[0]?.formation).toBeNull();
+    expect(decoded[0]?.startXI).toHaveLength(11);
+    expect(decoded[0]?.substitutes).toHaveLength(3);
+
+    // A formation that IS present but the wrong type (not string/null/undefined)
+    // is still treated as malformed — the relaxation only widens null/absent,
+    // it does not turn off shape validation entirely.
+    const malformed = decodeLineupEnvelope({
+      response: [
+        {
+          team: { id: 1, name: 'X' },
+          formation: 12345,
+          startXI: [{ player: { id: 1, name: 'A' } }],
+          substitutes: [],
+        },
+      ],
+    });
+    expect(malformed).toHaveLength(0);
   });
 
   it('ingests API-Football squad lists against the fixture mapping without marking lineups present', async () => {

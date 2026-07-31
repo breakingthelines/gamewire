@@ -874,9 +874,18 @@ function isApiFootballLineupResponse(value: unknown): value is ApiFootballLineup
     return false;
   }
   const team = (value as { team?: unknown }).team;
+  const formation = (value as { formation?: unknown }).formation;
+  // `formation` is cosmetic tactical annotation, NOT a validity condition —
+  // API-Football returns `null` here for a subset of domestic-cup fixtures
+  // even when the full XI + substitutes are present (verified live:
+  // Pontevedra/Eibar/Ourense CF/Girona all carried `formation: null` with 11
+  // named starters). A lineup is defined by its players; requiring formation
+  // to be a non-null string here silently discarded complete team sheets.
+  // Accept string, null, or absent; still reject anything of the wrong shape
+  // (number/object) as malformed.
   return (
     isRecord(team) &&
-    typeof (value as { formation?: unknown }).formation === 'string' &&
+    (formation === null || formation === undefined || typeof formation === 'string') &&
     Array.isArray((value as { startXI?: unknown }).startXI) &&
     Array.isArray((value as { substitutes?: unknown }).substitutes)
   );
@@ -1209,7 +1218,10 @@ function teamSheetFromLineup(
 
   return create(FootballTeamSheetSchema, {
     teamId,
-    formation: lineup.formation,
+    // proto3 scalar `formation` has no null/undefined variant; a
+    // provider-side null (cosmetic, cup-tie fixtures) flows through as the
+    // proto3-idiomatic "unknown" empty string rather than being dropped.
+    formation: stringOrEmpty(lineup.formation),
     players: [
       ...lineup.startXI.map((entry, index) =>
         lineupsPlayer(entry, {

@@ -207,6 +207,12 @@ export interface WorkflowLogEntry {
   readonly callsBudgeted?: number;
   readonly callsUsed?: number;
   readonly fixturesIngested?: number;
+  /**
+   * sweep-missing-payloads: fixtures whose provider call succeeded but whose
+   * envelope decoded to zero usable rows for the swept kind. See
+   * `SweepMissingPayloadsOutput.fixturesEmpty`.
+   */
+  readonly fixturesEmpty?: number;
   readonly degrade?: DegradeFlag['trigger'];
   readonly action?: DegradeAction;
   readonly reason?: string;
@@ -514,7 +520,29 @@ export interface SweepMissingPayloadsOutput {
   readonly kind: SweepMissingPayloadKind;
   readonly fixturesDiscovered: number;
   readonly fixturesProcessed: number;
+  /**
+   * Fixtures whose provider call succeeded (fetched or cached) AND whose
+   * envelope actually decoded to at least one usable row for `kind`. This is
+   * the metric that answers "did the sweep write anything" — a fixture that
+   * returned HTTP 200 with a payload the decoder filters down to zero rows
+   * (e.g. a domestic-cup lineup response, before the formation-null fix) is
+   * NOT counted here; see {@link fixturesEmpty}. Prior to this field's
+   * introduction, `fixturesOk` counted a bare successful fetch regardless of
+   * whether anything was stored, which is what let a ~10% effective write
+   * rate report as "10 OK / 0 failed" for weeks.
+   */
   readonly fixturesOk: number;
+  /**
+   * Fixtures whose provider call succeeded (fetched or cached) but whose
+   * envelope decoded to zero usable rows for `kind` — the provider was
+   * reached and returned a well-formed response, it just had nothing (or
+   * nothing the decoder currently accepts) to ingest. Distinguishing this
+   * from {@link fixturesOk} is the whole point: a green "N processed / N ok"
+   * summary must not be able to hide a silent decode gap. Only computed when
+   * the ingestion result carries a `data` payload to inspect; see
+   * `isEmptyPayloadForKind` in `sweep-missing-payloads.ts`.
+   */
+  readonly fixturesEmpty: number;
   readonly fixturesSkipped: number;
   readonly fixturesFailed: number;
   readonly callsUsed: number;
@@ -544,6 +572,7 @@ export interface SweepMissingPayloadsWireResult {
   readonly fixturesDiscovered: number;
   readonly fixturesProcessed: number;
   readonly fixturesOk: number;
+  readonly fixturesEmpty: number;
   readonly fixturesSkipped: number;
   readonly fixturesFailed: number;
   readonly callsUsed: number;
@@ -867,6 +896,8 @@ export interface CompetitionPayloadBackfillOutput {
   readonly fixtures: readonly CompetitionPayloadBackfillFixture[];
   readonly fixturesProcessed: number;
   readonly fixturesOk: number;
+  /** Passthrough of `SweepMissingPayloadsOutput.fixturesEmpty` — see there. */
+  readonly fixturesEmpty: number;
   readonly fixturesSkipped: number;
   readonly fixturesFailed: number;
   readonly callsUsed: number;
@@ -897,6 +928,7 @@ export interface CompetitionPayloadBackfillWireResult {
   readonly fixturesMatched: number;
   readonly fixturesProcessed: number;
   readonly fixturesOk: number;
+  readonly fixturesEmpty: number;
   readonly fixturesSkipped: number;
   readonly fixturesFailed: number;
   readonly callsUsed: number;

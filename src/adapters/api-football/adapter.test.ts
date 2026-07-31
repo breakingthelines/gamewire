@@ -626,6 +626,42 @@ describe('API-Football adapter', () => {
     );
   });
 
+  // Tripwire for the formation-null lineup bug: API-Football returns complete
+  // team sheets (11-player XI + subs) with `formation: null` for a subset of
+  // domestic-cup fixtures (verified live: fixtures 1486145 / 1486143,
+  // Pontevedra/Eibar/Ourense CF/Girona). `isApiFootballLineupResponse` used to
+  // require `typeof formation === 'string'`, which silently zeroed out
+  // `request.lineups` for these fixtures even though the bridge's own
+  // `decodeLineupEnvelope` gate had already been fixed — this adapter-level
+  // predicate is a SEPARATE gate on the same raw envelope and had to be fixed
+  // too, or the bridge fix alone would have been a no-op in production.
+  it('keeps a complete team sheet when formation is null (formation is cosmetic, not a validity gate)', () => {
+    const request = apiFootballIngestLineupsRequestFromLineups({
+      replayId: 'live:lineups-post-confirm:1486145',
+      resourceId: '1486145',
+      gameId: 'btl_football_game_g1486145',
+      envelope: {
+        response: [
+          {
+            team: { id: 7979, name: 'Pontevedra' },
+            formation: null,
+            startXI: Array.from({ length: 11 }, (_, i) => ({
+              player: { id: 100 + i, name: `Player ${i + 1}`, number: i + 1, pos: 'MF' },
+            })),
+            substitutes: [],
+          },
+        ],
+      },
+    });
+
+    expect(request.lineups).toHaveLength(1);
+    expect(request.lineups[0]?.teamSheets).toHaveLength(1);
+    expect(request.lineups[0]?.teamSheets[0]?.players).toHaveLength(11);
+    // proto3 `formation` has no null variant; a provider null degrades to the
+    // idiomatic empty string rather than being dropped.
+    expect(request.lineups[0]?.teamSheets[0]?.formation).toBe('');
+  });
+
   it('normalizes API-Football squad lists as a distinct lineup fallback', () => {
     const request = apiFootballIngestSquadListRequestFromSquads({
       replayId: 'live:squad-list-fallback:1538961:10379',

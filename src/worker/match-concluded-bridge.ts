@@ -1123,7 +1123,17 @@ const decodeFixtureResponses = (data: unknown): readonly ApiFootballFixtureRespo
   });
 };
 
-const decodeEventEnvelope = (data: unknown): readonly ApiFootballEventResponse[] => {
+/**
+ * Reviewed against the same class of bug as `decodeLineupEnvelope`'s
+ * formation trap (a cosmetic field wrongly required for validity): `type`
+ * and `detail` are NOT cosmetic here — they are the substantive definition
+ * of what the event IS (goal / card / substitution, and which variant).
+ * API-Football always populates both for a genuine event; there is no
+ * "complete event, but this describing field happens to be null" case the
+ * way a lineup can have a full XI with no formation label. No relaxation
+ * needed.
+ */
+export const decodeEventEnvelope = (data: unknown): readonly ApiFootballEventResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballEventResponse => {
     if (!isRecord(item) || !isRecord(item.time) || !isRecord(item.team)) {
@@ -1166,20 +1176,39 @@ const decodeEventsFromFixtureDetail = (data: unknown): readonly ApiFootballEvent
   });
 };
 
-const decodeLineupEnvelope = (data: unknown): readonly ApiFootballLineupResponse[] => {
+/**
+ * `formation` is cosmetic tactical annotation, NOT a validity condition for
+ * a lineup — API-Football returns `null` here for a subset of domestic-cup
+ * fixtures even when the full XI + substitutes are present (verified live
+ * against fixtures 1486145 / 1486143: Pontevedra, Eibar, Ourense CF, Girona
+ * all carried `formation: null` with 11 named starters). A lineup is
+ * defined by its players, so `formation` is accepted as a string, `null`,
+ * or absent — only `startXI` / `substitutes` being arrays is required.
+ * Mirrors `isApiFootballLineupResponse` in `adapters/api-football/adapter.ts`,
+ * which applies the identical relaxed check when building the actual
+ * ingest request off the same raw envelope.
+ */
+export const decodeLineupEnvelope = (data: unknown): readonly ApiFootballLineupResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballLineupResponse => {
     if (!isRecord(item) || !isRecord(item.team)) {
       return false;
     }
+    const formation = (item as { formation?: unknown }).formation;
     return (
-      typeof item.formation === 'string' &&
+      (formation === null || formation === undefined || typeof formation === 'string') &&
       Array.isArray(item.startXI) &&
       Array.isArray(item.substitutes)
     );
   });
 };
 
+/**
+ * Reviewed against the same class of bug as `decodeLineupEnvelope`'s
+ * formation trap: `id` + `name` are the identity of a squad player, not
+ * decoration, so requiring at least one structurally-valid player entry is
+ * not an over-strict cosmetic gate. No relaxation needed.
+ */
 const decodeSquadEnvelope = (data: unknown): readonly ApiFootballSquadResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballSquadResponse => {
@@ -1192,7 +1221,9 @@ const decodeSquadEnvelope = (data: unknown): readonly ApiFootballSquadResponse[]
   });
 };
 
-const decodeStatisticsEnvelope = (data: unknown): readonly ApiFootballStatisticsResponse[] => {
+export const decodeStatisticsEnvelope = (
+  data: unknown
+): readonly ApiFootballStatisticsResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballStatisticsResponse => {
     if (!isRecord(item) || !isRecord(item.team) || !Array.isArray(item.statistics)) {
@@ -1202,7 +1233,7 @@ const decodeStatisticsEnvelope = (data: unknown): readonly ApiFootballStatistics
   });
 };
 
-const decodePlayersEnvelope = (data: unknown): readonly ApiFootballPlayersResponse[] => {
+export const decodePlayersEnvelope = (data: unknown): readonly ApiFootballPlayersResponse[] => {
   const response = responseArray(data);
   return response.filter((item): item is ApiFootballPlayersResponse => {
     if (!isRecord(item) || !isRecord(item.team) || !Array.isArray(item.players)) {
