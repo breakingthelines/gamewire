@@ -324,6 +324,7 @@ const emptyOutput = (args: {
   fixtures: [],
   fixturesProcessed: 0,
   fixturesOk: 0,
+  fixturesEmpty: 0,
   fixturesSkipped: 0,
   fixturesFailed: 0,
   callsUsed: 0,
@@ -500,6 +501,7 @@ export const competitionPayloadBackfillWorkflow = async (
       fixtures,
       fixturesProcessed: 0,
       fixturesOk: 0,
+      fixturesEmpty: 0,
       fixturesSkipped: 0,
       fixturesFailed: 0,
       callsUsed: 0,
@@ -539,6 +541,7 @@ export const competitionPayloadBackfillWorkflow = async (
     status: sweepResult.status,
     callsUsed: sweepResult.callsUsed,
     fixturesIngested: sweepResult.fixturesOk,
+    fixturesEmpty: sweepResult.fixturesEmpty,
   });
 
   const status: CompetitionPayloadBackfillOutput['status'] =
@@ -555,6 +558,7 @@ export const competitionPayloadBackfillWorkflow = async (
     fixtures,
     fixturesProcessed: sweepResult.fixturesProcessed,
     fixturesOk: sweepResult.fixturesOk,
+    fixturesEmpty: sweepResult.fixturesEmpty,
     fixturesSkipped: sweepResult.fixturesSkipped,
     fixturesFailed: sweepResult.fixturesFailed,
     callsUsed: sweepResult.callsUsed,

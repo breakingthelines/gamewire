@@ -37,6 +37,12 @@ import {
   apiFootballFixtureStatisticsPath,
   apiFootballLineupPath,
 } from '../adapters/api-football/index.js';
+import {
+  decodeEventEnvelope,
+  decodeLineupEnvelope,
+  decodePlayersEnvelope,
+  decodeStatisticsEnvelope,
+} from '../worker/match-concluded-bridge.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import {
@@ -124,6 +130,37 @@ const KIND_BINDINGS: Record<SweepMissingPayloadKind, WorkloadBinding> = {
 };
 
 const SUPPORTED_PROVIDERS = new Set(['api-football']);
+
+/**
+ * Does the raw envelope this fixture's provider call returned actually
+ * decode to at least one usable row for `kind`? Reuses the EXACT same
+ * decoders the match-concluded bridge applies before ingest (not a parallel
+ * re-implementation, which is how the formation-null lineup bug went
+ * undetected here for weeks: `fetchWorkload` returning `status: 'fetched'`
+ * only proves the provider responded, not that the bridge's decoder kept
+ * anything from that response).
+ *
+ * Returns `false` (i.e. "don't second-guess it, count as ok") when `data` is
+ * absent — a defined `data` payload is guaranteed for a real `fetched` /
+ * `cached` result (see `ApiFootballIngestionLoop.fetchWorkload`), so an
+ * absent payload here only happens in test doubles that don't bother
+ * stubbing it.
+ */
+const isEmptyPayloadForKind = (kind: SweepMissingPayloadKind, data: unknown): boolean => {
+  if (data === undefined) {
+    return false;
+  }
+  switch (kind) {
+    case 'events':
+      return decodeEventEnvelope(data).length === 0;
+    case 'lineups':
+      return decodeLineupEnvelope(data).length === 0;
+    case 'team-match-stats':
+      return decodeStatisticsEnvelope(data).length === 0;
+    case 'player-match-stats':
+      return decodePlayersEnvelope(data).length === 0;
+  }
+};
 
 const clampLimit = (raw: number | undefined): number => {
   if (raw === undefined || !Number.isFinite(raw) || raw <= 0) {
@@ -237,6 +274,7 @@ export const sweepMissingPayloadsWorkflow = async (
       fixturesDiscovered: 0,
       fixturesProcessed: 0,
       fixturesOk: 0,
+      fixturesEmpty: 0,
       fixturesSkipped: 0,
       fixturesFailed: 0,
       callsUsed: 0,
@@ -290,6 +328,7 @@ export const sweepMissingPayloadsWorkflow = async (
         fixturesDiscovered: 0,
         fixturesProcessed: 0,
         fixturesOk: 0,
+        fixturesEmpty: 0,
         fixturesSkipped: 0,
         fixturesFailed: 0,
         callsUsed: 0,
@@ -320,6 +359,7 @@ export const sweepMissingPayloadsWorkflow = async (
       fixturesDiscovered: discoveredTotal,
       fixturesProcessed: 0,
       fixturesOk: 0,
+      fixturesEmpty: 0,
       fixturesSkipped: 0,
       fixturesFailed: 0,
       callsUsed: 0,
@@ -346,6 +386,7 @@ export const sweepMissingPayloadsWorkflow = async (
       fixturesDiscovered: discoveredTotal,
       fixturesProcessed: 0,
       fixturesOk: 0,
+      fixturesEmpty: 0,
       fixturesSkipped: 0,
       fixturesFailed: 0,
       callsUsed: 0,
@@ -364,6 +405,7 @@ export const sweepMissingPayloadsWorkflow = async (
   let callsUsed = 0;
   let processed = 0;
   let ok = 0;
+  let empty = 0;
   let skipped = 0;
   let failed = 0;
   let aborted = false;
@@ -378,7 +420,16 @@ export const sweepMissingPayloadsWorkflow = async (
       callsUsed += 1;
     }
     if (result.status === 'fetched' || result.status === 'cached') {
-      ok += 1;
+      // The provider call succeeding only proves a response arrived — NOT
+      // that the bridge's decoder found anything worth storing in it. Run
+      // the exact same decode-emptiness check the bridge itself applies so
+      // "10 processed, 10 OK" can never again describe a run that wrote a
+      // single row. See `isEmptyPayloadForKind` doc comment.
+      if (isEmptyPayloadForKind(input.kind, result.data)) {
+        empty += 1;
+      } else {
+        ok += 1;
+      }
     } else if (
       result.status === 'skipped' ||
       result.status === 'denied' ||
@@ -453,14 +504,18 @@ export const sweepMissingPayloadsWorkflow = async (
   let status: SweepMissingPayloadsOutput['status'];
   if (aborted) {
     status = 'aborted';
-  } else if (ok === 0 && (failed > 0 || skipped > 0)) {
-    // All attempts ended in failure or denial — surface as aborted so ops
-    // tooling can distinguish "nothing landed" from a normal partial.
+  } else if (ok === 0 && (failed > 0 || skipped > 0 || empty > 0)) {
+    // Nothing productive came out of this run — every attempt was either an
+    // error, a denial/rate-limit, or a payload that decoded to zero rows.
+    // Surface as aborted so ops tooling can distinguish "nothing landed"
+    // from a normal partial, the same way it already did for failed/skipped.
     status = 'aborted';
-  } else if (failed > 0 || skipped > 0 || processed < fixtureIds.length) {
-    // Some fixtures landed, others didn't — partial run. Ops can re-invoke
-    // with the same kind to fill the remaining gap (the cache + emit-once
-    // gate make replays cheap).
+  } else if (failed > 0 || skipped > 0 || empty > 0 || processed < fixtureIds.length) {
+    // Some fixtures landed, others didn't (or returned genuinely empty
+    // provider data) — partial run. Ops can re-invoke with the same kind to
+    // fill the remaining gap (the cache + emit-once gate make replays
+    // cheap); an `empty` count that never shrinks across re-invocations is
+    // the signal that the gap is a decode bug, not a transient miss.
     status = 'partial';
   } else {
     status = 'completed';
@@ -473,6 +528,10 @@ export const sweepMissingPayloadsWorkflow = async (
     status,
     callsUsed,
     fixturesIngested: ok,
+    // Deliberately its own field (NOT folded into fixturesIngested / ok) so a
+    // grep/alert on this line surfaces a silent decode gap even when the
+    // overall status still reads 'partial' rather than a hard failure.
+    fixturesEmpty: empty,
   });
 
   return {
@@ -483,6 +542,7 @@ export const sweepMissingPayloadsWorkflow = async (
     fixturesDiscovered: discoveredTotal,
     fixturesProcessed: processed,
     fixturesOk: ok,
+    fixturesEmpty: empty,
     fixturesSkipped: skipped,
     fixturesFailed: failed,
     callsUsed,

@@ -419,6 +419,94 @@ describe('sweepMissingPayloadsWorkflow', () => {
     }
   });
 
+  describe('fixturesEmpty accounting (a successful fetch is not the same as a written row)', () => {
+    // Regression coverage for the accounting bug: `fixturesOk` used to count
+    // any fetch that reached `status: 'fetched' | 'cached'`, regardless of
+    // whether the bridge's decoder found anything usable in the payload. A
+    // diagnostic sweep of 10 domestic-cup lineup fixtures reported "10 OK / 0
+    // failed" while writing exactly 1 row, because the provider call
+    // genuinely succeeded on all 10 — the decoder just filtered 9 of them
+    // out. `isEmptyPayloadForKind` reuses the bridge's own decoders so this
+    // can never drift out of sync with what actually gets stored.
+    it('counts a fetched-but-empty lineup response as fixturesEmpty, not fixturesOk', async () => {
+      const ingestion = buildIngestion(async (options) =>
+        buildResult(options.workload, options.resourceId, { data: { response: [] } })
+      );
+      const deps = buildDeps({
+        ingestion,
+        client: buildClient([responseWith(['1486145', '1486143'])]),
+      });
+
+      const result = await sweepMissingPayloadsWorkflow(
+        { providerId: 'api-football', kind: 'lineups' },
+        deps
+      );
+
+      expect(result.fixturesProcessed).toBe(2);
+      expect(result.fixturesOk).toBe(0);
+      expect(result.fixturesEmpty).toBe(2);
+      expect(result.fixturesFailed).toBe(0);
+      // Nothing productive happened this run — must not report 'completed'.
+      expect(result.status).toBe('aborted');
+    });
+
+    it('counts a null-formation lineup with a full XI as fixturesOk — proves the sweep accounting matches the fixed bridge decoder', async () => {
+      const nullFormationLineup = {
+        response: [
+          {
+            team: { id: 7979, name: 'Pontevedra' },
+            formation: null,
+            startXI: Array.from({ length: 11 }, (_, i) => ({
+              player: { id: 100 + i, name: `Player ${i + 1}`, number: i + 1, pos: 'MF' },
+            })),
+            substitutes: [],
+          },
+        ],
+      };
+      const ingestion = buildIngestion(async (options) =>
+        buildResult(options.workload, options.resourceId, { data: nullFormationLineup })
+      );
+      const deps = buildDeps({
+        ingestion,
+        client: buildClient([responseWith(['1486145'])]),
+      });
+
+      const result = await sweepMissingPayloadsWorkflow(
+        { providerId: 'api-football', kind: 'lineups' },
+        deps
+      );
+
+      expect(result.fixturesOk).toBe(1);
+      expect(result.fixturesEmpty).toBe(0);
+      expect(result.status).toBe('completed');
+    });
+
+    it('a partial run (some ok, some empty) reports status partial, not completed', async () => {
+      let i = 0;
+      const ingestion = buildIngestion(async (options) => {
+        i += 1;
+        const data = i === 1 ? { response: [] } : undefined;
+        return buildResult(options.workload, options.resourceId, { data });
+      });
+      const deps = buildDeps({
+        ingestion,
+        client: buildClient([responseWith(['1', '2'])]),
+      });
+
+      const result = await sweepMissingPayloadsWorkflow(
+        { providerId: 'api-football', kind: 'events' },
+        deps
+      );
+
+      // Fixture 2 has no `data` stubbed (mirrors every other test in this
+      // file) — `isEmptyPayloadForKind` treats an absent payload as "can't
+      // tell, trust the fetch outcome" so it still counts as ok.
+      expect(result.fixturesOk).toBe(1);
+      expect(result.fixturesEmpty).toBe(1);
+      expect(result.status).toBe('partial');
+    });
+  });
+
   it('clamps limit to MAX_LIMIT (500) so an ops one-shot cannot drain the daily budget', async () => {
     const ingestion = buildIngestion();
     const ids = Array.from({ length: 600 }, (_, i) => `id-${i}`);

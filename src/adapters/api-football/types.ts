@@ -125,7 +125,16 @@ export interface ApiFootballLineupResponse {
   readonly team: ApiFootballTeamRef & {
     readonly colors?: ApiFootballKitColors | null;
   };
-  readonly formation: string;
+  /**
+   * API-Football reports `null` here for a subset of domestic-cup fixtures
+   * even when the full XI + substitutes are present — verified live against
+   * fixtures 1486145 / 1486143 (Pontevedra, Eibar, Ourense CF, Girona all
+   * carried `formation: null` with 11 named starters). Formation is cosmetic
+   * annotation, not part of what makes a lineup valid — a lineup is defined
+   * by its players. Callers must treat this as optional and degrade to a
+   * player list (no pitch/formation viz) rather than discarding the sheet.
+   */
+  readonly formation: string | null;
   readonly startXI: readonly ApiFootballLineupPlayer[];
   readonly substitutes: readonly ApiFootballLineupPlayer[];
 }
