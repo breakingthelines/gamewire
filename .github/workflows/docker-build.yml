@@ -2,8 +2,29 @@ name: Docker Build
 
 on:
   push:
-    branches: [main]
     tags: ['v*']
+  # Gate main-branch deploys on the "CI" workflow (ci.yml: lint, format
+  # check, type check, test, build) passing. Previously this workflow
+  # triggered directly on push to main, independent of CI - so a red test
+  # suite never blocked a deploy. Production tracks `:latest` by digest via
+  # Argo image-updater, so every merge to main is a production release; this
+  # workflow_run trigger only fires once CI has finished, and the conclusion
+  # is checked below. (ci.yml and docker-build.yml both live in this repo,
+  # so unlike deploy-staging below, workflow_run needs no cross-repo call.)
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  # Break-glass: deploy main manually regardless of CI state (e.g. CI is
+  # broken for reasons unrelated to the fix being shipped, or CI itself is
+  # down). This is a workflow_dispatch, not a workflow_run event, so it
+  # bypasses the gate below by design - use deliberately.
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Why this deploy bypasses the CI gate'
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -12,6 +33,10 @@ env:
 jobs:
   build-and-push:
     name: Build & Push
+    # Proceed automatically only when the triggering CI run succeeded. Tag
+    # pushes and workflow_dispatch (break-glass) are not workflow_run events
+    # so they always proceed.
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -19,6 +44,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run checks out the default branch HEAD by default; pin
+          # to the exact commit CI validated. No-op for push/tag/dispatch.
+          ref: ${{ github.event.workflow_run.head_sha || github.ref }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -62,7 +91,11 @@ jobs:
     # when that script changes materially.
     name: Deploy gamewire-worker to Staging
     needs: build-and-push
-    if: github.ref == 'refs/heads/main'
+    # workflow_run sets github.ref to the default branch, but relying on that
+    # silently freezes staging if it ever differs while prod keeps rolling via
+    # :latest. The workflow_run trigger is already branch-limited to main, so
+    # accept it explicitly; the ref check still covers tag pushes and dispatch.
+    if: github.event_name == 'workflow_run' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       # Dokploy compose ID for gamewire-worker. Matches the SERVICE_MAP entry
