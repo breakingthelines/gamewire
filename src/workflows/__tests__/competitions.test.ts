@@ -37,6 +37,9 @@ describe('COMPETITIONS catalogue', () => {
       'coppa-italia',
       'dfb-pokal',
       'coupe-de-france',
+      'uefa-champions-league',
+      'uefa-europa-league',
+      'uefa-europa-conference-league',
     ]);
   });
 
@@ -63,8 +66,8 @@ describe('COMPETITIONS catalogue', () => {
       expect(competition.liveIngestion).toBe(true);
       expect(competition.steadyStateSweep).toBe(true);
     }
-    expect(LIVE_INGESTION_COMPETITIONS).toHaveLength(24);
-    expect(STEADY_STATE_COMPETITIONS).toHaveLength(24);
+    expect(LIVE_INGESTION_COMPETITIONS).toHaveLength(27);
+    expect(STEADY_STATE_COMPETITIONS).toHaveLength(27);
   });
 
   it('resolves Premier League to a single season across every consumer', () => {
@@ -75,7 +78,7 @@ describe('COMPETITIONS catalogue', () => {
     expect(epl?.season).toBe(2026);
   });
 
-  it('sets calendar to null only for international windows + Brasileirão', () => {
+  it('sets calendar to null only for international windows + Brasileirão + UEFA club competitions', () => {
     const nullCalendarKeys = COMPETITIONS.filter((c) => c.calendar === null).map((c) => c.key);
     expect(nullCalendarKeys.sort()).toEqual(
       [
@@ -86,6 +89,9 @@ describe('COMPETITIONS catalogue', () => {
         'conmebol-qualifiers',
         'fifa-world-cup-2026',
         'uefa-qualifiers',
+        'uefa-champions-league',
+        'uefa-europa-league',
+        'uefa-europa-conference-league',
       ].sort()
     );
   });

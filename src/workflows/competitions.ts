@@ -55,7 +55,7 @@ const WEEKEND_AND_MIDWEEK: MatchdayCalendar = [
  * Every entry has `liveIngestion: true` and `steadyStateSweep: true` — the
  * catalogue collapse deliberately closes the coverage gap the old
  * BETA/Phase-A split left open (9 leagues had steady-state sweep coverage
- * but no live ingestion). Cost of adding live ingestion for all 24 is
+ * but no live ingestion). Cost of adding live ingestion for all 27 is
  * negligible: fixture discovery is `competitions * 2` calls/day, and live
  * polling itself is a single global feed, not a per-competition cost. See
  * `NO_LIVE_INGESTION_ALLOWLIST` below for how any future exception must be
@@ -67,11 +67,12 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Premier League',
     country: 'England',
     apiFootballLeagueId: 39,
-    // Rolled to the 2026/27 season: 2025/26 finished May 2026, and the steady-state
-    // standings poll keys off this literal, so it must advance for gamewire to
-    // ingest the new season's table once api-football publishes it. (Other entries
-    // below are still 2025 — same latent rollover per the header note; bump as each
-    // new season becomes the front door.)
+    // 2026/27 season. The steady-state standings poll keys off this literal, so it
+    // must advance for gamewire to ingest the new season once api-football publishes
+    // it. The domestic leagues and most cups below are now on 2026 too; the FA Cup
+    // (45), Copa del Rey (143) and Coupe de France (66) stay on 2025 until api-football
+    // publishes their 2026 fixtures, and the 5 World Cup qualifiers stay on 2025 (that
+    // cycle is over). Bump those as each new season becomes the front door.
     season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-top-five',
@@ -88,7 +89,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'EFL Championship',
     country: 'England',
     apiFootballLeagueId: 40,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -99,7 +100,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'EFL League One',
     country: 'England',
     apiFootballLeagueId: 41,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -110,7 +111,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'EFL League Two',
     country: 'England',
     apiFootballLeagueId: 42,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -121,7 +122,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'La Liga',
     country: 'Spain',
     apiFootballLeagueId: 140,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-top-five',
     liveIngestion: true,
@@ -132,7 +133,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Bundesliga',
     country: 'Germany',
     apiFootballLeagueId: 78,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-top-five',
     liveIngestion: true,
@@ -143,7 +144,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Serie A',
     country: 'Italy',
     apiFootballLeagueId: 135,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-top-five',
     liveIngestion: true,
@@ -154,7 +155,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Ligue 1',
     country: 'France',
     apiFootballLeagueId: 61,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-top-five',
     liveIngestion: true,
@@ -165,7 +166,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Eredivisie',
     country: 'Netherlands',
     apiFootballLeagueId: 88,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -190,7 +191,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Belgian Pro League',
     country: 'Belgium',
     apiFootballLeagueId: 144,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -201,7 +202,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Primeira Liga',
     country: 'Portugal',
     apiFootballLeagueId: 94,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-league',
     liveIngestion: true,
@@ -295,7 +296,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'EFL Cup',
     country: 'England',
     apiFootballLeagueId: 48,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-cup',
     liveIngestion: true,
@@ -317,7 +318,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'Coppa Italia',
     country: 'Italy',
     apiFootballLeagueId: 137,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-cup',
     liveIngestion: true,
@@ -328,7 +329,7 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     label: 'DFB Pokal',
     country: 'Germany',
     apiFootballLeagueId: 81,
-    season: 2025,
+    season: 2026,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-cup',
     liveIngestion: true,
@@ -342,6 +343,45 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     season: 2025,
     calendar: WEEKEND_AND_MIDWEEK,
     tier: 'domestic-cup',
+    liveIngestion: true,
+    steadyStateSweep: true,
+  },
+
+  // UEFA club competitions. Knockout-shaped like the domestic cups above,
+  // but kickoffs (Tue/Wed/Thu ties across qualifying rounds and the league
+  // phase) don't fit the Euro-tuned WEEKEND_AND_MIDWEEK domestic template,
+  // so calendar is null — same always-in-window treatment as the
+  // international entries above (see CompetitionEntry.calendar).
+  {
+    key: 'uefa-champions-league',
+    label: 'UEFA Champions League',
+    country: 'World',
+    apiFootballLeagueId: 2,
+    season: 2026,
+    calendar: null,
+    tier: 'european',
+    liveIngestion: true,
+    steadyStateSweep: true,
+  },
+  {
+    key: 'uefa-europa-league',
+    label: 'UEFA Europa League',
+    country: 'World',
+    apiFootballLeagueId: 3,
+    season: 2026,
+    calendar: null,
+    tier: 'european',
+    liveIngestion: true,
+    steadyStateSweep: true,
+  },
+  {
+    key: 'uefa-europa-conference-league',
+    label: 'UEFA Europa Conference League',
+    country: 'World',
+    apiFootballLeagueId: 848,
+    season: 2026,
+    calendar: null,
+    tier: 'european',
     liveIngestion: true,
     steadyStateSweep: true,
   },
