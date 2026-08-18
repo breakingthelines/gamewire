@@ -4,10 +4,10 @@ import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import { estimateMatchdayCallBudget } from './call-budget.js';
 
 describe('gamewire-worker call budget model', () => {
-  it('defaults to the full unified-catalogue live-ingestion coverage (24 competitions)', () => {
+  it('defaults to the full unified-catalogue live-ingestion coverage (27 competitions)', () => {
     const estimate = estimateMatchdayCallBudget('api-football');
 
-    expect(estimate.assumptions.competitions).toBe(24);
+    expect(estimate.assumptions.competitions).toBe(27);
     expect(LIVE_INGESTION_COMPETITIONS.map((competition) => competition.label)).toEqual([
       'Premier League',
       'EFL Championship',
@@ -33,6 +33,9 @@ describe('gamewire-worker call budget model', () => {
       'Coppa Italia',
       'DFB Pokal',
       'Coupe de France',
+      'UEFA Champions League',
+      'UEFA Europa League',
+      'UEFA Europa Conference League',
     ]);
   });
 

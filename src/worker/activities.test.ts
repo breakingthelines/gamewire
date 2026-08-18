@@ -48,22 +48,28 @@ describe('gamewire-worker activities', () => {
     // Premier League is now 2026 across every consumer (the unified catalogue
     // resolves the season-drift bug: the old BETA list, which fed this live
     // path, still carried the stale 2025 value). The related-paths list now
-    // covers the full 24-competition catalogue, not just the 15-league BETA
-    // subset.
+    // covers the full 27-competition catalogue (24 rolled/steady entries
+    // plus the three UEFA club competitions), not just the 15-league BETA
+    // subset. EFL Championship/League One/League Two, La Liga, Bundesliga,
+    // Serie A, Ligue 1, Eredivisie, Belgian Pro League, Primeira Liga, EFL
+    // Cup, Coppa Italia, and DFB Pokal rolled to season 2026 for the 2026/27
+    // European season; FA Cup, Copa del Rey, Coupe de France, and the five
+    // World Cup qualifier confederations have no published 2026 season yet
+    // and stay on 2025.
     expect(result.runtime.request.path).toBe('/fixtures?league=39&season=2026');
     expect(result.runtime.request.relatedPaths).toEqual([
       '/fixtures?league=39&season=2026',
-      '/fixtures?league=40&season=2025',
-      '/fixtures?league=41&season=2025',
-      '/fixtures?league=42&season=2025',
-      '/fixtures?league=140&season=2025',
-      '/fixtures?league=78&season=2025',
-      '/fixtures?league=135&season=2025',
-      '/fixtures?league=61&season=2025',
-      '/fixtures?league=88&season=2025',
+      '/fixtures?league=40&season=2026',
+      '/fixtures?league=41&season=2026',
+      '/fixtures?league=42&season=2026',
+      '/fixtures?league=140&season=2026',
+      '/fixtures?league=78&season=2026',
+      '/fixtures?league=135&season=2026',
+      '/fixtures?league=61&season=2026',
+      '/fixtures?league=88&season=2026',
       '/fixtures?league=71&season=2026',
-      '/fixtures?league=144&season=2025',
-      '/fixtures?league=94&season=2025',
+      '/fixtures?league=144&season=2026',
+      '/fixtures?league=94&season=2026',
       '/fixtures?league=32&season=2025',
       '/fixtures?league=34&season=2025',
       '/fixtures?league=29&season=2025',
@@ -71,11 +77,14 @@ describe('gamewire-worker activities', () => {
       '/fixtures?league=30&season=2025',
       '/fixtures?league=1&season=2026',
       '/fixtures?league=45&season=2025',
-      '/fixtures?league=48&season=2025',
+      '/fixtures?league=48&season=2026',
       '/fixtures?league=143&season=2025',
-      '/fixtures?league=137&season=2025',
-      '/fixtures?league=81&season=2025',
+      '/fixtures?league=137&season=2026',
+      '/fixtures?league=81&season=2026',
       '/fixtures?league=66&season=2025',
+      '/fixtures?league=2&season=2026',
+      '/fixtures?league=3&season=2026',
+      '/fixtures?league=848&season=2026',
     ]);
     expect(result.runtime.request.redactedHeaders).toContain('x-apisports-key');
     expect(result.response.replayId).toBe('replay-1');

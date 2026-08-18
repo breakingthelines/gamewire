@@ -79,7 +79,12 @@ export interface CompetitionEntry {
    * daily-anchor sweep ignores this field entirely and touches every entry.
    */
   readonly calendar: MatchdayCalendar | null;
-  readonly tier: 'domestic-top-five' | 'domestic-league' | 'domestic-cup' | 'international';
+  readonly tier:
+    | 'domestic-top-five'
+    | 'domestic-league'
+    | 'domestic-cup'
+    | 'international'
+    | 'european';
   /**
    * Whether the always-on live loop (pre-kickoff lineups, live events, the
    * global live-fixture feed) covers this competition. This is the field the
@@ -310,7 +315,7 @@ export interface CompetitionRunSummary {
  * The full {@link DailyAnchorOutput} embeds per-competition `fetches`
  * arrays whose entries carry raw provider responses (`data`/`fetch`,
  * hundreds of KB each on cold-cache). Aggregated across a full
- * steady-state sweep (24 competitions) the single trailing wire line otherwise
+ * steady-state sweep (27 competitions) the single trailing wire line otherwise
  * exceeds kernel-side `bufio.Scanner.MaxScanTokenSize` and fails the
  * activity deterministically. The wire type strips that detail at the
  * workflow boundary; kernel sees only the summary it actually

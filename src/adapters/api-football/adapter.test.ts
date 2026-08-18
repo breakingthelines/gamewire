@@ -39,7 +39,7 @@ import {
 import { LIVE_INGESTION_COMPETITIONS } from '../../workflows/competitions.js';
 
 describe('API-Football adapter', () => {
-  it('defines the full unified-catalogue live-ingestion coverage plan (24 competitions)', () => {
+  it('defines the full unified-catalogue live-ingestion coverage plan (27 competitions)', () => {
     // Live ingestion now matches the full catalogue (previously a 15-league
     // BETA subset of the 24-league steady-state catalogue, which silently
     // left 9 leagues with no live coverage).
@@ -68,9 +68,12 @@ describe('API-Football adapter', () => {
       'Coppa Italia',
       'DFB Pokal',
       'Coupe de France',
+      'UEFA Champions League',
+      'UEFA Europa League',
+      'UEFA Europa Conference League',
     ]);
-    expect(apiFootballFixtureSyncPaths()).toHaveLength(24);
-    expect(apiFootballStandingSyncPaths()).toHaveLength(24);
+    expect(apiFootballFixtureSyncPaths()).toHaveLength(27);
+    expect(apiFootballStandingSyncPaths()).toHaveLength(27);
     expect(apiFootballLivePath()).toBe('/fixtures?live=all');
     expect(apiFootballStatusPath()).toBe('/status');
     expect(apiFootballSquadPath('10379')).toBe('/players/squads?team=10379');
