@@ -15,6 +15,7 @@ import {
   type LookupGameByFixtureResponse,
   ListGamesMissingPayloadsResponseSchema,
   LookupGameByFixtureResponseSchema,
+  type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
@@ -386,6 +387,17 @@ const fakeGameService = (options: {
       // fixture/event/lineup ingest.
       return create(IngestBatchResponseSchema, {
         acceptedCount: request.standings.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
+    async ingestCurrentSeasons(request: IngestCurrentSeasonsRequest) {
+      // The match-concluded bridge does not ingest current seasons (the
+      // daily-anchor workflow owns that path). The stub keeps the
+      // FootballGameBridgeClient contract type-checking while the bridge stays
+      // focused on fixture/event/lineup ingest.
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.seasons.length,
         updatedCount: 0,
         replayId: request.metadata?.replayId ?? '',
       });

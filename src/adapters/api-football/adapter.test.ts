@@ -16,9 +16,12 @@ import { FootballPeriod } from '@breakingthelines/protos/btl/game/v1/types/footb
 import {
   API_FOOTBALL_REPLAY_FIXTURE_ID,
   API_FOOTBALL_REPLAY_GAME_ID,
+  apiFootballCurrentSeasonFromEnvelope,
+  apiFootballCurrentSeasonLabel,
   apiFootballFixturePlayersPath,
   apiFootballFixtureStatisticsPath,
   apiFootballFixtureSyncPaths,
+  apiFootballIngestCurrentSeasonRequest,
   apiFootballIngestGamesRequestFromFixtures,
   apiFootballIngestLineupsRequestFromLineups,
   apiFootballIngestOccurrencesRequestFromEvents,
@@ -1295,5 +1298,93 @@ describe('API-Football standings mapping', () => {
 
   it('derives the provider standings path', () => {
     expect(apiFootballStandingPath(39, 2025)).toBe('/standings?league=39&season=2025');
+  });
+});
+
+describe('API-Football current-season mapping', () => {
+  const leaguesEnvelope = {
+    response: [
+      {
+        league: { id: 39, name: 'Premier League' },
+        seasons: [
+          { year: 2023, start: '2023-08-11', end: '2024-05-19', current: false },
+          { year: 2024, start: '2024-08-16', end: '2025-05-25', current: false },
+          { year: 2025, start: '2025-08-15', end: '2026-05-24', current: true },
+        ],
+      },
+    ],
+  };
+
+  it('extracts the current season window from a /leagues envelope', () => {
+    expect(apiFootballCurrentSeasonFromEnvelope(leaguesEnvelope)).toEqual({
+      year: 2025,
+      start: '2025-08-15',
+      end: '2026-05-24',
+    });
+  });
+
+  it('returns undefined when no season is flagged current', () => {
+    const noCurrent = {
+      response: [
+        {
+          league: { id: 39, name: 'Premier League' },
+          seasons: [{ year: 2024, start: '2024-08-16', end: '2025-05-25', current: false }],
+        },
+      ],
+    };
+    expect(apiFootballCurrentSeasonFromEnvelope(noCurrent)).toBeUndefined();
+  });
+
+  it('returns undefined for a malformed / empty envelope rather than throwing', () => {
+    expect(apiFootballCurrentSeasonFromEnvelope({ response: [] })).toBeUndefined();
+    expect(apiFootballCurrentSeasonFromEnvelope({})).toBeUndefined();
+    expect(apiFootballCurrentSeasonFromEnvelope(null)).toBeUndefined();
+    expect(
+      apiFootballCurrentSeasonFromEnvelope({ response: [{ league: { id: 39 } }] })
+    ).toBeUndefined();
+  });
+
+  it('formats the split-season label from the opening year', () => {
+    expect(apiFootballCurrentSeasonLabel(2025)).toBe('2025/26');
+    expect(apiFootballCurrentSeasonLabel(2026)).toBe('2026/27');
+    expect(apiFootballCurrentSeasonLabel(1999)).toBe('1999/00');
+  });
+
+  it('builds an IngestCurrentSeasons request carrying one canonical-keyed entry', () => {
+    const request = apiFootballIngestCurrentSeasonRequest({
+      replayId: 'live:competition-current-season:current-season-39',
+      resourceId: 'current-season-39',
+      competitionId: 'btl_football_competition_l39',
+      seasonId: 'btl_football_season_s2025',
+      seasonLabel: '2025/26',
+      providerSeasonId: '2025',
+      season: { year: 2025, start: '2025-08-15', end: '2026-05-24' },
+    });
+
+    expect(request.metadata?.provider).toBe('api-football');
+    expect(request.metadata?.replayId).toBe('live:competition-current-season:current-season-39');
+    expect(request.seasons).toHaveLength(1);
+    const entry = request.seasons[0]!;
+    expect(entry.competitionId).toBe('btl_football_competition_l39');
+    expect(entry.seasonId).toBe('btl_football_season_s2025');
+    expect(entry.seasonLabel).toBe('2025/26');
+    expect(entry.providerSeasonId).toBe('2025');
+    // ISO dates map to Timestamps (2025-08-15 → 1755216000s UTC midnight).
+    expect(entry.startsOn?.seconds).toBe(BigInt(Date.parse('2025-08-15') / 1000));
+    expect(entry.endsOn?.seconds).toBe(BigInt(Date.parse('2026-05-24') / 1000));
+  });
+
+  it('omits date bounds when the provider gives no start/end', () => {
+    const request = apiFootballIngestCurrentSeasonRequest({
+      replayId: 'r',
+      resourceId: 'current-season-39',
+      competitionId: 'btl_football_competition_l39',
+      seasonId: 'btl_football_season_s2025',
+      seasonLabel: '2025/26',
+      providerSeasonId: '2025',
+      season: { year: 2025, start: '', end: '' },
+    });
+    expect(request.seasons[0]!.startsOn).toBeUndefined();
+    expect(request.seasons[0]!.endsOn).toBeUndefined();
   });
 });

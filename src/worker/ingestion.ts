@@ -23,6 +23,7 @@ import {
   apiFootballFixturePlayersPath,
   apiFootballFixtureStatisticsPath,
   apiFootballFixtureSyncPaths,
+  apiFootballLeaguePath,
   apiFootballLineupPath,
   apiFootballSquadPath,
   apiFootballStandingPath,
@@ -56,6 +57,7 @@ export type IngestionWorkload =
   | 'player-match-stats'
   | 'squad-list-fallback'
   | 'competition-standings'
+  | 'competition-current-season'
   | 'team-metadata'
   | 'player-metadata';
 
@@ -98,6 +100,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // Touch club picker's table warm without re-spending provider budget on a
   // settled ladder. The daily-anchor sweep refreshes it once per run.
   'competition-standings': 6 * 60 * 60,
+  // A competition's "current season" flips at most once per year (the summer
+  // roll), so a 24h TTL is generous — comfortably exceeding standings' 6h. The
+  // daily-anchor sweep refreshes it once per run; this TTL de-dupes any
+  // repeated fetch within a day to a single provider call per competition.
+  'competition-current-season': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
   'player-metadata': 24 * 60 * 60,
 } as const;
@@ -151,6 +158,11 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   // enqueueTick from scheduling a standalone standings poll, so the workload
   // identifier stays available for direct fetchWorkload calls only.
   'competition-standings': 0,
+  // Not on the steady-state polling cron: current-season windows are pulled by
+  // the daily-anchor sweep (and any one-shot trigger). A 0 interval keeps
+  // enqueueTick from scheduling a standalone poll; the workload identifier
+  // stays available for direct fetchWorkload calls only.
+  'competition-current-season': 0,
   'team-metadata': 6 * 60 * 60 * 1000,
   'player-metadata': 6 * 60 * 60 * 1000,
 } as const;
@@ -1086,6 +1098,8 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       const { leagueId, season } = standingsResourceParts(resourceId);
       return apiFootballStandingPath(leagueId, season);
     }
+    case 'competition-current-season':
+      return apiFootballLeaguePath(currentSeasonResourceLeagueId(resourceId));
     case 'team-metadata':
       return `/teams?id=${encodeURIComponent(resourceId)}`;
     case 'player-metadata':
@@ -1111,6 +1125,20 @@ function standingsResourceParts(resourceId: string): {
     return { leagueId: '', season: '' };
   }
   return { leagueId: match[1] ?? '', season: match[2] ?? '' };
+}
+
+/**
+ * Parse a `current-season-<leagueId>` resource id back into its provider league
+ * id. Used only by the direct-call path fallback in {@link apiFootballPathFor};
+ * the daily-anchor sweep passes an explicit path, so this reconstructs the id
+ * for any operator one-shot that calls `fetchWorkload({ workload:
+ * 'competition-current-season', resourceId })` without a path. Returns an empty
+ * string for a malformed id; the provider call then 4xxs and the fetch records
+ * a failure rather than silently hitting the wrong league.
+ */
+function currentSeasonResourceLeagueId(resourceId: string): string {
+  const match = /^current-season-(\d+)$/.exec(resourceId.trim());
+  return match?.[1] ?? '';
 }
 
 function fixtureIdsFromFixtureList(data: unknown, nowMs: number): readonly string[] {
