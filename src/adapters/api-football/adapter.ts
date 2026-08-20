@@ -2,6 +2,8 @@ import { create } from '@bufbuild/protobuf';
 import { TimestampSchema, timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
+  CurrentSeasonEntrySchema,
+  IngestCurrentSeasonsRequestSchema,
   IngestFootballLineupsRequestSchema,
   IngestFootballSquadListsRequestSchema,
   IngestFootballStandingsRequestSchema,
@@ -11,6 +13,7 @@ import {
   IngestPlayerMatchStatsRequestSchema,
   IngestTeamMatchStatsRequestSchema,
   type GameFilter,
+  type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
@@ -78,6 +81,8 @@ import {
   type ApiFootballEnvelope,
   type ApiFootballEventResponse,
   type ApiFootballLeagueRef,
+  type ApiFootballLeagueResponse,
+  type ApiFootballLeagueSeason,
   type ApiFootballFixtureResponse,
   type ApiFootballLineupResponse,
   type ApiFootballPlayerStatistics,
@@ -190,6 +195,16 @@ export function apiFootballFixtureStatisticsPath(fixtureId: string): string {
 
 export function apiFootballFixturePlayersPath(fixtureId: string): string {
   return `/fixtures/players?fixture=${encodeURIComponent(fixtureId)}`;
+}
+
+/**
+ * `/leagues?id=<leagueId>` — the league metadata endpoint whose `seasons[]`
+ * array carries the per-season windows (one flagged `current: true`). Used by
+ * the `competition-current-season` workload to discover the currently-active
+ * season window for a competition.
+ */
+export function apiFootballLeaguePath(leagueId: string | number): string {
+  return `/leagues?id=${encodeURIComponent(String(leagueId))}`;
 }
 
 export function apiFootballReplayFixturesRequest(options: {
@@ -771,6 +786,134 @@ function isApiFootballStandingResponse(value: unknown): value is ApiFootballStan
     return false;
   }
   return Array.isArray((value.league as { standings?: unknown }).standings);
+}
+
+/**
+ * The currently-active season window extracted from a `/leagues?id=<id>`
+ * envelope: the provider `year` (split-season opening year, e.g. `2025`) plus
+ * the ISO `YYYY-MM-DD` calendar bounds. `start`/`end` are `''` when the
+ * provider omits them (they map to open-ended bounds downstream).
+ */
+export interface ApiFootballCurrentSeason {
+  readonly year: number;
+  readonly start: string;
+  readonly end: string;
+}
+
+/**
+ * Pick the `current: true` season window out of a `/leagues?id=<id>` envelope.
+ *
+ * Provider shape:
+ *   { response: [ { league: { id, name }, seasons: [
+ *       { year, start, end, current }, ... ] } ] }
+ *
+ * Returns the first response entry's current season as {@link ApiFootballCurrentSeason},
+ * or `undefined` when the envelope is malformed, carries no `seasons[]`, or has
+ * no entry flagged `current` (a well-typed empty the caller skips — never a
+ * throw), mirroring the standings/fixtures normalisers' error tolerance. A
+ * `year` that is missing or non-finite is treated as no-current.
+ */
+export function apiFootballCurrentSeasonFromEnvelope(
+  envelope: ApiFootballEnvelope<readonly ApiFootballLeagueResponse[]> | unknown
+): ApiFootballCurrentSeason | undefined {
+  if (!isRecord(envelope)) {
+    return undefined;
+  }
+  const response = (envelope as { response?: unknown }).response;
+  if (!Array.isArray(response)) {
+    return undefined;
+  }
+  for (const item of response) {
+    if (!isRecord(item)) {
+      continue;
+    }
+    const seasons = (item as { seasons?: unknown }).seasons;
+    if (!Array.isArray(seasons)) {
+      continue;
+    }
+    const current = seasons.find(
+      (season): season is ApiFootballLeagueSeason =>
+        isRecord(season) && (season as { current?: unknown }).current === true
+    );
+    if (!current) {
+      continue;
+    }
+    const year = current.year;
+    if (typeof year !== 'number' || !Number.isFinite(year)) {
+      continue;
+    }
+    return {
+      year,
+      start: stringOrEmpty(current.start),
+      end: stringOrEmpty(current.end),
+    };
+  }
+  return undefined;
+}
+
+/**
+ * Human-readable "2025/26"-style label for a split-season opening year (e.g.
+ * `2025` → `"2025/26"`), matching the `season_label` display convention. Note
+ * calendar-year competitions (e.g. MLS, the World Cup) also report a single
+ * `year`; the label still renders as a split-year string, which is a display
+ * concern only — `season_id` (not the label) is what scopes fixtures.
+ */
+export function apiFootballCurrentSeasonLabel(year: number): string {
+  const next = (year + 1) % 100;
+  return `${year}/${String(next).padStart(2, '0')}`;
+}
+
+/**
+ * Map a resolved current-season window to an {@link IngestCurrentSeasonsRequest}
+ * carrying a single {@link CurrentSeasonEntry}.
+ *
+ * The caller has already resolved the competition to its CANONICAL btl id
+ * (mandatory — game-service keys the row by `competition_id` (PRIMARY KEY) and
+ * squad-service reads it back via `GetCurrentSeason` by that same canonical id,
+ * so a provider-scoped id would write a row that is never read) and the season
+ * to the SAME id games are stored under (canonical SEASON entity id, or the
+ * provider-storage fallback games also carry), so the stamped anchor season
+ * scopes `games` by `(competition_id, season_id)`. `providerSeasonId` preserves
+ * the provider's own season identifier (the api-football `year`) for
+ * reconciliation. `startsOn`/`endsOn` are omitted when the provider gave no
+ * date (game-service treats a NULL bound as open-ended on that side).
+ */
+export function apiFootballIngestCurrentSeasonRequest(options: {
+  readonly provider?: string;
+  readonly replayId: string;
+  readonly resourceId: string;
+  readonly competitionId: string;
+  readonly seasonId: string;
+  readonly seasonLabel: string;
+  readonly providerSeasonId: string;
+  readonly season: ApiFootballCurrentSeason;
+}): IngestCurrentSeasonsRequest {
+  const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
+  const startsOnMs = Date.parse(options.season.start);
+  const endsOnMs = Date.parse(options.season.end);
+  return create(IngestCurrentSeasonsRequestSchema, {
+    metadata: metadata(
+      providerId,
+      options.replayId,
+      'current-season',
+      options.resourceId,
+      `provider://${providerId}/leagues/${options.resourceId}`
+    ),
+    seasons: [
+      create(CurrentSeasonEntrySchema, {
+        competitionId: options.competitionId,
+        seasonId: options.seasonId,
+        seasonLabel: options.seasonLabel,
+        providerSeasonId: options.providerSeasonId,
+        ...(Number.isFinite(startsOnMs)
+          ? { startsOn: create(TimestampSchema, timestampFromMs(startsOnMs)) }
+          : {}),
+        ...(Number.isFinite(endsOnMs)
+          ? { endsOn: create(TimestampSchema, timestampFromMs(endsOnMs)) }
+          : {}),
+      }),
+    ],
+  });
 }
 
 /**

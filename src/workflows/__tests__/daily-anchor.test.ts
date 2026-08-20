@@ -383,4 +383,130 @@ describe('dailyAnchorWorkflow', () => {
     expect(logs.some((l) => l.event === 'daily_anchor.standings_skipped')).toBe(true);
     expect(logs.at(-1)?.event).toBe('daily_anchor.finished');
   });
+
+  it('resolves + ingests the current season via game-service on the current-season step', async () => {
+    const leaguesEnvelope = {
+      response: [
+        {
+          league: { id: 999, name: 'Competition A' },
+          seasons: [
+            { year: 2024, start: '2024-08-01', end: '2025-05-01', current: false },
+            { year: 2025, start: '2025-08-15', end: '2026-05-24', current: true },
+          ],
+        },
+      ],
+    };
+
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
+        if (options.workload === 'competition-current-season') {
+          return buildResult(options.workload, options.resourceId, { data: leaguesEnvelope });
+        }
+        return buildResult(options.workload, options.resourceId, { data: { response: [] } });
+      }),
+    };
+
+    const ingestCurrentSeasons = vi.fn(async (_request: unknown) => ({
+      acceptedCount: 1,
+      updatedCount: 0,
+      replayId: 'r',
+    }));
+    // Resolve the competition (league 999) AND the season ("999:2025") to
+    // canonical ids so season_id matches the canonical SEASON id games carry.
+    const resolve = vi.fn(async (req: { entityType: number; providerId: string }) => {
+      if (req.providerId === '999') {
+        return { found: true, entityId: 'btl_football_competition_l999' };
+      }
+      if (req.providerId === '999:2025') {
+        return { found: true, entityId: 'btl_football_season_s2025' };
+      }
+      return { found: false, entityId: '' };
+    });
+
+    const logs: WorkflowLogEntry[] = [];
+    const deps = buildDeps(ingestion, [COMPETITION_A], {
+      logger: (entry) => logs.push(entry),
+      gameService: {
+        ingestCurrentSeasons,
+      } as unknown as WorkflowDeps['gameService'],
+      identity: { resolve } as unknown as WorkflowDeps['identity'],
+    });
+
+    await dailyAnchorWorkflow({}, deps);
+
+    // The current-season step fetched under the dedicated workload (own resource
+    // id + `/leagues` path).
+    const currentSeasonFetchArgs = ingestion.fetchWorkload.mock.calls
+      .map((args) => args[0] as IngestionFetchOptions)
+      .find((opts) => opts.workload === 'competition-current-season');
+    expect(currentSeasonFetchArgs?.resourceId).toBe('current-season-999');
+    expect(currentSeasonFetchArgs?.path).toBe('/leagues?id=999');
+
+    expect(ingestCurrentSeasons).toHaveBeenCalledTimes(1);
+    const request = ingestCurrentSeasons.mock.calls[0]?.[0] as {
+      seasons: ReadonlyArray<{
+        competitionId: string;
+        seasonId: string;
+        seasonLabel: string;
+        providerSeasonId: string;
+        startsOn?: unknown;
+        endsOn?: unknown;
+      }>;
+    };
+    expect(request.seasons).toHaveLength(1);
+    // competition_id is the CANONICAL id (never the provider league id).
+    expect(request.seasons[0]!.competitionId).toBe('btl_football_competition_l999');
+    // season_id is the canonical SEASON id (matches games.season_id).
+    expect(request.seasons[0]!.seasonId).toBe('btl_football_season_s2025');
+    expect(request.seasons[0]!.seasonLabel).toBe('2025/26');
+    expect(request.seasons[0]!.providerSeasonId).toBe('2025');
+    expect(request.seasons[0]!.startsOn).toBeDefined();
+    expect(request.seasons[0]!.endsOn).toBeDefined();
+
+    expect(logs.some((l) => l.event === 'daily_anchor.current_season_ingested')).toBe(true);
+  });
+
+  it('skips the current-season ingest (no provider id sent) when the competition is unresolved', async () => {
+    const leaguesEnvelope = {
+      response: [
+        {
+          league: { id: 999, name: 'Competition A' },
+          seasons: [{ year: 2025, start: '2025-08-15', end: '2026-05-24', current: true }],
+        },
+      ],
+    };
+    const ingestion: MockIngestion = {
+      fetchWorkload: vi.fn(async (options: IngestionFetchOptions) =>
+        options.workload === 'competition-current-season'
+          ? buildResult(options.workload, options.resourceId, { data: leaguesEnvelope })
+          : buildResult(options.workload, options.resourceId, { data: { response: [] } })
+      ),
+    };
+    const ingestCurrentSeasons = vi.fn(async (_request: unknown) => ({
+      acceptedCount: 0,
+      updatedCount: 0,
+      replayId: 'r',
+    }));
+    // Identity never resolves the competition → a canonical competition_id is
+    // unavailable, so the row (which GetCurrentSeason reads by canonical id)
+    // must be skipped rather than written under a provider id.
+    const resolve = vi.fn(async () => ({ found: false, entityId: '' }));
+
+    const logs: WorkflowLogEntry[] = [];
+    const deps = buildDeps(ingestion, [COMPETITION_A], {
+      logger: (entry) => logs.push(entry),
+      gameService: {
+        ingestCurrentSeasons,
+      } as unknown as WorkflowDeps['gameService'],
+      identity: { resolve } as unknown as WorkflowDeps['identity'],
+    });
+
+    await dailyAnchorWorkflow({}, deps);
+
+    expect(ingestCurrentSeasons).not.toHaveBeenCalled();
+    expect(logs.some((l) => l.event === 'daily_anchor.current_season_unresolved_competition')).toBe(
+      true
+    );
+    expect(logs.at(-1)?.event).toBe('daily_anchor.finished');
+  });
 });

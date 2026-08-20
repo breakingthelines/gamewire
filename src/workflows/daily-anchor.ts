@@ -27,9 +27,13 @@ import { ResolveRequestSchema } from '@breakingthelines/protos/btl/identity/v1/i
 
 import {
   API_FOOTBALL_PROVIDER_ID,
+  apiFootballCurrentSeasonFromEnvelope,
+  apiFootballCurrentSeasonLabel,
   apiFootballFixturePath,
+  apiFootballIngestCurrentSeasonRequest,
   apiFootballIngestStandingsRequestFromStandings,
   apiFootballSeasonProviderId,
+  providerStorageId,
   type ApiFootballEntityResolutionMap,
   type ApiFootballResolvedEntity,
 } from '../adapters/api-football/index.js';
@@ -65,6 +69,9 @@ const FIXTURES_ANCHOR_WINDOW_PATH = (competition: CompetitionEntry, anchorAt: Da
 const STANDINGS_PATH = (competition: CompetitionEntry): string =>
   `/standings?league=${competition.apiFootballLeagueId}&season=${competition.season}`;
 
+const CURRENT_SEASON_PATH = (competition: CompetitionEntry): string =>
+  `/leagues?id=${competition.apiFootballLeagueId}`;
+
 const TEAM_METADATA_RESOURCE = (competition: CompetitionEntry, teamId: number): string =>
   `${competition.apiFootballLeagueId}:${competition.season}:team:${teamId}`;
 
@@ -72,6 +79,7 @@ const TEAM_METADATA_PATH = (teamId: number): string => `/teams?id=${teamId}`;
 
 const TEAM_METADATA_WORKLOAD: IngestionWorkload = 'team-metadata';
 const STANDINGS_WORKLOAD: IngestionWorkload = 'competition-standings';
+const CURRENT_SEASON_WORKLOAD: IngestionWorkload = 'competition-current-season';
 const FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
 const LINEUPS_WORKLOAD: IngestionWorkload = 'lineups-post-confirm';
@@ -269,6 +277,39 @@ const sweepCompetition = async (
     competition,
     resourceId: standingsResource,
     result: standingsResult,
+    deps,
+  });
+
+  if (mode === 'abort') {
+    return finalSweep(
+      competition,
+      summary(competition, callsBudgeted, callsUsed, fixturesIngested, errors, fetches),
+      flags,
+      lastQuota,
+      mode
+    );
+  }
+
+  // Step 2b: current season. The `/leagues?id=<id>` payload carries the
+  // competition's per-season windows; the entry flagged `current: true` is the
+  // season a competition is "in" right now. It is fetched under its own
+  // `competition-current-season` workload (a 24h TTL — the window flips ~once a
+  // year) and ingested inline via `IngestCurrentSeasons`, exactly like the
+  // standings step above: the fetch still flows through the ingestion loop's
+  // cache/quota/HTTP machinery, only the canonical mapping + ingest happen here.
+  // This is the season-data automation gate — squad-service reads it back via
+  // GetCurrentSeason to stamp a prediction league's anchor season at creation.
+  const currentSeasonResource = `current-season-${competition.apiFootballLeagueId}`;
+  const currentSeasonResult = await deps.ingestion.fetchWorkload({
+    workload: CURRENT_SEASON_WORKLOAD,
+    resourceId: currentSeasonResource,
+    path: CURRENT_SEASON_PATH(competition),
+  });
+  mode = accumulate(currentSeasonResult, CURRENT_SEASON_WORKLOAD, currentSeasonResource, mode);
+  await ingestCurrentSeason({
+    competition,
+    resourceId: currentSeasonResource,
+    result: currentSeasonResult,
     deps,
   });
 
@@ -501,6 +542,132 @@ const ingestStandings = async (input: StandingsIngestInput): Promise<void> => {
   } catch (err) {
     log({
       event: 'daily_anchor.standings_ingest_error',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+  }
+};
+
+interface CurrentSeasonIngestInput {
+  readonly competition: CompetitionEntry;
+  readonly resourceId: string;
+  readonly result: IngestionFetchResult;
+  readonly deps: WorkflowDeps;
+}
+
+/**
+ * Resolve + map + ingest a `/leagues?id=<id>` current-season window into
+ * game-service's `current_seasons` store via `IngestCurrentSeasons`.
+ *
+ * Two ids must be canonical for the row to be usable downstream:
+ *
+ *  - `competition_id` is the PRIMARY KEY of `current_seasons` and squad-service
+ *    reads the row back by canonical competition id via `GetCurrentSeason`. So
+ *    unlike standings (which falls back to a provider-storage competition id
+ *    that game-service re-resolves at read time), an UNRESOLVED competition is
+ *    skipped-and-logged here: a provider-scoped id would write a row that the
+ *    canonical read path can never find. We never send a provider id as
+ *    `competition_id`.
+ *
+ *  - `season_id` MUST match the identifier game-service stores GAMES under so
+ *    the stamped anchor season scopes `games` by `(competition_id, season_id)`.
+ *    game-service sets `games.season_id = subjectID(game.season)` — the season
+ *    SubjectRef's id — and gamewire builds that ref by resolving the provider
+ *    season id (`<leagueId>:<year>`) to a canonical SEASON entity via identity,
+ *    falling back to the provider-storage id `provider:api-football:season:<leagueId>:<year>`
+ *    on a miss (see `resolvedSubject('season', …, { fallbackToProviderRef: true })`
+ *    in the fixtures normaliser). We resolve `season_id` here the SAME way, so
+ *    the two paths always agree. `provider_season_id` carries the raw provider
+ *    `year` for reconciliation.
+ *
+ * No-ops (with a structured log) when the fetch produced no usable data, when
+ * game-service is not wired, when the envelope carries no current season, or
+ * when the competition is unresolved. Never throws: a current-season failure
+ * must not poison the rest of the competition sweep.
+ */
+const ingestCurrentSeason = async (input: CurrentSeasonIngestInput): Promise<void> => {
+  const { competition, resourceId, result, deps } = input;
+  const log = deps.logger ?? (() => undefined);
+
+  if (result.status !== 'fetched' && result.status !== 'cached') {
+    return;
+  }
+  if (result.data === undefined) {
+    return;
+  }
+  if (!deps.gameService) {
+    log({
+      event: 'daily_anchor.current_season_skipped',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: 'game_service_not_wired',
+    });
+    return;
+  }
+
+  const currentSeason = apiFootballCurrentSeasonFromEnvelope(result.data);
+  if (!currentSeason) {
+    log({
+      event: 'daily_anchor.current_season_empty',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: 'no_current_season',
+    });
+    return;
+  }
+
+  const leagueId = String(competition.apiFootballLeagueId);
+  const competitionResolved = deps.identity
+    ? await resolveOne(deps.identity, EntityType.COMPETITION, leagueId)
+    : undefined;
+  if (!competitionResolved?.entityId) {
+    // A provider-scoped competition id would write a current_seasons row keyed
+    // by an id GetCurrentSeason (canonical only) can never read — so skip
+    // rather than mint an undiscoverable row.
+    log({
+      event: 'daily_anchor.current_season_unresolved_competition',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: `provider_league_${leagueId}`,
+    });
+    return;
+  }
+
+  // Resolve season_id exactly as the fixtures normaliser resolves a game's
+  // season SubjectRef, so current_seasons.season_id === games.season_id.
+  const seasonProviderId = apiFootballSeasonProviderId(
+    competition.apiFootballLeagueId,
+    currentSeason.year
+  );
+  const seasonResolved = deps.identity
+    ? await resolveOne(deps.identity, EntityType.SEASON, seasonProviderId)
+    : undefined;
+  const seasonId =
+    seasonResolved?.entityId ??
+    providerStorageId(API_FOOTBALL_PROVIDER_ID, 'season', seasonProviderId);
+
+  const request = apiFootballIngestCurrentSeasonRequest({
+    replayId: `live:${CURRENT_SEASON_WORKLOAD}:${resourceId}`,
+    resourceId,
+    competitionId: competitionResolved.entityId,
+    seasonId,
+    seasonLabel: apiFootballCurrentSeasonLabel(currentSeason.year),
+    providerSeasonId: String(currentSeason.year),
+    season: currentSeason,
+  });
+
+  try {
+    const response = await deps.gameService.ingestCurrentSeasons(request);
+    log({
+      event: 'daily_anchor.current_season_ingested',
+      workflow: 'daily-anchor',
+      competition: competition.key,
+      reason: `accepted=${response.acceptedCount} updated=${response.updatedCount} season=${seasonId}`,
+    });
+  } catch (err) {
+    log({
+      event: 'daily_anchor.current_season_ingest_error',
       workflow: 'daily-anchor',
       competition: competition.key,
       reason: err instanceof Error ? err.message : String(err),

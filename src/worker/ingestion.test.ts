@@ -82,6 +82,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'player-match-stats': 60,
       'squad-list-fallback': 24 * 60 * 60,
       'competition-standings': 6 * 60 * 60,
+      'competition-current-season': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
       'player-metadata': 24 * 60 * 60,
     });
@@ -96,6 +97,10 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     // steady-state cron — a 0 interval keeps `enqueueTick` from scheduling a
     // standalone standings poll.
     expect(INGESTION_TICK_INTERVAL_MS['competition-standings']).toBe(0);
+    // Current-season windows are swept by daily-anchor (and one-shot triggers),
+    // never on the steady-state cron — a 0 interval keeps `enqueueTick` from
+    // scheduling a standalone poll.
+    expect(INGESTION_TICK_INTERVAL_MS['competition-current-season']).toBe(0);
   });
 
   it('fetches once on miss and caches under provider:workload:resource', async () => {
@@ -694,6 +699,12 @@ describe('ApiFootballIngestionLoop.start', () => {
     expect(ingestionTest.apiFootballPathFor('squad-list-fallback', '1538961:10379')).toBe(
       '/players/squads?team=10379'
     );
+    // The current-season direct-call fallback reconstructs the provider league
+    // id from a `current-season-<leagueId>` resource id (the daily-anchor sweep
+    // otherwise passes an explicit path).
+    expect(
+      ingestionTest.apiFootballPathFor('competition-current-season', 'current-season-39')
+    ).toBe('/leagues?id=39');
   });
 });
 

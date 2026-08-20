@@ -4,6 +4,7 @@ import { createGrpcTransport } from '@connectrpc/connect-node';
 import {
   GameService,
   type IngestBatchResponse,
+  type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
   type IngestFootballStandingsRequest,
@@ -106,6 +107,7 @@ export interface FootballGameIngestClient {
   ingestFootballLineups(request: IngestFootballLineupsRequest): Promise<IngestBatchResponse>;
   ingestFootballSquadLists(request: IngestFootballSquadListsRequest): Promise<IngestBatchResponse>;
   ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse>;
+  ingestCurrentSeasons(request: IngestCurrentSeasonsRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
 }
@@ -180,6 +182,9 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestFootballStandings(request: IngestFootballStandingsRequest): Promise<IngestBatchResponse> {
       return client.ingestFootballStandings(request, { timeoutMs });
+    },
+    ingestCurrentSeasons(request: IngestCurrentSeasonsRequest): Promise<IngestBatchResponse> {
+      return client.ingestCurrentSeasons(request, { timeoutMs });
     },
     ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse> {
       return client.ingestTeamMatchStats(request, { timeoutMs });

@@ -7,9 +7,11 @@ import {
   SubjectType,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
+  CurrentSeasonEntrySchema,
   GameService,
   GetLeaderboardRequestSchema,
   IngestBatchResponseSchema,
+  IngestCurrentSeasonsRequestSchema,
   IngestFootballLineupsRequestSchema,
   IngestFootballSquadListsRequestSchema,
   IngestFootballStandingsRequestSchema,
@@ -97,6 +99,9 @@ describe('published Track E proto handoff', () => {
     );
     expect(methods.ingestFootballStandings.input.typeName).toBe(
       'btl.game.v1.IngestFootballStandingsRequest'
+    );
+    expect(methods.ingestCurrentSeasons.input.typeName).toBe(
+      'btl.game.v1.IngestCurrentSeasonsRequest'
     );
     expect(methods.ingestGameOccurrences.input.typeName).toBe(
       'btl.game.v1.IngestGameOccurrencesRequest'
@@ -204,6 +209,17 @@ describe('published Track E proto handoff', () => {
       metadata,
       standings: [standings],
     });
+    const ingestCurrentSeasons = create(IngestCurrentSeasonsRequestSchema, {
+      metadata,
+      seasons: [
+        create(CurrentSeasonEntrySchema, {
+          competitionId: 'btl_football_competition_launch_league',
+          seasonId: 'btl_football_season_2026',
+          seasonLabel: '2026/27',
+          providerSeasonId: '2026',
+        }),
+      ],
+    });
     const occurrence = create(GameOccurrenceSchema, {
       id: 'api-football:event:1',
       gameId: game.id,
@@ -261,6 +277,10 @@ describe('published Track E proto handoff', () => {
     expect(ingestLineups.lineups[0]?.teamSheets[0]?.players[0]?.positionCode).toBe('AM');
     expect(ingestSquadLists.squadLists[0]?.teams[0]?.players[0]?.providerPlayerId).toBe('999');
     expect(ingestStandings.standings[0]?.entries[0]?.points).toBe(23);
+    expect(ingestCurrentSeasons.seasons[0]?.competitionId).toBe(
+      'btl_football_competition_launch_league'
+    );
+    expect(ingestCurrentSeasons.seasons[0]?.providerSeasonId).toBe('2026');
     expect(ingestOccurrences.occurrences[0]?.kind).toBe(GameOccurrenceKind.ACTION);
     expect(providerConfig.attribution?.provider).toBe('api-football');
     expect(providerConfigRequest.includeDisabled).toBe(true);

@@ -297,4 +297,33 @@ export interface ApiFootballStandingEntry {
   readonly group?: string;
 }
 
+/**
+ * One `seasons[]` entry of a `/leagues?id=<id>` response. The provider lists
+ * every season it has coverage for; exactly one carries `current: true`. `year`
+ * is the split-season's opening calendar year (e.g. `2025` → the 2025/26
+ * season); `start`/`end` are ISO `YYYY-MM-DD` calendar bounds. All fields are
+ * defensively optional so a partial/older envelope normalises to "no current
+ * season" rather than throwing.
+ */
+export interface ApiFootballLeagueSeason {
+  readonly year?: number | null;
+  readonly start?: string | null;
+  readonly end?: string | null;
+  readonly current?: boolean | null;
+}
+
+/**
+ * One `response[]` entry of a `/leagues?id=<id>` response:
+ *   { league: { id, name, ... }, country: {...}, seasons: [ <season>, ... ] }
+ * Only `league.{id,name}` and `seasons` are consumed by the current-season
+ * normaliser; the rest of the provider payload is ignored.
+ */
+export interface ApiFootballLeagueResponse {
+  readonly league?: {
+    readonly id?: number | null;
+    readonly name?: string | null;
+  } | null;
+  readonly seasons?: readonly ApiFootballLeagueSeason[] | null;
+}
+
 export const API_FOOTBALL_PROVIDER_ID = 'api-football';
