@@ -59,13 +59,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # workflow_run builds workflow_run.head_sha (the checkout above), but
+      # metadata-action's type=sha and revision label read github.sha, which
+      # for workflow_run is main's HEAD when this run starts. Two merges in
+      # quick succession then publish one commit's code under the other's
+      # sha- tag. Tag and label from the commit actually checked out.
+      - name: Resolve built commit
+        id: built
+        run: |
+          sha=$(git rev-parse HEAD)
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha::7}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          labels: |
+            org.opencontainers.image.revision=${{ steps.built.outputs.sha }}
           tags: |
-            type=sha,prefix=sha-
+            type=raw,value=sha-${{ steps.built.outputs.short }}
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
