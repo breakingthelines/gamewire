@@ -5,9 +5,12 @@
  *   1. Cache-first: every workload has a TTL keyed in Redis.
  *   2. Singleflight: only one provider call per (provider, workload, resource)
  *      regardless of viewer count.
- *   3. Quota-gated: daily counter enforces a 70k hard cap with a 60k soft cap
- *      that flips the worker into cached-only mode and emits PROVIDER_OUTAGE
- *      via game-service.
+ *   3. Rate-gated: every provider call carries an explicit priority class
+ *      (`live`, `near-live`, `background`). The per-minute limiter
+ *      ({@link ProviderMinuteLimiter}) admits it against that class's ceiling,
+ *      then the daily counter enforces the hard cap (env, default 70k), the
+ *      soft cap that flips workflows to cached-only and emits PROVIDER_OUTAGE
+ *      (default 60k), and the background daily cap.
  *   4. Observability: counters per provider/workload/endpoint and cache hit
  *      ratio gauge exposed via {@link IngestionMetrics}.
  *
@@ -39,6 +42,11 @@ import {
   type ProviderFetch,
   type ProviderJsonFetchResult,
 } from './provider-http.js';
+import {
+  ProviderMinuteLimiter,
+  type MinuteAcquireResult,
+  type ProviderPriority,
+} from './minute-limiter.js';
 import type { ProviderQuotaSnapshot } from './quota.js';
 import { ProviderQuotaTracker } from './quota.js';
 import { Singleflight } from './singleflight.js';
@@ -164,9 +172,40 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'team-metadata': 6 * 60 * 60 * 1000,
 } as const;
 
+/**
+ * How long a live payload stays available as "last good" after it was fetched.
+ * The primary cache entry expires with the workload TTL (30s for live detail),
+ * so without a second key there is nothing to serve when the per-minute
+ * limiter denies a live call.
+ */
+export const LAST_GOOD_TTL_SECONDS = 15 * 60;
+
+/**
+ * Priority class of every call the polling loop makes itself. Workflows do not
+ * use this table: every `/workflows/*` call passes `background` explicitly,
+ * because backfills reuse live workload names (`team-match-stats`,
+ * `fixture-detail-fullTime`, ...) and must not run at live priority.
+ */
+export const LOOP_WORKLOAD_PRIORITY = {
+  'fixtures-next-7d': 'near-live',
+  'fixture-detail-preKO': 'near-live',
+  'fixture-detail-live': 'live',
+  'fixture-detail-fullTime': 'near-live',
+  'events-post-final': 'near-live',
+  'lineups-post-confirm': 'near-live',
+  'squad-list-fallback': 'background',
+  'team-metadata': 'background',
+} as const satisfies Partial<Record<IngestionWorkload, ProviderPriority>>;
+
 export interface IngestionFetchOptions {
   readonly workload: IngestionWorkload;
   readonly resourceId: string;
+  /**
+   * Required. The caller decides the class; it is never inferred from the
+   * workload name. The live tick and its stats sidecar pass `live`; other loop
+   * ticks pass `near-live`; every workflow passes `background`.
+   */
+  readonly priority: ProviderPriority;
   readonly replayId?: string;
   /** Optional override for tests. */
   readonly path?: string;
@@ -184,6 +223,11 @@ export interface IngestionFetchResult<TResponse = unknown> {
   readonly fetch?: ProviderJsonFetchResult<TResponse>;
   readonly data?: unknown;
   readonly error?: { readonly message: string };
+  readonly priority?: ProviderPriority;
+  /** The per-minute limiter held this call back (status `rate_limited`, or a stale `cached`). */
+  readonly throttled?: boolean;
+  /** `data` is the last-good payload served because the live call was throttled. */
+  readonly stale?: boolean;
 }
 
 /**
@@ -207,6 +251,10 @@ export interface IngestionLoopOptions {
   readonly config: GamewireWorkerConfig;
   readonly cache?: ProviderCache;
   readonly quota?: ProviderQuotaTracker;
+  /** Per-minute limiter. Defaults to an in-memory limiter with the default ceilings. */
+  readonly minuteLimiter?: ProviderMinuteLimiter;
+  /** Sleep used when near-live/background wait for the next minute. Override in tests. */
+  readonly sleep?: (ms: number) => Promise<void>;
   readonly metrics?: IngestionMetrics;
   readonly singleflight?: Singleflight;
   readonly fetchFn?: ProviderFetch;
@@ -246,6 +294,8 @@ export class ApiFootballIngestionLoop {
   readonly #config: GamewireWorkerConfig;
   readonly #cache: ProviderCache;
   readonly #quota: ProviderQuotaTracker;
+  readonly #minuteLimiter: ProviderMinuteLimiter;
+  readonly #sleep: (ms: number) => Promise<void>;
   readonly #metrics: IngestionMetrics;
   readonly #singleflight: Singleflight;
   readonly #fetchFn?: ProviderFetch;
@@ -262,9 +312,13 @@ export class ApiFootballIngestionLoop {
     this.#quota =
       options.quota ?? new ProviderQuotaTracker({ provider: options.config.providerId });
     this.#metrics = options.metrics ?? new IngestionMetrics();
+    this.#clock = options.clock ?? Date.now;
+    this.#minuteLimiter =
+      options.minuteLimiter ??
+      new ProviderMinuteLimiter({ providerId: options.config.providerId, clock: this.#clock });
+    this.#sleep = options.sleep ?? defaultSleep;
     this.#singleflight = options.singleflight ?? new Singleflight();
     this.#fetchFn = options.fetchFn;
-    this.#clock = options.clock ?? Date.now;
     this.#log = options.logger ?? defaultLogger;
     this.#onFixtureFetched = options.onFixtureFetched;
   }
@@ -279,6 +333,10 @@ export class ApiFootballIngestionLoop {
 
   get quota(): ProviderQuotaTracker {
     return this.#quota;
+  }
+
+  get minuteLimiter(): ProviderMinuteLimiter {
+    return this.#minuteLimiter;
   }
 
   /**
@@ -298,6 +356,7 @@ export class ApiFootballIngestionLoop {
     options: IngestionFetchOptions
   ): Promise<IngestionFetchResult<TResponse>> {
     const workload = options.workload;
+    const priority = options.priority;
     const path = options.path ?? apiFootballPathFor(workload, options.resourceId);
     const cacheKey = this.cacheKeyFor(workload, options.resourceId);
     const ttlSeconds = INGESTION_TTL_SECONDS[workload];
@@ -354,13 +413,22 @@ export class ApiFootballIngestionLoop {
         } satisfies IngestionFetchResult<TResponse>;
       }
 
-      // Quota reservation precedes the call. If we are at hard cap the call
-      // is denied; if we cross the soft cap during this reservation we still
-      // run the call but mark the result so the operator sees the fallback.
-      const reservation = await this.#quota.reserve();
+      // Per-minute limiter first: a call that may not leave this minute must
+      // not spend daily quota.
+      const minute = await this.#acquireMinute(priority, workload, cacheKey);
+      if (!minute.allowed) {
+        return this.#throttled<TResponse>(options, cacheKey, minute);
+      }
+
+      // Quota reservation precedes the call. If we are at hard cap (or, for
+      // background, the background daily cap) the call is denied; if we cross
+      // the soft cap during this reservation we still run the call but mark
+      // the result so the operator sees the fallback.
+      const reservation = await this.#quota.reserve(1, undefined, priority);
       this.#recordQuota(reservation.snapshot);
 
       if (!reservation.allowed) {
+        await this.#minuteLimiter.release(minute);
         this.#metrics.recordOutcome('denied');
         this.#log({
           event: 'ingestion_quota_exceeded',
@@ -368,10 +436,16 @@ export class ApiFootballIngestionLoop {
           workload,
           cacheKey,
           reason: reservation.reason,
+          priority,
           calls: reservation.snapshot.calls,
         });
+        const capLabel =
+          reservation.reason === 'background_cap'
+            ? `${reservation.snapshot.calls} >= ${this.#quota.backgroundDailyCap} (background)`
+            : `${reservation.snapshot.calls} >= ${reservation.snapshot.hardCap}`;
         return {
           status: 'denied',
+          priority,
           workload,
           resourceId: options.resourceId,
           cacheKey,
@@ -380,7 +454,7 @@ export class ApiFootballIngestionLoop {
           quota: reservation.snapshot,
           fallbackReason: 'PROVIDER_OUTAGE',
           error: {
-            message: `Provider quota ${reservation.reason ?? 'hard_cap'} reached: ${reservation.snapshot.calls} >= ${reservation.snapshot.hardCap}`,
+            message: `Provider quota ${reservation.reason ?? 'hard_cap'} reached: ${capLabel}`,
           },
         } satisfies IngestionFetchResult<TResponse>;
       }
@@ -393,6 +467,7 @@ export class ApiFootballIngestionLoop {
         path,
         fetchFn: this.#fetchFn,
       });
+      this.#observeProviderHeaders(fetchResult);
 
       if (fetchResult.status === 'rate_limited') {
         // api-football's free + Pro plans return rate-limit responses as HTTP
@@ -437,6 +512,7 @@ export class ApiFootballIngestionLoop {
         // calls keep the reservation: the provider was reached, just errored.
         let postSnapshot = reservation.snapshot;
         if (fetchResult.status === 'skipped') {
+          await this.#minuteLimiter.release(minute);
           postSnapshot = await this.#quota.refund();
           this.#recordQuota(postSnapshot);
         } else {
@@ -478,6 +554,9 @@ export class ApiFootballIngestionLoop {
             ? Math.min(ttlSeconds, LINEUPS_EMPTY_TTL_SECONDS)
             : ttlSeconds;
         await this.#cache.set(cacheKey, json, effectiveTtl);
+        if (priority === 'live') {
+          await this.#cache.set(this.lastGoodKeyFor(cacheKey), json, LAST_GOOD_TTL_SECONDS);
+        }
       }
 
       this.#log({
@@ -514,6 +593,117 @@ export class ApiFootballIngestionLoop {
    */
   cacheKeyFor(workload: IngestionWorkload, resourceId: string): string {
     return `${this.#provider}:${workload}:${resourceId}`;
+  }
+
+  /** Separate key holding the last successful live payload for {@link LAST_GOOD_TTL_SECONDS}. */
+  lastGoodKeyFor(cacheKey: string): string {
+    return `${cacheKey}:last-good`;
+  }
+
+  /**
+   * Ask the per-minute limiter for a token. `live` is answered at once (a
+   * denied live call serves the last-good payload instead). `near-live` and
+   * `background` wait, at most 60s, until the limiter expects room (the next
+   * minute boundary or a little after it), and retry once.
+   */
+  async #acquireMinute(
+    priority: ProviderPriority,
+    workload: IngestionWorkload,
+    cacheKey: string
+  ): Promise<MinuteAcquireResult> {
+    const first = await this.#minuteLimiter.tryAcquire(priority);
+    if (first.allowed || priority === 'live') {
+      return first;
+    }
+    // Wait until the estimate would admit this call, never more than 60s.
+    const waitMs = Math.max(0, Math.min(60_000, first.retryAfterMs ?? first.msUntilNextMinute));
+    this.#log({
+      event: 'provider_minute_wait',
+      provider: this.#provider,
+      workload,
+      priority,
+      cacheKey,
+      reason: first.reason,
+      estimate: first.estimate,
+      ceiling: first.ceiling,
+      waitMs,
+    });
+    await this.#sleep(waitMs);
+    return this.#minuteLimiter.tryAcquire(priority);
+  }
+
+  async #throttled<TResponse>(
+    options: IngestionFetchOptions,
+    cacheKey: string,
+    minute: MinuteAcquireResult
+  ): Promise<IngestionFetchResult<TResponse>> {
+    const { workload, priority } = options;
+    this.#metrics.recordMinuteThrottled(workload);
+    this.#metrics.recordOutcome('throttled');
+    this.#log({
+      event: 'provider_minute_throttled',
+      provider: this.#provider,
+      workload,
+      priority,
+      cacheKey,
+      reason: minute.reason,
+      estimate: minute.estimate,
+      ceiling: minute.ceiling,
+    });
+    const snapshot = await this.#quota.snapshot();
+    this.#recordQuota(snapshot);
+    if (priority === 'live') {
+      const lastGood = await this.#cache.get<unknown>(this.lastGoodKeyFor(cacheKey));
+      if (lastGood !== undefined) {
+        // The bridge already ingested this payload when it was fetched, so
+        // it is not notified again.
+        this.#metrics.recordStaleServed(workload);
+        return {
+          status: 'cached',
+          workload,
+          resourceId: options.resourceId,
+          cacheKey,
+          cacheHit: true,
+          cachedOnlyMode: snapshot.cachedOnlyMode,
+          quota: snapshot,
+          data: lastGood,
+          priority,
+          throttled: true,
+          stale: true,
+          fallbackReason: 'PROVIDER_RATE_LIMITED',
+        };
+      }
+    }
+    return {
+      status: 'rate_limited',
+      workload,
+      resourceId: options.resourceId,
+      cacheKey,
+      cacheHit: false,
+      cachedOnlyMode: snapshot.cachedOnlyMode,
+      quota: snapshot,
+      priority,
+      throttled: true,
+      fallbackReason: 'PROVIDER_RATE_LIMITED',
+      error: {
+        message: `Provider minute limit for ${priority} reached (${minute.reason ?? 'minute_cap'}: ${Math.round(minute.estimate)}/${minute.ceiling})`,
+      },
+    };
+  }
+
+  #observeProviderHeaders(fetchResult: ProviderJsonFetchResult<unknown>): void {
+    const headers = fetchResult.rateLimit;
+    if (!headers) {
+      return;
+    }
+    this.#quota.observeProviderDaily({
+      limit: headers.dailyLimit,
+      remaining: headers.dailyRemaining,
+    });
+    this.#minuteLimiter.observeProviderMinute({
+      remaining: headers.minuteRemaining,
+      limit: headers.minuteLimit,
+    });
   }
 
   /**
@@ -554,15 +744,54 @@ export class ApiFootballIngestionLoop {
       stopHandles.push(handle);
     };
 
+    // Per-workload in-flight guard. Ticks are fired by `setInterval`, so a
+    // tick that runs longer than its interval would otherwise overlap the next
+    // one and pile up. A tick that finds the previous run of the same workload
+    // still going is skipped and counted.
+    const inFlight = new Set<IngestionWorkload>();
     const runRefresh = (workload: IngestionWorkload, refresh: () => Promise<void>): void => {
-      refresh().catch((error: unknown) => {
+      if (inFlight.has(workload)) {
+        this.#metrics.recordTickSkippedInFlight(workload);
         this.#log({
-          event: 'ingestion_tick_error',
+          event: 'ingestion_tick_skipped_in_flight',
           provider: this.#provider,
           workload,
-          error: error instanceof Error ? error.message : String(error),
         });
-      });
+        return;
+      }
+      inFlight.add(workload);
+      const startedAt = this.#clock();
+      const settle = (): void => {
+        inFlight.delete(workload);
+        const durationMs = Math.max(0, this.#clock() - startedAt);
+        this.#metrics.recordTickDuration(workload, durationMs);
+        const interval = intervals[workload] ?? 0;
+        if (interval > 0 && durationMs >= interval) {
+          this.#log({
+            event: 'ingestion_tick_overran',
+            provider: this.#provider,
+            workload,
+            durationMs,
+            intervalMs: interval,
+          });
+        }
+      };
+      let pending: Promise<void>;
+      try {
+        pending = refresh();
+      } catch (error) {
+        pending = Promise.reject(error);
+      }
+      pending
+        .catch((error: unknown) => {
+          this.#log({
+            event: 'ingestion_tick_error',
+            provider: this.#provider,
+            workload,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        })
+        .finally(settle);
     };
 
     // Upsert discovered/observed fixtures into the live-set + lifecycle map.
@@ -681,6 +910,7 @@ export class ApiFootballIngestionLoop {
             workload: 'fixtures-next-7d',
             resourceId: apiFootballCompetitionKey(competition),
             path,
+            priority: LOOP_WORKLOAD_PRIORITY['fixtures-next-7d'],
           });
           upsertFixtures(
             fixtureLifecycleFromFixtureList(result.data, this.#clock()),
@@ -705,6 +935,7 @@ export class ApiFootballIngestionLoop {
       >,
       ids: readonly string[]
     ): Promise<void> => {
+      const priority: ProviderPriority = LOOP_WORKLOAD_PRIORITY[workload];
       // Bounded fan-out (was an unbounded `Promise.allSettled(ids.map(...))`):
       // cap simultaneous in-flight provider calls so a busy slot spreads its
       // requests instead of bursting them all and tripping the per-minute limit.
@@ -712,6 +943,7 @@ export class ApiFootballIngestionLoop {
         const result = await this.fetchWorkload({
           workload,
           resourceId: id,
+          priority,
         });
         if (FIXTURE_DETAIL_WORKLOADS.has(workload) && result.data !== undefined) {
           const teamIds = teamIdsFromFixtureDetail(result.data);
@@ -734,7 +966,7 @@ export class ApiFootballIngestionLoop {
           // the bridge (`onFixtureFetched`) owns the canonical ingest into
           // game-service. Skipped for pre-kickoff fixtures (empty payload).
           if (STATS_FETCH_FIXTURE_STATUSES.has(statusShort)) {
-            await fetchMatchStatsForFixture(id);
+            await fetchMatchStatsForFixture(id, priority);
           }
         }
         if (workload === 'lineups-post-confirm' && lineupsMissing(result.data)) {
@@ -743,6 +975,7 @@ export class ApiFootballIngestionLoop {
             const fixtureDetail = await this.fetchWorkload({
               workload: 'fixture-detail-fullTime',
               resourceId: id,
+              priority: LOOP_WORKLOAD_PRIORITY['fixture-detail-fullTime'],
             });
             teamIds = teamIdsFromFixtureDetail(fixtureDetail.data);
             if (teamIds.length > 0) {
@@ -763,6 +996,7 @@ export class ApiFootballIngestionLoop {
           this.fetchWorkload({
             workload: 'squad-list-fallback',
             resourceId: squadListResourceId(fixtureId, teamId),
+            priority: LOOP_WORKLOAD_PRIORITY['squad-list-fallback'],
           })
         )
       );
@@ -775,10 +1009,15 @@ export class ApiFootballIngestionLoop {
     // routes both workloads to game-service's IngestTeamMatchStats /
     // IngestPlayerMatchStats. `allSettled` isolates one endpoint's failure from
     // the other; the cache + singleflight + quota gates apply per workload.
-    const fetchMatchStatsForFixture = async (fixtureId: string): Promise<void> => {
+    // The sidecar inherits the class of the tick that triggered it: `live`
+    // from the live tick, `near-live` from the full-time tick.
+    const fetchMatchStatsForFixture = async (
+      fixtureId: string,
+      priority: ProviderPriority
+    ): Promise<void> => {
       await Promise.allSettled([
-        this.fetchWorkload({ workload: 'team-match-stats', resourceId: fixtureId }),
-        this.fetchWorkload({ workload: 'player-match-stats', resourceId: fixtureId }),
+        this.fetchWorkload({ workload: 'team-match-stats', resourceId: fixtureId, priority }),
+        this.fetchWorkload({ workload: 'player-match-stats', resourceId: fixtureId, priority }),
       ]);
     };
 
@@ -843,6 +1082,7 @@ export class ApiFootballIngestionLoop {
               workload: 'team-metadata',
               resourceId: id,
               path: `/teams?id=${encodeURIComponent(id)}`,
+              priority: LOOP_WORKLOAD_PRIORITY['team-metadata'],
             })
           )
         );
@@ -1316,6 +1556,9 @@ function defaultLogger(entry: Record<string, unknown>): void {
   // path because provider-http redacts the API key before reporting.
   console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
 }
+
+const defaultSleep = (ms: number): Promise<void> =>
+  ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 
 const defaultSchedule = (callback: () => void, ms: number): unknown => setInterval(callback, ms);
 

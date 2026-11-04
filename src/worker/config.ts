@@ -1,3 +1,16 @@
+import {
+  DEFAULT_PROVIDER_MINUTE_CAPS,
+  validateMinuteCaps,
+  type ProviderMinuteCaps,
+} from './minute-limiter.js';
+import {
+  DEFAULT_PROVIDER_HARD_CAP,
+  DEFAULT_PROVIDER_PLAN_CEILING,
+  DEFAULT_PROVIDER_SOFT_CAP,
+  defaultBackgroundDailyCap,
+  type ProviderQuotaSource,
+} from './quota.js';
+
 export type GamewireWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type GamewireProviderMode = 'replay' | 'live';
 
@@ -21,6 +34,27 @@ export interface GamewireWorkerConfig {
   providerHardCap: number;
   /** Soft daily cap that flips the worker into cached-only mode. Default 60,000. */
   providerSoftCap: number;
+  /**
+   * Plan ceiling (`GAMEWIRE_PROVIDER_PLAN_CEILING`), informational: logged at
+   * boot and compared with the provider-reported limit. Default 75,000.
+   *
+   * The fields below are optional so hand-built configs (tests, embedders) need
+   * not set them; {@link loadConfig} always populates them.
+   */
+  providerPlanCeiling?: number;
+  /**
+   * `GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP`. Background reservations are
+   * refused at or above it. Default min(110,000, soft cap).
+   */
+  providerBackgroundDailyCap?: number;
+  /** `GAMEWIRE_PROVIDER_QUOTA_SOURCE`: `local` (default) or `provider-header`. */
+  providerQuotaSource?: ProviderQuotaSource;
+  /**
+   * Per-minute ceilings per priority class, from
+   * `GAMEWIRE_PROVIDER_MINUTE_CAP_{LIVE,NEARLIVE,BACKGROUND}`. Defaults
+   * 800 / 650 / 450.
+   */
+  providerMinuteCaps?: ProviderMinuteCaps;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
   /** Fixture ids to poll immediately on boot, useful for deterministic staging smoke. */
@@ -191,6 +225,19 @@ const parsePositiveInt = (value: string | undefined, fallback: number, label: st
   return parsed;
 };
 
+const parseQuotaSource = (value: string | undefined): ProviderQuotaSource => {
+  switch (value?.trim()) {
+    case 'local':
+    case 'provider-header':
+      return value.trim() as ProviderQuotaSource;
+    case undefined:
+    case '':
+      return 'local';
+    default:
+      throw new Error(`Invalid gamewire provider quota source: ${value}`);
+  }
+};
+
 const parseBoolean = (value: string | undefined, fallback: boolean, label: string): boolean => {
   if (value === undefined || value === '') {
     return fallback;
@@ -223,12 +270,12 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
   const providerMode = parseProviderMode(env.GAMEWIRE_PROVIDER_MODE);
   const hardCap = parsePositiveInt(
     env.GAMEWIRE_PROVIDER_HARD_CAP,
-    70_000,
+    DEFAULT_PROVIDER_HARD_CAP,
     'gamewire provider hard cap'
   );
   const softCap = parsePositiveInt(
     env.GAMEWIRE_PROVIDER_SOFT_CAP,
-    60_000,
+    DEFAULT_PROVIDER_SOFT_CAP,
     'gamewire provider soft cap'
   );
   if (softCap > hardCap) {
@@ -236,6 +283,39 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       `gamewire provider soft cap (${softCap}) must not exceed hard cap (${hardCap})`
     );
   }
+  const planCeiling = parsePositiveInt(
+    env.GAMEWIRE_PROVIDER_PLAN_CEILING,
+    DEFAULT_PROVIDER_PLAN_CEILING,
+    'gamewire provider plan ceiling'
+  );
+  const backgroundDailyCap = parsePositiveInt(
+    env.GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP,
+    defaultBackgroundDailyCap(softCap, hardCap),
+    'gamewire provider background daily cap'
+  );
+  if (backgroundDailyCap > hardCap) {
+    throw new Error(
+      `gamewire provider background daily cap (${backgroundDailyCap}) must not exceed hard cap (${hardCap})`
+    );
+  }
+  const minuteCaps: ProviderMinuteCaps = {
+    live: parsePositiveInt(
+      env.GAMEWIRE_PROVIDER_MINUTE_CAP_LIVE,
+      DEFAULT_PROVIDER_MINUTE_CAPS.live,
+      'gamewire provider live minute cap'
+    ),
+    'near-live': parsePositiveInt(
+      env.GAMEWIRE_PROVIDER_MINUTE_CAP_NEARLIVE,
+      DEFAULT_PROVIDER_MINUTE_CAPS['near-live'],
+      'gamewire provider near-live minute cap'
+    ),
+    background: parsePositiveInt(
+      env.GAMEWIRE_PROVIDER_MINUTE_CAP_BACKGROUND,
+      DEFAULT_PROVIDER_MINUTE_CAPS.background,
+      'gamewire provider background minute cap'
+    ),
+  };
+  validateMinuteCaps(minuteCaps);
   return {
     port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
     gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
@@ -252,6 +332,10 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     redisNamespace: env.GAMEWIRE_REDIS_NAMESPACE ?? 'gamewire',
     providerHardCap: hardCap,
     providerSoftCap: softCap,
+    providerPlanCeiling: planCeiling,
+    providerBackgroundDailyCap: backgroundDailyCap,
+    providerQuotaSource: parseQuotaSource(env.GAMEWIRE_PROVIDER_QUOTA_SOURCE),
+    providerMinuteCaps: minuteCaps,
     ingestionEnabled: parseBoolean(
       env.GAMEWIRE_INGESTION_ENABLED,
       providerMode === 'live',

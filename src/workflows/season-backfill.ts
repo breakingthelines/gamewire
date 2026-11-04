@@ -64,6 +64,7 @@ import type {
   SeasonBackfillTargetResult,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 /**
  * Default per-run provider-call ceiling. Sized well under the 70k/day
@@ -342,6 +343,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       );
     }
     const standingsResult = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
       workload: STANDINGS_WORKLOAD,
       resourceId: standingsResourceId(leagueId, season),
       path: standingsPath(leagueId, season),
@@ -393,6 +395,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       );
     }
     const fixturesResult = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
       workload: SEASON_FIXTURES_WORKLOAD,
       resourceId: seasonFixturesResourceId(leagueId, season),
       path: seasonFixturesPath(leagueId, season),
@@ -512,6 +515,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
   let mode = args.currentMode;
 
   const detailResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: FIXTURE_DETAIL_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixturePath(fixtureId),
@@ -522,6 +526,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
   }
 
   const eventsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: EVENTS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballEventPath(fixtureId),
@@ -532,6 +537,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
   }
 
   const lineupsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: LINEUPS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballLineupPath(fixtureId),
@@ -542,6 +548,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
   }
 
   const teamStatsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: TEAM_STATS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixtureStatisticsPath(fixtureId),
@@ -552,6 +559,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
   }
 
   const playerStatsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: PLAYER_STATS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixturePlayersPath(fixtureId),

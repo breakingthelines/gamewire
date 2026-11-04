@@ -10,6 +10,7 @@ import {
   createFetchFootballIdentityLookupClient,
   type FootballIdentityLookupClient,
 } from './clients/identity.js';
+import { withIdentityResolveCache } from './clients/identity-resolve-cache.js';
 import {
   createFetchFootballGameLookupClient,
   type FootballGameBridgeClient,
@@ -19,6 +20,8 @@ import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
+import { ProviderMinuteLimiter } from './minute-limiter.js';
+import { ProviderQuotaTracker } from './quota.js';
 import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
@@ -246,6 +249,15 @@ const identityClient: FootballIdentityLookupClient | undefined = config.identity
   : undefined;
 
 /**
+ * The bridges resolve the same competition and teams on every live tick, so
+ * they go through an LRU. Workflows keep the raw client: identity-gap-scan
+ * reports current misses and must not see a cached one.
+ */
+const bridgeIdentityClient: FootballIdentityLookupClient | undefined = identityClient
+  ? withIdentityResolveCache(identityClient)
+  : undefined;
+
+/**
  * game-service client used by the match-concluded bridge to resolve
  * API-Football fixture ids → BTL canonical game ids via
  * `LookupGameByFixture`. The crosswalk lives in `provider_game_mappings`
@@ -272,11 +284,11 @@ if (!config.gameServiceUrl) {
  * client is unavailable.
  */
 const matchConcludedBridge: OnFixtureFetchedCallback | undefined =
-  matchConcludedPublisher && gameServiceLookupClient && identityClient
+  matchConcludedPublisher && gameServiceLookupClient && bridgeIdentityClient
     ? createMatchConcludedBridge({
         publisher: matchConcludedPublisher,
         gameService: gameServiceLookupClient,
-        identity: identityClient,
+        identity: bridgeIdentityClient,
         providerId: config.providerId,
       })
     : undefined;
@@ -306,10 +318,10 @@ if (matchConcludedBridge) {
  * unavailable. Requires the identity client for provider→canonical id
  * resolution. See `docs/proposals/entity-imagery-system.md`.
  */
-const assetMirrorBridge: OnFixtureFetchedCallback | undefined = identityClient
+const assetMirrorBridge: OnFixtureFetchedCallback | undefined = bridgeIdentityClient
   ? createAssetMirrorBridge({
       config: config.assetMirror,
-      identity: identityClient,
+      identity: bridgeIdentityClient,
       providerId: config.providerId,
     })
   : undefined;
@@ -341,7 +353,44 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBri
   assetMirrorBridge
 );
 
-const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
+// The caps come from env. Before this they were logged but never reached the
+// tracker, which always ran on its code defaults.
+const quota = new ProviderQuotaTracker({
+  provider: config.providerId,
+  hardCap: config.providerHardCap,
+  softCap: config.providerSoftCap,
+  backgroundDailyCap: config.providerBackgroundDailyCap,
+  quotaSource: config.providerQuotaSource,
+  logger: (entry) => {
+    console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
+  },
+});
+// One worker replica (see the prod deployment), so the in-memory counter is
+// the whole picture for this process. Other spenders on the key are counted
+// through the provider headers when GAMEWIRE_PROVIDER_QUOTA_SOURCE=provider-header.
+const minuteLimiter = new ProviderMinuteLimiter({
+  providerId: config.providerId,
+  namespace: config.redisNamespace,
+  caps: config.providerMinuteCaps,
+});
+console.log(
+  `[gamewire-worker] provider budget hardCap=${config.providerHardCap} ` +
+    `softCap=${config.providerSoftCap} backgroundDailyCap=${quota.backgroundDailyCap} ` +
+    `planCeiling=${config.providerPlanCeiling} quotaSource=${quota.quotaSource} ` +
+    `minuteCaps=live:${minuteLimiter.caps.live},near-live:${minuteLimiter.caps['near-live']},` +
+    `background:${minuteLimiter.caps.background} minuteStore=${minuteLimiter.backend}`
+);
+if (
+  config.providerPlanCeiling !== undefined &&
+  config.providerHardCap > config.providerPlanCeiling
+) {
+  console.log(
+    `[gamewire-worker] WARNING hard cap ${config.providerHardCap} exceeds plan ceiling ` +
+      `${config.providerPlanCeiling}; set GAMEWIRE_PROVIDER_PLAN_CEILING to the plan size`
+  );
+}
+
+const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched, quota, minuteLimiter });
 
 // Verified-rotation seed: merge operator-supplied env IDs with the
 // catalogue's `verifiedFixtureIds` so staging smoke always covers the

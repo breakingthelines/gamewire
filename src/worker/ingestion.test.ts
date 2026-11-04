@@ -113,6 +113,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     });
 
     const first = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'fixture-detail-live',
       resourceId: '1',
     });
@@ -123,6 +124,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     expect(fetchFn).toHaveBeenCalledTimes(1);
 
     const second = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'fixture-detail-live',
       resourceId: '1',
     });
@@ -152,9 +154,21 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       logger: quietLogger,
     });
 
-    const a = loop.fetchWorkload({ workload: 'fixture-detail-live', resourceId: '99' });
-    const b = loop.fetchWorkload({ workload: 'fixture-detail-live', resourceId: '99' });
-    const c = loop.fetchWorkload({ workload: 'fixture-detail-live', resourceId: '99' });
+    const a = loop.fetchWorkload({
+      priority: 'live',
+      workload: 'fixture-detail-live',
+      resourceId: '99',
+    });
+    const b = loop.fetchWorkload({
+      priority: 'live',
+      workload: 'fixture-detail-live',
+      resourceId: '99',
+    });
+    const c = loop.fetchWorkload({
+      priority: 'live',
+      workload: 'fixture-detail-live',
+      resourceId: '99',
+    });
 
     // Let the async cache lookups + singleflight bookkeeping run so the
     // leader actually reaches the fetch boundary.
@@ -189,6 +203,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     });
 
     const result = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'fixture-detail-preKO',
       resourceId: '42',
     });
@@ -220,6 +235,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     });
 
     const result = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'fixture-detail-live',
       resourceId: '7',
     });
@@ -249,6 +265,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     });
 
     const result = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'fixture-detail-live',
       resourceId: '11',
     });
@@ -286,6 +303,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     });
 
     const result = await loop.fetchWorkload({
+      priority: 'live',
       workload: 'team-match-stats',
       resourceId: '1391188',
     });
@@ -320,7 +338,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       logger: quietLogger,
     });
 
-    await loop.fetchWorkload({ workload: 'fixtures-next-7d', resourceId: 'top' });
+    await loop.fetchWorkload({ priority: 'live', workload: 'fixtures-next-7d', resourceId: 'top' });
     expect(setSpy).toHaveBeenCalledWith(
       'api-football:fixtures-next-7d:top',
       expect.objectContaining({ response: expect.any(Array) }),
@@ -340,7 +358,11 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       logger: quietLogger,
     });
 
-    await loop.fetchWorkload({ workload: 'lineups-post-confirm', resourceId: '1538961' });
+    await loop.fetchWorkload({
+      priority: 'live',
+      workload: 'lineups-post-confirm',
+      resourceId: '1538961',
+    });
     // Short TTL so the next 10-min poll re-hits the provider and catches lineups
     // when they publish — NOT the 1h TTL that would mask them for the window.
     expect(setSpy).toHaveBeenCalledWith(
@@ -364,7 +386,11 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       logger: quietLogger,
     });
 
-    await loop.fetchWorkload({ workload: 'lineups-post-confirm', resourceId: '1538961' });
+    await loop.fetchWorkload({
+      priority: 'live',
+      workload: 'lineups-post-confirm',
+      resourceId: '1538961',
+    });
     expect(setSpy).toHaveBeenCalledWith(
       'api-football:lineups-post-confirm:1538961',
       expect.objectContaining({ response: expect.any(Array) }),
@@ -387,7 +413,11 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       logger: quietLogger,
     });
 
-    await loop.fetchWorkload({ workload: 'fixture-detail-preKO', resourceId: '1' });
+    await loop.fetchWorkload({
+      priority: 'live',
+      workload: 'fixture-detail-preKO',
+      resourceId: '1',
+    });
 
     const observation = await loop.observe();
     expect(observation.ttlSeconds).toEqual(INGESTION_TTL_SECONDS);

@@ -59,6 +59,7 @@ import type {
   SweepMissingPayloadsOutput,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 const DEFAULT_LIMIT = 100;
 const MAX_LIMIT = 500;
@@ -486,6 +487,7 @@ export const sweepMissingPayloadsWorkflow = async (
     const fixtureId = fixtureIds[i]!;
     try {
       const result = await deps.ingestion.fetchWorkload({
+        priority: WORKFLOW_PROVIDER_PRIORITY,
         workload: binding.workload,
         resourceId: fixtureId,
         path: binding.path(fixtureId),

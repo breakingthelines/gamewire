@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { GamewireWorkerConfig } from './config.js';
-import { fetchApiFootballJson, summarizeProviderJson } from './provider-http.js';
+import {
+  fetchApiFootballJson,
+  parseRateLimitHeaders,
+  summarizeProviderJson,
+} from './provider-http.js';
 
 const baseConfig: GamewireWorkerConfig = {
   port: 8095,
@@ -230,5 +234,91 @@ describe('API-Football provider HTTP boundary', () => {
       responseLength: undefined,
     });
     expect(JSON.stringify(summary)).not.toContain('ops@example.test');
+  });
+});
+
+describe('API-Football quota headers', () => {
+  const headers = (values: Record<string, string>) => ({
+    get: (name: string) => values[name.toLowerCase()] ?? null,
+  });
+
+  it('parses the daily and per-minute headers', () => {
+    expect(
+      parseRateLimitHeaders(
+        headers({
+          'x-ratelimit-requests-limit': '150000',
+          'x-ratelimit-requests-remaining': '149123',
+          'x-ratelimit-limit': '900',
+          'x-ratelimit-remaining': '873',
+        })
+      )
+    ).toEqual({
+      dailyLimit: 150_000,
+      dailyRemaining: 149_123,
+      minuteLimit: 900,
+      minuteRemaining: 873,
+    });
+  });
+
+  it('returns undefined when no quota header is present', () => {
+    expect(parseRateLimitHeaders(headers({ 'content-type': 'application/json' }))).toBeUndefined();
+  });
+
+  it('drops values that are not non-negative integers', () => {
+    expect(
+      parseRateLimitHeaders(
+        headers({
+          'x-ratelimit-requests-limit': 'unlimited',
+          'x-ratelimit-requests-remaining': '-4',
+          'x-ratelimit-remaining': ' 12 ',
+        })
+      )
+    ).toEqual({
+      dailyLimit: undefined,
+      dailyRemaining: undefined,
+      minuteLimit: undefined,
+      minuteRemaining: 12,
+    });
+  });
+
+  it('carries the parsed headers on fetched and rate-limited results', async () => {
+    const quotaHeaders = headers({
+      'content-type': 'application/json',
+      'x-ratelimit-requests-limit': '150000',
+      'x-ratelimit-requests-remaining': '100',
+      'x-ratelimit-remaining': '0',
+    });
+    const config = { ...baseConfig, providerMode: 'live' as const, providerApiKey: 'k' };
+    const fetched = await fetchApiFootballJson({
+      config,
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      replayId: 'r',
+      path: '/fixtures?id=1',
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: quotaHeaders,
+        json: async () => ({ response: [] }),
+      }),
+    });
+    expect(fetched.status).toBe('fetched');
+    expect(fetched.rateLimit?.dailyRemaining).toBe(100);
+
+    const limited = await fetchApiFootballJson({
+      config,
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      replayId: 'r',
+      path: '/fixtures?id=1',
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: quotaHeaders,
+        json: async () => ({ response: [], errors: { rateLimit: 'Too many requests' } }),
+      }),
+    });
+    expect(limited.status).toBe('rate_limited');
+    expect(limited.rateLimit?.minuteRemaining).toBe(0);
   });
 });

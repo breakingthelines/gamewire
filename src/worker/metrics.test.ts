@@ -46,6 +46,7 @@ describe('IngestionMetrics', () => {
     metrics.recordOutcome('failed');
     metrics.recordOutcome('denied');
     metrics.recordOutcome('rate_limited');
+    metrics.recordOutcome('throttled');
     expect(metrics.snapshot().callOutcomes).toEqual({
       fetched: 2,
       cached: 1,
@@ -53,6 +54,7 @@ describe('IngestionMetrics', () => {
       failed: 1,
       denied: 1,
       rate_limited: 1,
+      throttled: 1,
     });
   });
 
@@ -84,8 +86,33 @@ describe('IngestionMetrics', () => {
       failed: 0,
       denied: 0,
       rate_limited: 0,
+      throttled: 0,
     });
+    expect(snap.providerMinuteThrottled).toEqual({});
+    expect(snap.providerStaleServed).toEqual({});
+    expect(snap.tickDurationMs).toEqual({});
+    expect(snap.tickSkippedInFlight).toEqual({});
     expect(snap.quotaCallsToday).toBe(0);
     expect(snap.quotaPosture).toBe('normal');
+  });
+
+  it('records limiter and tick metrics per workload', () => {
+    const metrics = new IngestionMetrics();
+    metrics.recordMinuteThrottled('fixture-detail-live');
+    metrics.recordMinuteThrottled('fixture-detail-live');
+    metrics.recordStaleServed('fixture-detail-live');
+    metrics.recordTickDuration('fixture-detail-live', 1_200);
+    metrics.recordTickDuration('fixture-detail-live', 800);
+    metrics.recordTickSkippedInFlight('fixture-detail-live');
+    const snap = metrics.snapshot();
+    expect(snap.providerMinuteThrottled).toEqual({ 'fixture-detail-live': 2 });
+    expect(snap.providerStaleServed).toEqual({ 'fixture-detail-live': 1 });
+    expect(snap.tickDurationMs['fixture-detail-live']).toEqual({
+      count: 2,
+      lastMs: 800,
+      maxMs: 1_200,
+      totalMs: 2_000,
+    });
+    expect(snap.tickSkippedInFlight).toEqual({ 'fixture-detail-live': 1 });
   });
 });

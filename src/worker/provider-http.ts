@@ -63,6 +63,27 @@ export interface ProviderJsonFetchResult<TResponse = unknown> {
    * `provider-http.ts` for the detection contract.
    */
   readonly rateLimitMessage?: string;
+  /**
+   * The provider's quota headers from this response, when present. Read by
+   * the ingestion loop to sync the daily and per-minute counters with the
+   * provider's own view of the account.
+   */
+  readonly rateLimit?: ProviderRateLimitHeaders;
+}
+
+/**
+ * API-Football quota headers. Each field is absent when its header is missing
+ * or not a non-negative integer.
+ */
+export interface ProviderRateLimitHeaders {
+  /** `x-ratelimit-requests-limit`: daily allowance for the account. */
+  readonly dailyLimit?: number;
+  /** `x-ratelimit-requests-remaining`: daily calls left. */
+  readonly dailyRemaining?: number;
+  /** `x-ratelimit-limit`: per-minute allowance. */
+  readonly minuteLimit?: number;
+  /** `x-ratelimit-remaining`: calls left in the current minute. */
+  readonly minuteRemaining?: number;
 }
 
 export interface ProviderJsonSummary {
@@ -110,6 +131,7 @@ export async function fetchApiFootballJson<TResponse = unknown>(
 
   const clock = options.clock ?? Date.now;
   const startedAt = clock();
+  let rateLimit: ProviderRateLimitHeaders | undefined;
 
   try {
     const url = buildProviderUrl(cfg.providerBaseUrl, runtime.request.path);
@@ -121,6 +143,7 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         [API_FOOTBALL_HEADER]: cfg.providerApiKey,
       },
     });
+    rateLimit = parseRateLimitHeaders(response.headers);
     const json = (await response.json()) as ApiFootballEnvelope<TResponse> | unknown;
 
     // api-football's free + Pro plans ship rate-limit responses as HTTP 200
@@ -147,6 +170,7 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         },
         json,
         rateLimitMessage,
+        rateLimit,
       };
     }
 
@@ -164,12 +188,14 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         durationMs: Math.max(0, clock() - startedAt),
       },
       json,
+      rateLimit,
     };
   } catch (error) {
     return {
       status: 'failed',
       runtime,
       request,
+      rateLimit,
       error: {
         message: redactSecret(
           error instanceof Error ? error.message : String(error),
@@ -200,6 +226,34 @@ export function summarizeProviderJson(json: unknown): ProviderJsonSummary {
     responseKeys,
     responseLength,
   };
+}
+
+/**
+ * Read API-Football's quota headers. Returns undefined when none are present,
+ * so callers can tell "no reading" from "zero remaining".
+ */
+export function parseRateLimitHeaders(headers: {
+  get(name: string): string | null;
+}): ProviderRateLimitHeaders | undefined {
+  const read = (name: string): number | undefined => {
+    let raw: string | null;
+    try {
+      raw = headers.get(name);
+    } catch {
+      return undefined;
+    }
+    if (raw === null || raw.trim() === '' || !/^\d+$/.test(raw.trim())) {
+      return undefined;
+    }
+    return Number.parseInt(raw.trim(), 10);
+  };
+  const parsed: ProviderRateLimitHeaders = {
+    dailyLimit: read('x-ratelimit-requests-limit'),
+    dailyRemaining: read('x-ratelimit-requests-remaining'),
+    minuteLimit: read('x-ratelimit-limit'),
+    minuteRemaining: read('x-ratelimit-remaining'),
+  };
+  return Object.values(parsed).some((value) => value !== undefined) ? parsed : undefined;
 }
 
 function buildProviderUrl(baseUrl: string | undefined, path: string): URL {

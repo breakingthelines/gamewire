@@ -18,6 +18,18 @@ describe('InMemoryProviderCache', () => {
     expect(await cache.get('k')).toBeUndefined();
   });
 
+  it('sweeps expired entries that are never read again', async () => {
+    let now = 0;
+    const cache = new InMemoryProviderCache({ clock: () => now, sweepIntervalMs: 1_000 });
+    await cache.set('finished-fixture', 'v', 1);
+    await cache.set('live-fixture', 'v', 60);
+    expect(cache.size()).toBe(2);
+    now = 2_000;
+    await cache.set('another', 'v', 60);
+    expect(cache.size()).toBe(2);
+    expect(await cache.get('live-fixture')).toBe('v');
+  });
+
   it('treats non-positive TTL as eviction', async () => {
     const cache = new InMemoryProviderCache();
     await cache.set('k', 'v', 10);

@@ -1,35 +1,83 @@
 /**
- * Provider call quota tracker for API-Football daily budget.
+ * Provider call quota tracker for the API-Football daily budget.
  *
  * Contract:
- * - hard cap: 70,000 calls/day (with 5k headroom under the 75k/day plan ceiling)
- * - soft cap: 60,000 calls/day. Above this the worker MUST emit
- *   FallbackReason=PROVIDER_OUTAGE via game-service and serve cached-only.
- * - reset: at UTC midnight by default; window is identified by ISO date string.
+ * - hard cap (`GAMEWIRE_PROVIDER_HARD_CAP`, default 70,000): a reservation that
+ *   would pass it is denied.
+ * - soft cap (`GAMEWIRE_PROVIDER_SOFT_CAP`, default 60,000): at or above it the
+ *   snapshot reports cached-only. Workflows act on that through
+ *   `handleQuotaPosture`; the live loop keeps calling until the hard cap.
+ * - background daily cap (`GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP`): a
+ *   `background` reservation at or above it is denied inside {@link reserve},
+ *   so backfills and enrichment can never spend the headroom live needs.
+ *   Unset, it defaults to min(110,000, soft cap).
+ * - quota source (`GAMEWIRE_PROVIDER_QUOTA_SOURCE`): `local` counts only this
+ *   worker's calls. `provider-header` gates on max(local, provider-reported
+ *   usage), where provider usage is `x-ratelimit-requests-limit -
+ *   x-ratelimit-requests-remaining` from the latest response. That counts
+ *   every spender on the key (staging, identity tools, manual calls).
+ * - reset: UTC midnight; the window is the ISO date string.
  *
- * Backed by Redis INCR + EXPIRE in production; tests use an in-memory store.
+ * Backed by Redis INCR + EXPIRE when a Redis store is injected; the default is
+ * an in-memory store.
  */
+
+import type { ProviderPriority } from './minute-limiter.js';
 
 export const DEFAULT_PROVIDER_HARD_CAP = 70_000;
 export const DEFAULT_PROVIDER_SOFT_CAP = 60_000;
 export const DEFAULT_PROVIDER_PLAN_CEILING = 75_000;
+/** Background ceiling when the env sets one explicitly but the soft cap is higher. */
+export const DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP = 110_000;
+
+export type ProviderQuotaSource = 'local' | 'provider-header';
+
+/**
+ * Background daily cap used when none is configured: 110k, but never above the
+ * soft cap. Under today's 60k soft cap that is 60k, the point where workflows
+ * already switch to cached-only.
+ */
+export const defaultBackgroundDailyCap = (softCap: number, hardCap: number = softCap): number =>
+  Math.min(DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP, softCap, hardCap);
 
 export type ProviderQuotaPosture = 'normal' | 'soft_cap_reached' | 'hard_cap_reached';
 
 export interface ProviderQuotaSnapshot {
   readonly provider: string;
   readonly window: string;
+  /**
+   * Calls the caps are evaluated against: the local count, or max(local,
+   * provider-reported) when the quota source is `provider-header`.
+   */
   readonly calls: number;
   readonly hardCap: number;
   readonly softCap: number;
   readonly posture: ProviderQuotaPosture;
   readonly cachedOnlyMode: boolean;
+  /** Calls this worker counted itself in the window. */
+  readonly localCalls?: number;
+  /** Provider-reported usage for the window (limit - remaining), when observed. */
+  readonly remoteCalls?: number;
+  /** Provider-reported daily limit (`x-ratelimit-requests-limit`), when observed. */
+  readonly remoteLimit?: number;
+  readonly quotaSource?: ProviderQuotaSource;
+  readonly backgroundDailyCap?: number;
+  /** True once background reservations are refused for the rest of the window. */
+  readonly backgroundCapReached?: boolean;
 }
 
 export interface ProviderQuotaCheckResult {
   readonly allowed: boolean;
   readonly snapshot: ProviderQuotaSnapshot;
-  readonly reason?: 'soft_cap' | 'hard_cap';
+  readonly reason?: 'soft_cap' | 'hard_cap' | 'background_cap';
+}
+
+/** Daily headers from one provider response. */
+export interface ProviderDailyQuotaObservation {
+  /** `x-ratelimit-requests-limit`. */
+  readonly limit?: number;
+  /** `x-ratelimit-requests-remaining`. */
+  readonly remaining?: number;
 }
 
 export interface ProviderQuotaStore {
@@ -121,7 +169,19 @@ export interface ProviderQuotaTrackerOptions {
   readonly store?: ProviderQuotaStore;
   readonly hardCap?: number;
   readonly softCap?: number;
+  /** Background reservations are denied at or above this. Default min(110k, softCap). */
+  readonly backgroundDailyCap?: number;
+  /** Default `local`. */
+  readonly quotaSource?: ProviderQuotaSource;
   readonly clock?: () => Date;
+  /** Structured log sink for provider-quota observations. */
+  readonly logger?: (entry: Record<string, unknown>) => void;
+}
+
+interface RemoteQuotaState {
+  readonly window: string;
+  readonly used: number;
+  readonly limit: number;
 }
 
 /**
@@ -135,7 +195,11 @@ export class ProviderQuotaTracker {
   readonly #store: ProviderQuotaStore;
   readonly #hardCap: number;
   readonly #softCap: number;
+  readonly #backgroundDailyCap: number;
+  readonly #quotaSource: ProviderQuotaSource;
   readonly #clock: () => Date;
+  readonly #log: (entry: Record<string, unknown>) => void;
+  #remote: RemoteQuotaState | undefined;
 
   constructor(options: ProviderQuotaTrackerOptions) {
     if (options.softCap !== undefined && options.hardCap !== undefined) {
@@ -147,7 +211,17 @@ export class ProviderQuotaTracker {
     this.#store = options.store ?? new InMemoryQuotaStore();
     this.#hardCap = options.hardCap ?? DEFAULT_PROVIDER_HARD_CAP;
     this.#softCap = options.softCap ?? DEFAULT_PROVIDER_SOFT_CAP;
+    this.#backgroundDailyCap =
+      options.backgroundDailyCap ?? defaultBackgroundDailyCap(this.#softCap, this.#hardCap);
+    if (this.#backgroundDailyCap <= 0) {
+      throw new Error('Provider background daily cap must be positive');
+    }
+    if (this.#backgroundDailyCap > this.#hardCap) {
+      throw new Error('Provider background daily cap must not exceed hard cap');
+    }
+    this.#quotaSource = options.quotaSource ?? 'local';
     this.#clock = options.clock ?? (() => new Date());
+    this.#log = options.logger ?? (() => undefined);
   }
 
   windowFor(now: Date = this.#clock()): string {
@@ -163,21 +237,82 @@ export class ProviderQuotaTracker {
   }
 
   /**
+   * Record the provider's daily headers from one response. Usage is
+   * `limit - remaining`, using the limit the provider reports rather than an
+   * assumed plan size. A reading without both headers is ignored. Within a
+   * window the highest reading wins, so a late, out-of-order response cannot
+   * lower it; a drop of more than half is logged as a provider-side reset.
+   */
+  observeProviderDaily(
+    observation: ProviderDailyQuotaObservation,
+    now: Date = this.#clock()
+  ): void {
+    const { limit, remaining } = observation;
+    if (
+      limit === undefined ||
+      remaining === undefined ||
+      !Number.isFinite(limit) ||
+      !Number.isFinite(remaining) ||
+      limit <= 0 ||
+      remaining < 0
+    ) {
+      return;
+    }
+    const window = this.windowFor(now);
+    const used = Math.max(0, limit - remaining);
+    const previous = this.#remote;
+    if (previous && previous.window === window && used < previous.used) {
+      if (used < previous.used / 2) {
+        // The provider reset its counter while our UTC window stayed the
+        // same: its day boundary is not 00:00 UTC. Logged so the soak can
+        // pin the real reset time; the lower reading is adopted.
+        this.#log({
+          event: 'provider_quota_remote_reset',
+          provider: this.#provider,
+          window,
+          previousUsed: previous.used,
+          used,
+          limit,
+          at: now.toISOString(),
+        });
+        this.#remote = { window, used, limit };
+      }
+      return;
+    }
+    this.#remote = { window, used, limit };
+  }
+
+  /**
    * Atomic reservation: increment-and-evaluate. If `cost` would breach the
    * hard cap the reservation is refunded (decremented back) and `allowed`
    * is false.
    */
-  async reserve(cost = 1, now: Date = this.#clock()): Promise<ProviderQuotaCheckResult> {
+  async reserve(
+    cost = 1,
+    now: Date = this.#clock(),
+    priority?: ProviderPriority
+  ): Promise<ProviderQuotaCheckResult> {
     if (cost <= 0) {
       throw new Error('Provider quota cost must be positive');
     }
     const window = this.windowFor(now);
-    const total = await this.#store.increment(window, cost);
+    const localTotal = await this.#store.increment(window, cost);
+    const total = this.#effectiveCalls(window, localTotal);
+    if (priority === 'background' && total > this.#backgroundDailyCap) {
+      // Background stops at its own ceiling so it can never spend the
+      // headroom between it and the hard cap that live scores depend on.
+      await this.#store.increment(window, -cost);
+      return {
+        allowed: false,
+        reason: 'background_cap',
+        snapshot: this.#snapshotFromCount(window, Math.max(0, localTotal - cost)),
+      };
+    }
     if (total > this.#hardCap) {
       // Best-effort refund so the meter does not drift permanently when a
       // reservation is denied.
       await this.#store.increment(window, -cost);
-      const refunded = Math.max(0, total - cost);
+      const refunded = Math.max(0, localTotal - cost);
       return {
         allowed: false,
         reason: 'hard_cap',
@@ -185,7 +320,7 @@ export class ProviderQuotaTracker {
       };
     }
 
-    const snapshot = this.#snapshotFromCount(window, total);
+    const snapshot = this.#snapshotFromCount(window, localTotal);
     if (snapshot.posture === 'soft_cap_reached') {
       return {
         allowed: true,
@@ -221,11 +356,33 @@ export class ProviderQuotaTracker {
     return this.#softCap;
   }
 
+  get backgroundDailyCap(): number {
+    return this.#backgroundDailyCap;
+  }
+
+  get quotaSource(): ProviderQuotaSource {
+    return this.#quotaSource;
+  }
+
   get provider(): string {
     return this.#provider;
   }
 
-  #snapshotFromCount(window: string, calls: number): ProviderQuotaSnapshot {
+  #remoteFor(window: string): RemoteQuotaState | undefined {
+    const remote = this.#remote;
+    return remote && remote.window === window ? remote : undefined;
+  }
+
+  #effectiveCalls(window: string, localCalls: number): number {
+    if (this.#quotaSource !== 'provider-header') {
+      return localCalls;
+    }
+    return Math.max(localCalls, this.#remoteFor(window)?.used ?? 0);
+  }
+
+  #snapshotFromCount(window: string, localCalls: number): ProviderQuotaSnapshot {
+    const calls = this.#effectiveCalls(window, localCalls);
+    const remote = this.#remoteFor(window);
     const posture: ProviderQuotaPosture =
       calls >= this.#hardCap
         ? 'hard_cap_reached'
@@ -240,6 +397,12 @@ export class ProviderQuotaTracker {
       softCap: this.#softCap,
       posture,
       cachedOnlyMode: posture !== 'normal',
+      localCalls,
+      remoteCalls: remote?.used,
+      remoteLimit: remote?.limit,
+      quotaSource: this.#quotaSource,
+      backgroundDailyCap: this.#backgroundDailyCap,
+      backgroundCapReached: calls >= this.#backgroundDailyCap,
     };
   }
 }

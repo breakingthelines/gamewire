@@ -47,6 +47,28 @@ describe('handleQuotaPosture', () => {
     expect(result.action).toBe('abort');
     expect(result.flag?.trigger).toBe('hard-cap');
   });
+
+  it('goes cached-only at the background daily cap below the soft cap', () => {
+    const result = handleQuotaPosture(
+      quota({
+        calls: 110_000,
+        softCap: 130_000,
+        hardCap: 140_000,
+        backgroundDailyCap: 110_000,
+        backgroundCapReached: true,
+      })
+    );
+    expect(result.action).toBe('cached-only');
+    expect(result.flag?.trigger).toBe('background-cap');
+    expect(result.flag?.detail).toContain('110000/110000');
+  });
+
+  it('keeps the soft-cap flag when both caps are reached', () => {
+    const result = handleQuotaPosture(
+      quota({ posture: 'soft_cap_reached', calls: 60_000, backgroundCapReached: true })
+    );
+    expect(result.flag?.trigger).toBe('soft-cap');
+  });
 });
 
 describe('handleReepMissSpike', () => {

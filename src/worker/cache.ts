@@ -30,6 +30,8 @@ export interface ProviderCache {
 
 export interface InMemoryCacheOptions {
   readonly clock?: () => number;
+  /** Minimum ms between sweeps of expired entries. Default 60s. */
+  readonly sweepIntervalMs?: number;
 }
 
 /**
@@ -40,9 +42,13 @@ export class InMemoryProviderCache implements ProviderCache {
   readonly backend = 'memory' as const;
   readonly #clock: () => number;
   readonly #entries = new Map<string, { value: unknown; expiresAt: number }>();
+  readonly #sweepIntervalMs: number;
+  #lastSweepAt: number;
 
   constructor(options: InMemoryCacheOptions = {}) {
     this.#clock = options.clock ?? Date.now;
+    this.#sweepIntervalMs = options.sweepIntervalMs ?? 60_000;
+    this.#lastSweepAt = this.#clock();
   }
 
   async get<T = unknown>(key: string): Promise<T | undefined> {
@@ -60,6 +66,7 @@ export class InMemoryProviderCache implements ProviderCache {
   }
 
   async set<T = unknown>(key: string, value: T, ttlSeconds: number): Promise<void> {
+    this.#sweepExpired();
     if (ttlSeconds <= 0) {
       this.#entries.delete(key);
       return;
@@ -77,6 +84,24 @@ export class InMemoryProviderCache implements ProviderCache {
 
   reset(): void {
     this.#entries.clear();
+  }
+
+  /**
+   * Expired entries are otherwise only dropped when read again, and keys for
+   * finished fixtures never are. Sweep them at most once per interval so the
+   * map stays bounded over a long uptime.
+   */
+  #sweepExpired(): void {
+    const now = this.#clock();
+    if (now - this.#lastSweepAt < this.#sweepIntervalMs) {
+      return;
+    }
+    this.#lastSweepAt = now;
+    for (const [key, entry] of this.#entries) {
+      if (entry.expiresAt <= now) {
+        this.#entries.delete(key);
+      }
+    }
   }
 }
 
