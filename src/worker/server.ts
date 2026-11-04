@@ -10,6 +10,7 @@ import {
   createFetchFootballIdentityLookupClient,
   type FootballIdentityLookupClient,
 } from './clients/identity.js';
+import { withIdentityResolveCache } from './clients/identity-resolve-cache.js';
 import {
   createFetchFootballGameLookupClient,
   type FootballGameBridgeClient,
@@ -19,6 +20,7 @@ import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
+import { createProviderBudget } from './provider-budget.js';
 import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
@@ -246,6 +248,15 @@ const identityClient: FootballIdentityLookupClient | undefined = config.identity
   : undefined;
 
 /**
+ * The bridges resolve the same competition and teams on every live tick, so
+ * they go through an LRU. Workflows keep the raw client: identity-gap-scan
+ * reports current misses and must not see a cached one.
+ */
+const bridgeIdentityClient: FootballIdentityLookupClient | undefined = identityClient
+  ? withIdentityResolveCache(identityClient)
+  : undefined;
+
+/**
  * game-service client used by the match-concluded bridge to resolve
  * API-Football fixture ids → BTL canonical game ids via
  * `LookupGameByFixture`. The crosswalk lives in `provider_game_mappings`
@@ -272,11 +283,11 @@ if (!config.gameServiceUrl) {
  * client is unavailable.
  */
 const matchConcludedBridge: OnFixtureFetchedCallback | undefined =
-  matchConcludedPublisher && gameServiceLookupClient && identityClient
+  matchConcludedPublisher && gameServiceLookupClient && bridgeIdentityClient
     ? createMatchConcludedBridge({
         publisher: matchConcludedPublisher,
         gameService: gameServiceLookupClient,
-        identity: identityClient,
+        identity: bridgeIdentityClient,
         providerId: config.providerId,
       })
     : undefined;
@@ -306,10 +317,10 @@ if (matchConcludedBridge) {
  * unavailable. Requires the identity client for provider→canonical id
  * resolution. See `docs/proposals/entity-imagery-system.md`.
  */
-const assetMirrorBridge: OnFixtureFetchedCallback | undefined = identityClient
+const assetMirrorBridge: OnFixtureFetchedCallback | undefined = bridgeIdentityClient
   ? createAssetMirrorBridge({
       config: config.assetMirror,
-      identity: identityClient,
+      identity: bridgeIdentityClient,
       providerId: config.providerId,
     })
   : undefined;
@@ -341,7 +352,24 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBri
   assetMirrorBridge
 );
 
-const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched });
+// The caps come from env through the factory (see provider-budget.test.ts).
+// Before GW-1 they were logged but never reached the tracker.
+const {
+  quota,
+  minuteLimiter,
+  summary: budgetSummary,
+  warnings: budgetWarnings,
+} = createProviderBudget(config, {
+  logger: (entry) => {
+    console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
+  },
+});
+console.log(budgetSummary);
+for (const warning of budgetWarnings) {
+  console.log(warning);
+}
+
+const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched, quota, minuteLimiter });
 
 // Verified-rotation seed: merge operator-supplied env IDs with the
 // catalogue's `verifiedFixtureIds` so staging smoke always covers the

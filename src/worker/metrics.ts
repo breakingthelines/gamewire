@@ -6,13 +6,34 @@
  * - `cache_hit_ratio{provider}` — gauge in [0,1] computed from hit/miss counts.
  * - `provider_endpoint_volume{provider,workload}` — counter per endpoint.
  * - `provider_call_outcomes{provider,outcome}` — counter for fetched/skipped/failed.
+ * - `provider_minute_throttled{workload}` — counter of calls the per-minute
+ *   limiter held back (after any retry). Expected to stay 0 at today's load.
+ * - `provider_stale_served{workload}` — live calls answered from the last-good
+ *   payload because the limiter denied them.
+ * - `ingestion_tick_duration_ms{workload}` — last/max/total/count per tick.
+ * - `ingestion_tick_skipped_in_flight{workload}` — ticks skipped because the
+ *   previous tick of the same workload was still running.
  *
  * The snapshot is serialized JSON-friendly for exposition via /metrics. A real
  * Prometheus exporter can wrap this — the metrics module owns the contract,
  * not the wire format.
  */
 
-export type CallOutcome = 'fetched' | 'cached' | 'skipped' | 'failed' | 'denied' | 'rate_limited';
+export type CallOutcome =
+  | 'fetched'
+  | 'cached'
+  | 'skipped'
+  | 'failed'
+  | 'denied'
+  | 'rate_limited'
+  | 'throttled';
+
+export interface TickDurationStats {
+  readonly count: number;
+  readonly lastMs: number;
+  readonly maxMs: number;
+  readonly totalMs: number;
+}
 
 export interface MetricsSnapshot {
   readonly providerCallsTotal: Record<string, number>;
@@ -23,6 +44,12 @@ export interface MetricsSnapshot {
   readonly cacheHitRatio: number;
   readonly quotaCallsToday: number;
   readonly quotaPosture: 'normal' | 'soft_cap_reached' | 'hard_cap_reached';
+  readonly providerMinuteThrottled: Record<string, number>;
+  readonly providerStaleServed: Record<string, number>;
+  readonly tickDurationMs: Record<string, TickDurationStats>;
+  readonly tickSkippedInFlight: Record<string, number>;
+  /** Ticks that found the previous run past its deadline and started anyway. */
+  readonly tickDeadlineExceeded: Record<string, number>;
 }
 
 export class IngestionMetrics {
@@ -35,7 +62,13 @@ export class IngestionMetrics {
     failed: 0,
     denied: 0,
     rate_limited: 0,
+    throttled: 0,
   };
+  readonly #minuteThrottled = new Map<string, number>();
+  readonly #staleServed = new Map<string, number>();
+  readonly #tickDurations = new Map<string, TickDurationStats>();
+  readonly #tickSkipped = new Map<string, number>();
+  readonly #tickDeadlineExceeded = new Map<string, number>();
   #cacheHits = 0;
   #cacheMisses = 0;
   #quotaCallsToday = 0;
@@ -63,6 +96,33 @@ export class IngestionMetrics {
     this.#quotaPosture = posture;
   }
 
+  recordMinuteThrottled(workload: string): void {
+    this.#bump(this.#minuteThrottled, workload);
+  }
+
+  recordStaleServed(workload: string): void {
+    this.#bump(this.#staleServed, workload);
+  }
+
+  recordTickDuration(workload: string, durationMs: number): void {
+    const ms = Math.max(0, durationMs);
+    const prev = this.#tickDurations.get(workload);
+    this.#tickDurations.set(workload, {
+      count: (prev?.count ?? 0) + 1,
+      lastMs: ms,
+      maxMs: Math.max(prev?.maxMs ?? 0, ms),
+      totalMs: (prev?.totalMs ?? 0) + ms,
+    });
+  }
+
+  recordTickSkippedInFlight(workload: string): void {
+    this.#bump(this.#tickSkipped, workload);
+  }
+
+  recordTickDeadlineExceeded(workload: string): void {
+    this.#bump(this.#tickDeadlineExceeded, workload);
+  }
+
   snapshot(): MetricsSnapshot {
     const total = this.#cacheHits + this.#cacheMisses;
     const ratio = total === 0 ? 0 : this.#cacheHits / total;
@@ -75,6 +135,11 @@ export class IngestionMetrics {
       cacheHitRatio: Number(ratio.toFixed(4)),
       quotaCallsToday: this.#quotaCallsToday,
       quotaPosture: this.#quotaPosture,
+      providerMinuteThrottled: mapToObject(this.#minuteThrottled),
+      providerStaleServed: mapToObject(this.#staleServed),
+      tickDurationMs: Object.fromEntries(this.#tickDurations),
+      tickSkippedInFlight: mapToObject(this.#tickSkipped),
+      tickDeadlineExceeded: mapToObject(this.#tickDeadlineExceeded),
     };
   }
 
@@ -84,6 +149,11 @@ export class IngestionMetrics {
     for (const key of Object.keys(this.#outcomes) as CallOutcome[]) {
       this.#outcomes[key] = 0;
     }
+    this.#minuteThrottled.clear();
+    this.#staleServed.clear();
+    this.#tickDurations.clear();
+    this.#tickSkipped.clear();
+    this.#tickDeadlineExceeded.clear();
     this.#cacheHits = 0;
     this.#cacheMisses = 0;
     this.#quotaCallsToday = 0;

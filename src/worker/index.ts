@@ -17,10 +17,33 @@ export {
   type PollLiveGameInput,
 } from './activities.js';
 export {
-  estimateMatchdayCallBudget,
+  CURRENT_LOAD_ASSUMPTIONS,
+  MEGA_BUDGET_CAPS,
+  MEGA_LOAD_ASSUMPTIONS,
+  checkCallBudget,
+  estimateCallBudget,
+  refreshIntervalSeconds,
+  type CallBudgetAssumptions,
+  type CallBudgetCaps,
   type CallBudgetEstimate,
   type CallBudgetLine,
+  type CallBudgetTotals,
 } from './call-budget.js';
+export {
+  DEFAULT_PROVIDER_MINUTE_CAPS,
+  InMemoryMinuteCounterStore,
+  ProviderMinuteLimiter,
+  RedisMinuteCounterStore,
+  type MinuteAcquireResult,
+  type MinuteCounterStore,
+  type ProviderMinuteCaps,
+  type ProviderPriority,
+} from './minute-limiter.js';
+export {
+  withIdentityResolveCache,
+  type CachedFootballIdentityLookupClient,
+  type IdentityResolveCacheOptions,
+} from './clients/identity-resolve-cache.js';
 export {
   apiFootballCompetitionKey,
   apiFootballEventPath,
@@ -159,6 +182,7 @@ export {
 } from './cache.js';
 export { Singleflight } from './singleflight.js';
 export {
+  DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP,
   DEFAULT_PROVIDER_HARD_CAP,
   DEFAULT_PROVIDER_PLAN_CEILING,
   DEFAULT_PROVIDER_SOFT_CAP,
@@ -166,7 +190,9 @@ export {
   ProviderQuotaTracker,
   RedisQuotaStore,
   type ProviderQuotaCheckResult,
+  type ProviderDailyQuotaObservation,
   type ProviderQuotaPosture,
+  type ProviderQuotaSource,
   type ProviderQuotaSnapshot,
   type ProviderQuotaStore,
   type ProviderQuotaTrackerOptions,
@@ -202,6 +228,8 @@ export {
   ApiFootballIngestionLoop,
   INGESTION_TICK_INTERVAL_MS,
   INGESTION_TTL_SECONDS,
+  LAST_GOOD_TTL_SECONDS,
+  LOOP_WORKLOAD_PRIORITY,
   PROVIDER_ID,
   type IngestionFetchOptions,
   type IngestionFetchResult,

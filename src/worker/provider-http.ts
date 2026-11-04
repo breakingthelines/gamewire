@@ -16,6 +16,7 @@ export type ProviderFetch = (
   init?: {
     readonly method?: 'GET';
     readonly headers?: Record<string, string>;
+    readonly signal?: AbortSignal;
   }
 ) => Promise<ProviderFetchResponse>;
 
@@ -33,6 +34,29 @@ export interface ProviderJsonFetchOptions {
   readonly path?: string;
   readonly fetchFn?: ProviderFetch;
   readonly clock?: () => number;
+  /**
+   * Deadline for the request and its body, in ms. Defaults to
+   * `config.providerRequestTimeoutMs`, then {@link DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}.
+   * A call past it is aborted and returned as `failed`.
+   */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Default provider request deadline. Without one, a request that never answers
+ * holds its tick in flight forever, and the tick guard then skips that
+ * workload until the pod restarts.
+ */
+export const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 10_000;
+
+export class ProviderRequestTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Provider request timed out after ${timeoutMs}ms`);
+    this.name = 'ProviderRequestTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 export interface ProviderJsonFetchResult<TResponse = unknown> {
@@ -63,6 +87,29 @@ export interface ProviderJsonFetchResult<TResponse = unknown> {
    * `provider-http.ts` for the detection contract.
    */
   readonly rateLimitMessage?: string;
+  /**
+   * The provider's quota headers from this response, when present. Read by
+   * the ingestion loop to sync the daily and per-minute counters with the
+   * provider's own view of the account.
+   */
+  readonly rateLimit?: ProviderRateLimitHeaders;
+  /** True when a `failed` result is the request deadline firing. */
+  readonly timedOut?: boolean;
+}
+
+/**
+ * API-Football quota headers. Each field is absent when its header is missing
+ * or not a non-negative integer.
+ */
+export interface ProviderRateLimitHeaders {
+  /** `x-ratelimit-requests-limit`: daily allowance for the account. */
+  readonly dailyLimit?: number;
+  /** `x-ratelimit-requests-remaining`: daily calls left. */
+  readonly dailyRemaining?: number;
+  /** `x-ratelimit-limit`: per-minute allowance. */
+  readonly minuteLimit?: number;
+  /** `x-ratelimit-remaining`: calls left in the current minute. */
+  readonly minuteRemaining?: number;
 }
 
 export interface ProviderJsonSummary {
@@ -110,18 +157,41 @@ export async function fetchApiFootballJson<TResponse = unknown>(
 
   const clock = options.clock ?? Date.now;
   const startedAt = clock();
+  let rateLimit: ProviderRateLimitHeaders | undefined;
+
+  const timeoutMs =
+    options.timeoutMs ?? cfg.providerRequestTimeoutMs ?? DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Races both the request and the body read: a fetchFn that ignores the
+  // signal, or a body that stalls after the headers, still ends at the deadline.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new ProviderRequestTimeoutError(timeoutMs);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  deadline.catch(() => undefined);
 
   try {
     const url = buildProviderUrl(cfg.providerBaseUrl, runtime.request.path);
     const fetchFn = options.fetchFn ?? defaultFetch;
-    const response = await fetchFn(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        [API_FOOTBALL_HEADER]: cfg.providerApiKey,
-      },
-    });
-    const json = (await response.json()) as ApiFootballEnvelope<TResponse> | unknown;
+    const response = await Promise.race([
+      fetchFn(url, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          [API_FOOTBALL_HEADER]: cfg.providerApiKey,
+        },
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
+    rateLimit = parseRateLimitHeaders(response.headers);
+    const json = (await Promise.race([response.json(), deadline])) as
+      | ApiFootballEnvelope<TResponse>
+      | unknown;
 
     // api-football's free + Pro plans ship rate-limit responses as HTTP 200
     // with `{response: [], errors: {rateLimit: "..."}}`. Without inspecting the
@@ -147,6 +217,7 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         },
         json,
         rateLimitMessage,
+        rateLimit,
       };
     }
 
@@ -164,12 +235,15 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         durationMs: Math.max(0, clock() - startedAt),
       },
       json,
+      rateLimit,
     };
   } catch (error) {
     return {
       status: 'failed',
       runtime,
       request,
+      rateLimit,
+      ...(error instanceof ProviderRequestTimeoutError ? { timedOut: true } : {}),
       error: {
         message: redactSecret(
           error instanceof Error ? error.message : String(error),
@@ -177,6 +251,8 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         ),
       },
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -200,6 +276,34 @@ export function summarizeProviderJson(json: unknown): ProviderJsonSummary {
     responseKeys,
     responseLength,
   };
+}
+
+/**
+ * Read API-Football's quota headers. Returns undefined when none are present,
+ * so callers can tell "no reading" from "zero remaining".
+ */
+export function parseRateLimitHeaders(headers: {
+  get(name: string): string | null;
+}): ProviderRateLimitHeaders | undefined {
+  const read = (name: string): number | undefined => {
+    let raw: string | null;
+    try {
+      raw = headers.get(name);
+    } catch {
+      return undefined;
+    }
+    if (raw === null || raw.trim() === '' || !/^\d+$/.test(raw.trim())) {
+      return undefined;
+    }
+    return Number.parseInt(raw.trim(), 10);
+  };
+  const parsed: ProviderRateLimitHeaders = {
+    dailyLimit: read('x-ratelimit-requests-limit'),
+    dailyRemaining: read('x-ratelimit-requests-remaining'),
+    minuteLimit: read('x-ratelimit-limit'),
+    minuteRemaining: read('x-ratelimit-remaining'),
+  };
+  return Object.values(parsed).some((value) => value !== undefined) ? parsed : undefined;
 }
 
 function buildProviderUrl(baseUrl: string | undefined, path: string): URL {

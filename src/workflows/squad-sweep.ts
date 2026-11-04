@@ -93,6 +93,7 @@ import type {
   SquadSweepTeamResult,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 /** Environment variable or input override for per-team inter-call delay. */
 const SWEEP_INTER_CALL_DELAY_MS = Number(
@@ -410,6 +411,7 @@ export const squadSweepWorkflow = async (
     let fetchResult: IngestionFetchResult;
     try {
       fetchResult = await deps.ingestion.fetchWorkload({
+        priority: WORKFLOW_PROVIDER_PRIORITY,
         workload: 'squad-list-fallback',
         resourceId,
         path: `/players/squads?team=${encodeURIComponent(providerTeamId)}`,

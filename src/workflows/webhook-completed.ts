@@ -36,6 +36,7 @@ import type {
   WebhookCompletedOutput,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 const FIXTURE_DETAIL_WORKLOAD: IngestionWorkload = 'fixture-detail-fullTime';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
@@ -108,6 +109,7 @@ export const webhookCompletedWorkflow = async (
 
   // Fixture detail.
   const detailResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: FIXTURE_DETAIL_WORKLOAD,
     resourceId: input.fixtureId,
     path: apiFootballFixturePath(input.fixtureId),
@@ -120,6 +122,7 @@ export const webhookCompletedWorkflow = async (
 
   // Events timeline.
   const eventsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: EVENTS_WORKLOAD,
     resourceId: input.fixtureId,
   });
@@ -131,6 +134,7 @@ export const webhookCompletedWorkflow = async (
 
   // Lineups confirmation.
   const lineupsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: LINEUPS_WORKLOAD,
     resourceId: input.fixtureId,
   });
@@ -142,6 +146,7 @@ export const webhookCompletedWorkflow = async (
 
   // Team match statistics (/fixtures/statistics).
   const teamStatsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: TEAM_STATS_WORKLOAD,
     resourceId: input.fixtureId,
     path: apiFootballFixtureStatisticsPath(input.fixtureId),
@@ -154,6 +159,7 @@ export const webhookCompletedWorkflow = async (
 
   // Player match statistics (/fixtures/players).
   const playerStatsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: PLAYER_STATS_WORKLOAD,
     resourceId: input.fixtureId,
     path: apiFootballFixturePlayersPath(input.fixtureId),

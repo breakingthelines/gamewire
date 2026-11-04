@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { GamewireWorkerConfig } from './config.js';
-import { fetchApiFootballJson, summarizeProviderJson } from './provider-http.js';
+import {
+  DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,
+  fetchApiFootballJson,
+  parseRateLimitHeaders,
+  summarizeProviderJson,
+} from './provider-http.js';
 
 const baseConfig: GamewireWorkerConfig = {
   port: 8095,
@@ -95,6 +100,7 @@ describe('API-Football provider HTTP boundary', () => {
         accept: 'application/json',
         'x-apisports-key': 'sample-api-football-key',
       },
+      signal: expect.any(AbortSignal),
     });
     expect(result.request.redactedHeaders['x-apisports-key']).toBe('[REDACTED]');
     expect(result.response?.durationMs).toBe(42);
@@ -230,5 +236,154 @@ describe('API-Football provider HTTP boundary', () => {
       responseLength: undefined,
     });
     expect(JSON.stringify(summary)).not.toContain('ops@example.test');
+  });
+});
+
+describe('API-Football request timeout', () => {
+  const liveConfig = { ...baseConfig, providerMode: 'live' as const, providerApiKey: 'k-secret' };
+
+  it('defaults to 10 seconds', () => {
+    expect(DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS).toBe(10_000);
+  });
+
+  it('aborts a request that never answers and reports it as failed', async () => {
+    let signal: AbortSignal | undefined;
+    const fetchFn = vi.fn((_url: string | URL, init?: { readonly signal?: AbortSignal }) => {
+      signal = init?.signal;
+      return new Promise<never>(() => undefined);
+    });
+    const result = await fetchApiFootballJson({
+      config: liveConfig,
+      workload: 'status',
+      resourceId: 'account',
+      replayId: 'timeout',
+      fetchFn,
+      timeoutMs: 20,
+    });
+    expect(result.status).toBe('failed');
+    expect(result.timedOut).toBe(true);
+    expect(result.error?.message).toBe('Provider request timed out after 20ms');
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it('times out a body that stalls after the headers', async () => {
+    const fetchFn = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      headers: { get: () => null },
+      json: () => new Promise<never>(() => undefined),
+    }));
+    const result = await fetchApiFootballJson({
+      config: { ...liveConfig, providerRequestTimeoutMs: 20 },
+      workload: 'status',
+      resourceId: 'account',
+      replayId: 'timeout-body',
+      fetchFn,
+    });
+    expect(result.status).toBe('failed');
+    expect(result.timedOut).toBe(true);
+  });
+
+  it('a request that fails for another reason is not marked as timed out', async () => {
+    const fetchFn = vi.fn(async () => {
+      throw new Error('connection reset');
+    });
+    const result = await fetchApiFootballJson({
+      config: liveConfig,
+      workload: 'status',
+      resourceId: 'account',
+      replayId: 'reset',
+      fetchFn,
+      timeoutMs: 1_000,
+    });
+    expect(result.status).toBe('failed');
+    expect(result.timedOut).toBeUndefined();
+    expect(result.error?.message).toBe('connection reset');
+  });
+});
+
+describe('API-Football quota headers', () => {
+  const headers = (values: Record<string, string>) => ({
+    get: (name: string) => values[name.toLowerCase()] ?? null,
+  });
+
+  it('parses the daily and per-minute headers', () => {
+    expect(
+      parseRateLimitHeaders(
+        headers({
+          'x-ratelimit-requests-limit': '150000',
+          'x-ratelimit-requests-remaining': '149123',
+          'x-ratelimit-limit': '900',
+          'x-ratelimit-remaining': '873',
+        })
+      )
+    ).toEqual({
+      dailyLimit: 150_000,
+      dailyRemaining: 149_123,
+      minuteLimit: 900,
+      minuteRemaining: 873,
+    });
+  });
+
+  it('returns undefined when no quota header is present', () => {
+    expect(parseRateLimitHeaders(headers({ 'content-type': 'application/json' }))).toBeUndefined();
+  });
+
+  it('drops values that are not non-negative integers', () => {
+    expect(
+      parseRateLimitHeaders(
+        headers({
+          'x-ratelimit-requests-limit': 'unlimited',
+          'x-ratelimit-requests-remaining': '-4',
+          'x-ratelimit-remaining': ' 12 ',
+        })
+      )
+    ).toEqual({
+      dailyLimit: undefined,
+      dailyRemaining: undefined,
+      minuteLimit: undefined,
+      minuteRemaining: 12,
+    });
+  });
+
+  it('carries the parsed headers on fetched and rate-limited results', async () => {
+    const quotaHeaders = headers({
+      'content-type': 'application/json',
+      'x-ratelimit-requests-limit': '150000',
+      'x-ratelimit-requests-remaining': '100',
+      'x-ratelimit-remaining': '0',
+    });
+    const config = { ...baseConfig, providerMode: 'live' as const, providerApiKey: 'k' };
+    const fetched = await fetchApiFootballJson({
+      config,
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      replayId: 'r',
+      path: '/fixtures?id=1',
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: quotaHeaders,
+        json: async () => ({ response: [] }),
+      }),
+    });
+    expect(fetched.status).toBe('fetched');
+    expect(fetched.rateLimit?.dailyRemaining).toBe(100);
+
+    const limited = await fetchApiFootballJson({
+      config,
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      replayId: 'r',
+      path: '/fixtures?id=1',
+      fetchFn: vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        headers: quotaHeaders,
+        json: async () => ({ response: [], errors: { rateLimit: 'Too many requests' } }),
+      }),
+    });
+    expect(limited.status).toBe('rate_limited');
+    expect(limited.rateLimit?.minuteRemaining).toBe(0);
   });
 });

@@ -100,13 +100,30 @@ The ingestion loop also fetches `/fixtures/events` for timeline occurrences and
 `/fixtures/lineups` for team sheets. Empty lineup responses are skipped so
 lineups remain honestly missing.
 
-Call budget modelling is available from the worker export:
+Every provider call carries a priority class (`live`, `near-live`,
+`background`). A per-minute limiter admits it against that class's ceiling
+(`GAMEWIRE_PROVIDER_MINUTE_CAP_{LIVE,NEARLIVE,BACKGROUND}`, default 800 / 650 /
+450 on one shared bucket), then the daily tracker applies the hard cap, the soft
+cap and the background daily cap (`GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP`).
+With `GAMEWIRE_PROVIDER_QUOTA_SOURCE=provider-header` the daily count is
+max(local, provider-reported), read from the `x-ratelimit-requests-*` headers.
+Workflows always call as `background`. Code defaults are the Mega plan values
+(hard 140,000, soft 130,000, plan ceiling 150,000, background min(110,000, soft
+cap)); deployments set the caps in env. Each provider request has a deadline
+(`GAMEWIRE_PROVIDER_REQUEST_TIMEOUT_MS`, default 10,000) and a timed-out request
+counts as `failed`.
+
+The per-minute buckets live in each worker process. Prod and staging share one
+API-Football key, so each gets its own full set of minute ceilings; staging needs
+its own lower minute caps before the live tick gets faster.
+
+The call budget model works from the real per-fixture mechanism:
 
 ```typescript
-import { estimateMatchdayCallBudget } from '@breakingthelines/gamewire/worker';
+import { estimateCallBudget, MEGA_LOAD_ASSUMPTIONS } from '@breakingthelines/gamewire/worker';
 
-const budget = estimateMatchdayCallBudget('api-football');
-console.log(budget.warnings);
+const budget = estimateCallBudget('api-football', MEGA_LOAD_ASSUMPTIONS);
+console.log(budget.totals, budget.warnings);
 ```
 
 API-Football is the only active Phase A provider harness. Hudl/StatsBomb Live

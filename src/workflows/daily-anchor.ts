@@ -50,6 +50,7 @@ import type {
   DegradeFlag,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 type SweepMode = 'continue' | 'cached-only' | 'abort';
 
@@ -228,6 +229,7 @@ const sweepCompetition = async (
   const anchorYmd = formatYmd(startedAt);
   const fixturesResource = `league-${competition.apiFootballLeagueId}-season-${competition.season}-anchor-${anchorYmd}`;
   const fixturesResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: FIXTURES_WORKLOAD,
     resourceId: fixturesResource,
     path: FIXTURES_ANCHOR_WINDOW_PATH(competition, startedAt),
@@ -268,6 +270,7 @@ const sweepCompetition = async (
   // picker (`GetCompetitionStandings` reads `football_standings`).
   const standingsResource = `standings-${competition.apiFootballLeagueId}-${competition.season}`;
   const standingsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: STANDINGS_WORKLOAD,
     resourceId: standingsResource,
     path: STANDINGS_PATH(competition),
@@ -301,6 +304,7 @@ const sweepCompetition = async (
   // GetCurrentSeason to stamp a prediction league's anchor season at creation.
   const currentSeasonResource = `current-season-${competition.apiFootballLeagueId}`;
   const currentSeasonResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: CURRENT_SEASON_WORKLOAD,
     resourceId: currentSeasonResource,
     path: CURRENT_SEASON_PATH(competition),
@@ -345,6 +349,7 @@ const sweepCompetition = async (
       seenTeams.add(teamId);
       const teamResource = TEAM_METADATA_RESOURCE(competition, teamId);
       const teamResult = await deps.ingestion.fetchWorkload({
+        priority: WORKFLOW_PROVIDER_PRIORITY,
         workload: TEAM_METADATA_WORKLOAD,
         resourceId: teamResource,
         path: TEAM_METADATA_PATH(teamId),
@@ -369,6 +374,7 @@ const sweepCompetition = async (
     }
 
     const detailResult = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
       workload: FIXTURE_DETAIL_WORKLOAD,
       resourceId: item.fixtureId,
       path: apiFootballFixturePath(item.fixtureId),
@@ -379,6 +385,7 @@ const sweepCompetition = async (
     }
 
     const eventsResult = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
       workload: EVENTS_WORKLOAD,
       resourceId: item.fixtureId,
     });
@@ -388,6 +395,7 @@ const sweepCompetition = async (
     }
 
     const lineupsResult = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
       workload: LINEUPS_WORKLOAD,
       resourceId: item.fixtureId,
     });

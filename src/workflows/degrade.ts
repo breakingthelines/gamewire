@@ -8,6 +8,8 @@
  *
  *   normal               -> 'continue'
  *   soft cap reached     -> 'cached-only'
+ *   background cap       -> 'cached-only' (workflows are background, and
+ *                           reserve() refuses background past this cap)
  *   hard cap reached     -> 'abort'
  *   reep miss spike      -> 'skip-non-essential' (resolver chain still works)
  *   provider 5xx burst   -> 'circuit-open' (caller backs off)
@@ -47,6 +49,16 @@ export const handleQuotaPosture = (snapshot: ProviderQuotaSnapshot): DegradeResu
         trigger: 'soft-cap',
         action: 'cached-only',
         detail: `${snapshot.calls}/${snapshot.softCap} soft cap reached`,
+      },
+    };
+  }
+  if (snapshot.backgroundCapReached) {
+    return {
+      action: 'cached-only',
+      flag: {
+        trigger: 'background-cap',
+        action: 'cached-only',
+        detail: `${snapshot.calls}/${snapshot.backgroundDailyCap ?? snapshot.softCap} background daily cap reached`,
       },
     };
   }

@@ -26,6 +26,7 @@ import type {
   HourlyMatchdayOutput,
   WorkflowDeps,
 } from './types.js';
+import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 type SweepMode = 'continue' | 'cached-only' | 'abort';
 
@@ -213,6 +214,7 @@ const sweepCompetition = async (
   // Standings refresh.
   const standingsResource = `standings-${competition.apiFootballLeagueId}-${competition.season}`;
   const standingsResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: STANDINGS_WORKLOAD,
     resourceId: standingsResource,
     path: standingsPath(competition),
@@ -238,6 +240,7 @@ const sweepCompetition = async (
   // Next-24h fixtures refresh.
   const fixturesResource = `next24h-${competition.apiFootballLeagueId}-${competition.season}-${isoDate(startedAt)}`;
   const fixturesResult = await deps.ingestion.fetchWorkload({
+    priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: FIXTURES_WORKLOAD,
     resourceId: fixturesResource,
     path: fixturesNext24hPath(competition, startedAt),

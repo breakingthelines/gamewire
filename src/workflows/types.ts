@@ -12,6 +12,7 @@
  * action rather than implementing their own posture switching.
  */
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
+import type { ProviderPriority } from '../worker/minute-limiter.js';
 import type {
   FootballGameIngestClient,
   FootballGameLookupClient,
@@ -121,10 +122,20 @@ export type DegradeAction =
   | 'abort'
   | 'circuit-open';
 
+/**
+ * Provider priority class for every call a workflow makes. Every `/workflows/*`
+ * entry point is a scheduled or operator-triggered sweep, so all of them run
+ * as `background`: below the background minute ceiling and refused at the
+ * background daily cap. This holds even when a workflow reuses a live
+ * workload name such as `team-match-stats`.
+ */
+export const WORKFLOW_PROVIDER_PRIORITY = 'background' satisfies ProviderPriority;
+
 export interface DegradeFlag {
   readonly trigger:
     | 'soft-cap'
     | 'hard-cap'
+    | 'background-cap'
     | 'reep-miss-spike'
     | 'provider-5xx'
     | 'webhook-stall'
