@@ -117,6 +117,23 @@ The per-minute buckets live in each worker process. Prod and staging share one
 API-Football key, so each gets its own full set of minute ceilings; staging needs
 its own lower minute caps before the live tick gets faster.
 
+Provider enrichment runs through `POST /workflows/provider-enrichment`. Only
+`player-season-stats` (`/players?league&season&page`) exists so far. A dataset
+runs only when `GAMEWIRE_ENRICHMENT_DATASETS` names it; the default is empty, so
+nothing runs. Calls are `background`, held to `GAMEWIRE_ENRICHMENT_MINUTE_CAP`
+(default 120, never above the background ceiling) and to a per-run `limit`
+(default 1,500, at most 4,000). Pages are not cached: each one goes straight to
+game-service `IngestProviderPlayerSeasonStats`, and only a small page cursor per
+league-season is kept so a stopped run resumes. A provider null is left out of
+the row's `values`; it is never written as 0.
+
+```jsonc
+// history backfill: leagues and seasons are explicit, nothing is gated on a season's end
+{"dataset": "player-season-stats", "mode": "full", "leagueIds": [39, 88], "seasons": [2025, 2024, 2023], "limit": 1500}
+// nightly current-season refresh: catalogue domestic leagues at their catalogue season
+{"dataset": "player-season-stats", "mode": "nightly"}
+```
+
 The call budget model works from the real per-fixture mechanism:
 
 ```typescript

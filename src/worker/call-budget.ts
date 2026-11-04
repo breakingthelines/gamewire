@@ -12,13 +12,20 @@
  * per peak minute, per line and in total, plus checks against a set of caps.
  *
  * Planned lines (`planned: true`) are the Mega enrichment datasets that are
- * not built yet (GW-6 to GW-8). They are included by default so the caps are
- * checked against the target load, not today's.
+ * not built yet (GW-6b to GW-8). They are included by default so the caps are
+ * checked against the target load, not today's. `player-season-stats` is
+ * built (GW-6a) and modelled from its own mechanism: a nightly refresh of the
+ * current season for the domestic leagues, plus an optional history backfill
+ * run on the same night ({@link CallBudgetAssumptions.enrichmentBackfillCallsPerDay}).
  */
 
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import { INGESTION_TICK_INTERVAL_MS, INGESTION_TTL_SECONDS } from './ingestion.js';
-import { DEFAULT_PROVIDER_MINUTE_CAPS, type ProviderPriority } from './minute-limiter.js';
+import {
+  DEFAULT_ENRICHMENT_MINUTE_CAP,
+  DEFAULT_PROVIDER_MINUTE_CAPS,
+  type ProviderPriority,
+} from './minute-limiter.js';
 
 export interface CallBudgetAssumptions {
   /** Competitions in the live catalogue. */
@@ -44,6 +51,16 @@ export interface CallBudgetAssumptions {
   readonly injuryCoveredShare: number;
   /** Include the planned enrichment datasets. */
   readonly includePlanned: boolean;
+  /** Domestic leagues the nightly player-season-stats refresh covers. */
+  readonly domesticLeagues: number;
+  /** `/players` pages per domestic league-season (20 players a page). */
+  readonly playerSeasonPagesPerLeague: number;
+  /**
+   * Calls a `full` provider-enrichment history run spends on the same day, on
+   * top of the nightly refresh. 0 in steady state; at most the per-run limit
+   * when the backfill runs.
+   */
+  readonly enrichmentBackfillCallsPerDay: number;
 }
 
 export interface CallBudgetLine {
@@ -115,6 +132,12 @@ export const CURRENT_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   prePostPeakMinute: 30,
   injuryCoveredShare: 13 / 27,
   includePlanned: true,
+  // Twelve catalogue domestic leagues. A finished season is 34 to 57 pages
+  // (Premier League 2023 51, 2024 57; Eredivisie 2023 49), so 50 is a
+  // full-season figure; early in a season it is lower.
+  domesticLeagues: 12,
+  playerSeasonPagesPerLeague: 50,
+  enrichmentBackfillCallsPerDay: 0,
 };
 
 /**
@@ -129,7 +152,40 @@ export const MEGA_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   peakConcurrentLive: 63,
   overnightConcurrentLive: 12,
   injuryCoveredShare: 15 / 40,
+  // Plus the nine new domestic leagues from GW-5.
+  domesticLeagues: 21,
 };
+
+/**
+ * The player-season-stats history backfill (profile-spec PF-GW2): seasons 2023
+ * to 2025 for the catalogue domestic leagues, about 3,500 calls.
+ */
+export const PLAYER_SEASON_STATS_HISTORY_CALLS = 3_500;
+
+export interface EnrichmentRunPlan {
+  /** Runs needed at the given per-run limit. */
+  readonly runs: number;
+  /** Least wall time per full run at the per-minute ceiling. */
+  readonly minutesPerFullRun: number;
+  /** Least wall time for the whole job. */
+  readonly totalMinutes: number;
+}
+
+/** How a bounded, rate-capped enrichment job spreads over runs. */
+export function planEnrichmentRuns(
+  totalCalls: number,
+  perRunLimit: number,
+  minuteCap: number = DEFAULT_ENRICHMENT_MINUTE_CAP
+): EnrichmentRunPlan {
+  if (perRunLimit <= 0 || minuteCap <= 0) {
+    throw new Error('perRunLimit and minuteCap must be positive');
+  }
+  return {
+    runs: Math.ceil(totalCalls / perRunLimit),
+    minutesPerFullRun: Math.ceil(Math.min(totalCalls, perRunLimit) / minuteCap),
+    totalMinutes: Math.ceil(totalCalls / minuteCap),
+  };
+}
 
 /**
  * Seconds between provider refreshes for a workload polled every `tickSeconds`
@@ -208,6 +264,7 @@ export function estimateCallBudget(
       peakMinute: 0,
       planned: false,
     },
+    playerSeasonStatsLine(a),
     {
       workload: 'kernel weekly sweeps',
       priority: 'background',
@@ -305,6 +362,31 @@ export function checkCallBudget(estimate: CallBudgetEstimate, caps: CallBudgetCa
   return out;
 }
 
+/**
+ * GW-6a: the nightly current-season refresh fetches every `/players` page of
+ * every domestic league, every night (the cursor window is 20h, so each night
+ * starts again from page 1). A history run adds its per-run limit on the
+ * nights it runs. Background class, so it never adds to the live peak minute;
+ * its own ceiling is {@link DEFAULT_ENRICHMENT_MINUTE_CAP}.
+ */
+function playerSeasonStatsLine(a: CallBudgetAssumptions): CallBudgetLine {
+  const nightly = a.domesticLeagues * a.playerSeasonPagesPerLeague;
+  return {
+    workload: 'player-season-stats',
+    priority: 'background',
+    strategy:
+      `nightly refresh, ${a.domesticLeagues} domestic leagues x ${a.playerSeasonPagesPerLeague} pages, ` +
+      `at most ${DEFAULT_ENRICHMENT_MINUTE_CAP}/min` +
+      (a.enrichmentBackfillCallsPerDay > 0
+        ? `, plus a ${a.enrichmentBackfillCallsPerDay}-call history run`
+        : ''),
+    avgPerDay: nightly + a.enrichmentBackfillCallsPerDay,
+    peakDay: nightly + a.enrichmentBackfillCallsPerDay,
+    peakMinute: 0,
+    planned: false,
+  };
+}
+
 function discoveryLine(a: CallBudgetAssumptions): CallBudgetLine {
   const tickHours = INGESTION_TICK_INTERVAL_MS['fixtures-next-7d'] / 3_600_000;
   const ttlHours = INGESTION_TTL_SECONDS['fixtures-next-7d'] / 3_600;
@@ -367,7 +449,6 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     background('injuries-league', 120, 120, 'every 3h for 15 covered leagues'),
     background('player-sidelined', 86, 0, 'weekly'),
     background('competition-leaders', 70, 40, 'daily for leagues played in 36h; full on Monday'),
-    background('player-season-stats', 610, 200, 'daily for leagues played; full on Monday'),
     background('team-season-stats', 150, 60, 'teams with a final whistle in 36h; full on Monday'),
     background('team-coaches', 90, 0, 'weekly'),
     background('team-transfers', 60, 0, 'weekly'),
