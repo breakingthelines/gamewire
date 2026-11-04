@@ -19,15 +19,16 @@ import {
   DEFAULT_PROVIDER_HARD_CAP,
   DEFAULT_PROVIDER_PLAN_CEILING,
   DEFAULT_PROVIDER_SOFT_CAP,
+  DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP,
   defaultBackgroundDailyCap,
 } from './quota.js';
 
-/** The caps the code ships with today (env unset). */
+/** Prod env today, before INF-1 (infrastructure gamewire-worker config.env). */
 const CURRENT_CAPS: CallBudgetCaps = {
-  softCap: DEFAULT_PROVIDER_SOFT_CAP,
-  hardCap: DEFAULT_PROVIDER_HARD_CAP,
-  planDailyCeiling: DEFAULT_PROVIDER_PLAN_CEILING,
-  backgroundDailyCap: defaultBackgroundDailyCap(DEFAULT_PROVIDER_SOFT_CAP),
+  softCap: 60_000,
+  hardCap: 70_000,
+  planDailyCeiling: 75_000,
+  backgroundDailyCap: defaultBackgroundDailyCap(60_000, 70_000),
   minuteCaps: DEFAULT_PROVIDER_MINUTE_CAPS,
   planMinuteCeiling: 900,
 };
@@ -123,11 +124,30 @@ describe('per-fixture mechanism', () => {
   });
 });
 
+describe('code defaults', () => {
+  it('match the Mega plan caps (spec contract 4)', () => {
+    expect({
+      softCap: DEFAULT_PROVIDER_SOFT_CAP,
+      hardCap: DEFAULT_PROVIDER_HARD_CAP,
+      planDailyCeiling: DEFAULT_PROVIDER_PLAN_CEILING,
+      backgroundDailyCap: defaultBackgroundDailyCap(
+        DEFAULT_PROVIDER_SOFT_CAP,
+        DEFAULT_PROVIDER_HARD_CAP
+      ),
+    }).toEqual({
+      softCap: MEGA_BUDGET_CAPS.softCap,
+      hardCap: MEGA_BUDGET_CAPS.hardCap,
+      planDailyCeiling: MEGA_BUDGET_CAPS.planDailyCeiling,
+      backgroundDailyCap: DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP,
+    });
+  });
+});
+
 describe('peak assertions', () => {
-  it('current load fits the caps the code ships with', () => {
+  it('current load fits the caps prod runs with today', () => {
     const estimate = estimateCallBudget('api-football', CURRENT_LOAD_ASSUMPTIONS, CURRENT_CAPS);
     expect(estimate.warnings).toEqual([]);
-    expect(estimate.totals.peakDay).toBeLessThanOrEqual(DEFAULT_PROVIDER_SOFT_CAP);
+    expect(estimate.totals.peakDay).toBeLessThanOrEqual(CURRENT_CAPS.softCap);
     expect(estimate.totals.peakMinute).toBeLessThanOrEqual(DEFAULT_PROVIDER_MINUTE_CAP_LIVE);
   });
 
@@ -177,7 +197,7 @@ describe('peak assertions', () => {
     expect(estimate.warnings.some((w) => w.includes('soft cap'))).toBe(true);
   });
 
-  it('flags the Mega load on today caps: the leagues need INF-1 first', () => {
+  it('flags the Mega load on today prod caps: the leagues need INF-1 first', () => {
     const estimate = estimateCallBudget(
       'api-football',
       { ...MEGA_LOAD_ASSUMPTIONS, ...GW2_TICK },

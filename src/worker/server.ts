@@ -20,8 +20,7 @@ import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
-import { ProviderMinuteLimiter } from './minute-limiter.js';
-import { ProviderQuotaTracker } from './quota.js';
+import { createProviderBudget } from './provider-budget.js';
 import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
@@ -353,41 +352,21 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBri
   assetMirrorBridge
 );
 
-// The caps come from env. Before this they were logged but never reached the
-// tracker, which always ran on its code defaults.
-const quota = new ProviderQuotaTracker({
-  provider: config.providerId,
-  hardCap: config.providerHardCap,
-  softCap: config.providerSoftCap,
-  backgroundDailyCap: config.providerBackgroundDailyCap,
-  quotaSource: config.providerQuotaSource,
+// The caps come from env through the factory (see provider-budget.test.ts).
+// Before GW-1 they were logged but never reached the tracker.
+const {
+  quota,
+  minuteLimiter,
+  summary: budgetSummary,
+  warnings: budgetWarnings,
+} = createProviderBudget(config, {
   logger: (entry) => {
     console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
   },
 });
-// One worker replica (see the prod deployment), so the in-memory counter is
-// the whole picture for this process. Other spenders on the key are counted
-// through the provider headers when GAMEWIRE_PROVIDER_QUOTA_SOURCE=provider-header.
-const minuteLimiter = new ProviderMinuteLimiter({
-  providerId: config.providerId,
-  namespace: config.redisNamespace,
-  caps: config.providerMinuteCaps,
-});
-console.log(
-  `[gamewire-worker] provider budget hardCap=${config.providerHardCap} ` +
-    `softCap=${config.providerSoftCap} backgroundDailyCap=${quota.backgroundDailyCap} ` +
-    `planCeiling=${config.providerPlanCeiling} quotaSource=${quota.quotaSource} ` +
-    `minuteCaps=live:${minuteLimiter.caps.live},near-live:${minuteLimiter.caps['near-live']},` +
-    `background:${minuteLimiter.caps.background} minuteStore=${minuteLimiter.backend}`
-);
-if (
-  config.providerPlanCeiling !== undefined &&
-  config.providerHardCap > config.providerPlanCeiling
-) {
-  console.log(
-    `[gamewire-worker] WARNING hard cap ${config.providerHardCap} exceeds plan ceiling ` +
-      `${config.providerPlanCeiling}; set GAMEWIRE_PROVIDER_PLAN_CEILING to the plan size`
-  );
+console.log(budgetSummary);
+for (const warning of budgetWarnings) {
+  console.log(warning);
 }
 
 const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched, quota, minuteLimiter });

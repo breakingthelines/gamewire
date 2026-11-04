@@ -10,6 +10,7 @@ import {
   defaultBackgroundDailyCap,
   type ProviderQuotaSource,
 } from './quota.js';
+import { DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS } from './provider-http.js';
 
 export type GamewireWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type GamewireProviderMode = 'replay' | 'live';
@@ -30,13 +31,13 @@ export interface GamewireWorkerConfig {
   redisUrl?: string;
   /** Redis key prefix used by gamewire-worker (defaults to "gamewire"). */
   redisNamespace: string;
-  /** Hard daily provider call cap. Default 70,000 (5k headroom under 75k plan ceiling). */
+  /** Hard daily provider call cap. Default 140,000 (10k headroom under the 150k Mega plan). */
   providerHardCap: number;
-  /** Soft daily cap that flips the worker into cached-only mode. Default 60,000. */
+  /** Soft daily cap that flips the worker into cached-only mode. Default 130,000. */
   providerSoftCap: number;
   /**
    * Plan ceiling (`GAMEWIRE_PROVIDER_PLAN_CEILING`), informational: logged at
-   * boot and compared with the provider-reported limit. Default 75,000.
+   * boot and compared with the provider-reported limit. Default 150,000.
    *
    * The fields below are optional so hand-built configs (tests, embedders) need
    * not set them; {@link loadConfig} always populates them.
@@ -55,6 +56,11 @@ export interface GamewireWorkerConfig {
    * 800 / 650 / 450.
    */
   providerMinuteCaps?: ProviderMinuteCaps;
+  /**
+   * `GAMEWIRE_PROVIDER_REQUEST_TIMEOUT_MS`: deadline for one provider request,
+   * body included. Default 10,000.
+   */
+  providerRequestTimeoutMs?: number;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
   /** Fixture ids to poll immediately on boot, useful for deterministic staging smoke. */
@@ -336,6 +342,11 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     providerBackgroundDailyCap: backgroundDailyCap,
     providerQuotaSource: parseQuotaSource(env.GAMEWIRE_PROVIDER_QUOTA_SOURCE),
     providerMinuteCaps: minuteCaps,
+    providerRequestTimeoutMs: parsePositiveInt(
+      env.GAMEWIRE_PROVIDER_REQUEST_TIMEOUT_MS,
+      DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,
+      'gamewire provider request timeout'
+    ),
     ingestionEnabled: parseBoolean(
       env.GAMEWIRE_INGESTION_ENABLED,
       providerMode === 'live',

@@ -107,13 +107,14 @@ describe('ProviderQuotaTracker', () => {
 });
 
 describe('ProviderQuotaTracker background daily cap', () => {
-  it('defaults to min(110k, soft cap, hard cap) so today it equals the soft cap', () => {
+  it('defaults to min(110k, soft cap, hard cap)', () => {
     expect(DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP).toBe(110_000);
     expect(defaultBackgroundDailyCap(60_000, 70_000)).toBe(60_000);
     expect(defaultBackgroundDailyCap(130_000, 140_000)).toBe(110_000);
     expect(defaultBackgroundDailyCap(60_000, 5)).toBe(5);
     const tracker = new ProviderQuotaTracker({ provider: 'api-football' });
-    expect(tracker.backgroundDailyCap).toBe(DEFAULT_PROVIDER_SOFT_CAP);
+    // Mega defaults: 130k soft cap, so the background cap is 110k.
+    expect(tracker.backgroundDailyCap).toBe(DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP);
   });
 
   it('denies only background once the background cap is reached', async () => {

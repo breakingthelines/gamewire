@@ -153,16 +153,31 @@ describe('gamewire-worker config', () => {
   });
 
   describe('provider budget', () => {
-    it('keeps the existing cap defaults and derives the new ones', () => {
+    it('defaults to the Mega plan caps (spec contract 4)', () => {
       const cfg = loadConfig(authEnv());
-      expect(cfg.providerHardCap).toBe(70_000);
-      expect(cfg.providerSoftCap).toBe(60_000);
-      expect(cfg.providerPlanCeiling).toBe(75_000);
-      // min(110k, soft cap): background stops where workflows already go
-      // cached-only today.
-      expect(cfg.providerBackgroundDailyCap).toBe(60_000);
+      expect(cfg.providerHardCap).toBe(140_000);
+      expect(cfg.providerSoftCap).toBe(130_000);
+      expect(cfg.providerPlanCeiling).toBe(150_000);
+      expect(cfg.providerBackgroundDailyCap).toBe(110_000);
       expect(cfg.providerQuotaSource).toBe('local');
       expect(cfg.providerMinuteCaps).toEqual({ live: 800, 'near-live': 650, background: 450 });
+      expect(cfg.providerRequestTimeoutMs).toBe(10_000);
+    });
+
+    it('keeps the background cap at the soft cap under the current prod env', () => {
+      const cfg = loadConfig(
+        authEnv({ GAMEWIRE_PROVIDER_HARD_CAP: '70000', GAMEWIRE_PROVIDER_SOFT_CAP: '60000' })
+      );
+      // min(110k, soft cap): background stops where workflows already go
+      // cached-only, and the default never exceeds the hard cap.
+      expect(cfg.providerBackgroundDailyCap).toBe(60_000);
+    });
+
+    it('reads the provider request timeout from env', () => {
+      expect(
+        loadConfig(authEnv({ GAMEWIRE_PROVIDER_REQUEST_TIMEOUT_MS: '2500' }))
+          .providerRequestTimeoutMs
+      ).toBe(2_500);
     });
 
     it('reads the INF-1 Mega values from env', () => {
@@ -202,7 +217,7 @@ describe('gamewire-worker config', () => {
 
     it('rejects a background cap above the hard cap', () => {
       expect(() =>
-        loadConfig(authEnv({ GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP: '80000' }))
+        loadConfig(authEnv({ GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP: '150000' }))
       ).toThrow(/background daily cap/);
     });
 

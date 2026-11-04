@@ -16,6 +16,7 @@ export type ProviderFetch = (
   init?: {
     readonly method?: 'GET';
     readonly headers?: Record<string, string>;
+    readonly signal?: AbortSignal;
   }
 ) => Promise<ProviderFetchResponse>;
 
@@ -33,6 +34,29 @@ export interface ProviderJsonFetchOptions {
   readonly path?: string;
   readonly fetchFn?: ProviderFetch;
   readonly clock?: () => number;
+  /**
+   * Deadline for the request and its body, in ms. Defaults to
+   * `config.providerRequestTimeoutMs`, then {@link DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS}.
+   * A call past it is aborted and returned as `failed`.
+   */
+  readonly timeoutMs?: number;
+}
+
+/**
+ * Default provider request deadline. Without one, a request that never answers
+ * holds its tick in flight forever, and the tick guard then skips that
+ * workload until the pod restarts.
+ */
+export const DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS = 10_000;
+
+export class ProviderRequestTimeoutError extends Error {
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`Provider request timed out after ${timeoutMs}ms`);
+    this.name = 'ProviderRequestTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 export interface ProviderJsonFetchResult<TResponse = unknown> {
@@ -69,6 +93,8 @@ export interface ProviderJsonFetchResult<TResponse = unknown> {
    * provider's own view of the account.
    */
   readonly rateLimit?: ProviderRateLimitHeaders;
+  /** True when a `failed` result is the request deadline firing. */
+  readonly timedOut?: boolean;
 }
 
 /**
@@ -133,18 +159,39 @@ export async function fetchApiFootballJson<TResponse = unknown>(
   const startedAt = clock();
   let rateLimit: ProviderRateLimitHeaders | undefined;
 
+  const timeoutMs =
+    options.timeoutMs ?? cfg.providerRequestTimeoutMs ?? DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS;
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // Races both the request and the body read: a fetchFn that ignores the
+  // signal, or a body that stalls after the headers, still ends at the deadline.
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const error = new ProviderRequestTimeoutError(timeoutMs);
+      controller.abort(error);
+      reject(error);
+    }, timeoutMs);
+  });
+  deadline.catch(() => undefined);
+
   try {
     const url = buildProviderUrl(cfg.providerBaseUrl, runtime.request.path);
     const fetchFn = options.fetchFn ?? defaultFetch;
-    const response = await fetchFn(url, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        [API_FOOTBALL_HEADER]: cfg.providerApiKey,
-      },
-    });
+    const response = await Promise.race([
+      fetchFn(url, {
+        method: 'GET',
+        headers: {
+          accept: 'application/json',
+          [API_FOOTBALL_HEADER]: cfg.providerApiKey,
+        },
+        signal: controller.signal,
+      }),
+      deadline,
+    ]);
     rateLimit = parseRateLimitHeaders(response.headers);
-    const json = (await response.json()) as ApiFootballEnvelope<TResponse> | unknown;
+    const json = (await Promise.race([response.json(), deadline])) as
+      | ApiFootballEnvelope<TResponse>
+      | unknown;
 
     // api-football's free + Pro plans ship rate-limit responses as HTTP 200
     // with `{response: [], errors: {rateLimit: "..."}}`. Without inspecting the
@@ -196,6 +243,7 @@ export async function fetchApiFootballJson<TResponse = unknown>(
       runtime,
       request,
       rateLimit,
+      ...(error instanceof ProviderRequestTimeoutError ? { timedOut: true } : {}),
       error: {
         message: redactSecret(
           error instanceof Error ? error.message : String(error),
@@ -203,6 +251,8 @@ export async function fetchApiFootballJson<TResponse = unknown>(
         ),
       },
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

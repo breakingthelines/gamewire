@@ -107,7 +107,15 @@ Every provider call carries a priority class (`live`, `near-live`,
 cap and the background daily cap (`GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP`).
 With `GAMEWIRE_PROVIDER_QUOTA_SOURCE=provider-header` the daily count is
 max(local, provider-reported), read from the `x-ratelimit-requests-*` headers.
-Workflows always call as `background`.
+Workflows always call as `background`. Code defaults are the Mega plan values
+(hard 140,000, soft 130,000, plan ceiling 150,000, background min(110,000, soft
+cap)); deployments set the caps in env. Each provider request has a deadline
+(`GAMEWIRE_PROVIDER_REQUEST_TIMEOUT_MS`, default 10,000) and a timed-out request
+counts as `failed`.
+
+The per-minute buckets live in each worker process. Prod and staging share one
+API-Football key, so each gets its own full set of minute ceilings; staging needs
+its own lower minute caps before the live tick gets faster.
 
 The call budget model works from the real per-fixture mechanism:
 

@@ -8,9 +8,9 @@
  *   3. Rate-gated: every provider call carries an explicit priority class
  *      (`live`, `near-live`, `background`). The per-minute limiter
  *      ({@link ProviderMinuteLimiter}) admits it against that class's ceiling,
- *      then the daily counter enforces the hard cap (env, default 70k), the
+ *      then the daily counter enforces the hard cap (env, default 140k), the
  *      soft cap that flips workflows to cached-only and emits PROVIDER_OUTAGE
- *      (default 60k), and the background daily cap.
+ *      (default 130k), and the background daily cap.
  *   4. Observability: counters per provider/workload/endpoint and cache hit
  *      ratio gauge exposed via {@link IngestionMetrics}.
  *
@@ -266,7 +266,15 @@ export interface IngestionLoopOptions {
    * a no-op so the existing test surface remains unaffected.
    */
   readonly onFixtureFetched?: OnFixtureFetchedCallback;
+  /**
+   * How long a fetch waits for {@link onFixtureFetched} before returning. The
+   * bridge keeps running past it. Default {@link DEFAULT_BRIDGE_TIMEOUT_MS}.
+   */
+  readonly bridgeTimeoutMs?: number;
 }
+
+/** Default wait for the fixture bridge inside one fetch. */
+export const DEFAULT_BRIDGE_TIMEOUT_MS = 30_000;
 
 export interface IngestionLoopStartOptions {
   /** Recurring fixture ids to keep polling. */
@@ -278,11 +286,29 @@ export interface IngestionLoopStartOptions {
   readonly runImmediately?: boolean;
   /** Override ms intervals for tests. */
   readonly intervals?: Partial<Record<IngestionWorkload, number>>;
+  /**
+   * Override the per-workload tick deadline (ms) for tests. A run older than
+   * its deadline stops blocking the next tick. Default: see
+   * {@link defaultTickDeadlineMs}.
+   */
+  readonly tickDeadlineMs?: Partial<Record<IngestionWorkload, number>>;
   readonly schedule?: (callback: () => void, ms: number) => unknown;
   readonly cancel?: (handle: unknown) => void;
 }
 
 const SECONDS_TO_MS = 1_000;
+
+const MIN_TICK_DEADLINE_MS = 2 * 60 * 1_000;
+const MAX_TICK_DEADLINE_MS = 15 * 60 * 1_000;
+
+/**
+ * How long a tick may run before the next tick stops waiting for it: four
+ * intervals, at least 2 minutes (one near-live minute wait plus a few request
+ * timeouts) and at most 15 minutes. The 30s live tick gets 2 minutes; the
+ * hourly discovery sweep gets 15.
+ */
+export const defaultTickDeadlineMs = (intervalMs: number): number =>
+  Math.min(MAX_TICK_DEADLINE_MS, Math.max(MIN_TICK_DEADLINE_MS, intervalMs * 4));
 
 /**
  * Provider-agnostic ingestion controller. Exposes a single coordinated path
@@ -304,6 +330,7 @@ export class ApiFootballIngestionLoop {
   readonly #provider: string;
   readonly #timers: unknown[] = [];
   readonly #onFixtureFetched?: OnFixtureFetchedCallback;
+  readonly #bridgeTimeoutMs: number;
 
   constructor(options: IngestionLoopOptions) {
     this.#config = options.config;
@@ -321,6 +348,7 @@ export class ApiFootballIngestionLoop {
     this.#fetchFn = options.fetchFn;
     this.#log = options.logger ?? defaultLogger;
     this.#onFixtureFetched = options.onFixtureFetched;
+    this.#bridgeTimeoutMs = options.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS;
   }
 
   get metrics(): IngestionMetrics {
@@ -390,8 +418,14 @@ export class ApiFootballIngestionLoop {
 
     this.#metrics.recordCacheMiss();
 
-    // Singleflight ensures the next steps run at most once per cache key.
-    return this.#singleflight.do(cacheKey, async () => {
+    // Singleflight ensures the next steps run at most once per cache key and
+    // priority class. The class is part of the merge key: the minute-limiter
+    // wait (up to 60s) and the background daily cap both run inside the merged
+    // call, so a live caller that joined a background leader would inherit its
+    // wait and its throttled or denied result. Callers of different classes
+    // fetch separately; the cache re-check below still collapses a call that
+    // starts after another class has already landed the payload.
+    return this.#singleflight.do(this.mergeKeyFor(priority, cacheKey), async () => {
       // Re-check cache inside singleflight in case the leader populated it
       // while we waited for the lock; this prevents double provider calls
       // immediately after a slow first request settles.
@@ -526,6 +560,7 @@ export class ApiFootballIngestionLoop {
           cacheKey,
           fetchStatus: fetchResult.status,
           skipReason: (fetchResult as { skipReason?: string }).skipReason,
+          ...(fetchResult.timedOut ? { timedOut: true } : {}),
         });
         return {
           status: fetchResult.status,
@@ -593,6 +628,11 @@ export class ApiFootballIngestionLoop {
    */
   cacheKeyFor(workload: IngestionWorkload, resourceId: string): string {
     return `${this.#provider}:${workload}:${resourceId}`;
+  }
+
+  /** Singleflight key: one merged provider call per cache key and priority class. */
+  mergeKeyFor(priority: ProviderPriority, cacheKey: string): string {
+    return `${priority}:${cacheKey}`;
   }
 
   /** Separate key holding the last successful live payload for {@link LAST_GOOD_TTL_SECONDS}. */
@@ -726,6 +766,9 @@ export class ApiFootballIngestionLoop {
     // of truth that decides which workload, if any, polls each fixture.
     const fixtureLifecycle = new Map<string, FixtureLifecycle>();
 
+    const tickDeadlineFor = (workload: IngestionWorkload): number =>
+      options.tickDeadlineMs?.[workload] ?? defaultTickDeadlineMs(intervals[workload] ?? 0);
+
     const enqueueTick = (
       workload: IngestionWorkload,
       refresh: () => Promise<void>,
@@ -748,21 +791,52 @@ export class ApiFootballIngestionLoop {
     // tick that runs longer than its interval would otherwise overlap the next
     // one and pile up. A tick that finds the previous run of the same workload
     // still going is skipped and counted.
-    const inFlight = new Set<IngestionWorkload>();
+    //
+    // A run that outlives its deadline (see `tickDeadlineMs`) no longer holds
+    // the flag: the next tick logs `ingestion_tick_deadline_exceeded`, drops
+    // the stale run's claim and starts a fresh one. Provider requests carry
+    // their own timeout, so this only fires when something else hangs (a
+    // bridge call, a store). Without it one hung run would stop the workload
+    // until the pod restarts.
+    const inFlight = new Map<
+      IngestionWorkload,
+      { readonly startedAt: number; readonly run: number }
+    >();
+    let runCounter = 0;
     const runRefresh = (workload: IngestionWorkload, refresh: () => Promise<void>): void => {
-      if (inFlight.has(workload)) {
-        this.#metrics.recordTickSkippedInFlight(workload);
+      const current = inFlight.get(workload);
+      if (current !== undefined) {
+        const runningMs = Math.max(0, this.#clock() - current.startedAt);
+        const deadlineMs = tickDeadlineFor(workload);
+        if (runningMs < deadlineMs) {
+          this.#metrics.recordTickSkippedInFlight(workload);
+          this.#log({
+            event: 'ingestion_tick_skipped_in_flight',
+            provider: this.#provider,
+            workload,
+            runningMs,
+          });
+          return;
+        }
+        this.#metrics.recordTickDeadlineExceeded(workload);
         this.#log({
-          event: 'ingestion_tick_skipped_in_flight',
+          event: 'ingestion_tick_deadline_exceeded',
           provider: this.#provider,
           workload,
+          runningMs,
+          deadlineMs,
         });
-        return;
-      }
-      inFlight.add(workload);
-      const startedAt = this.#clock();
-      const settle = (): void => {
         inFlight.delete(workload);
+      }
+      runCounter += 1;
+      const run = runCounter;
+      const startedAt = this.#clock();
+      inFlight.set(workload, { startedAt, run });
+      const settle = (): void => {
+        // A run abandoned at its deadline must not clear a newer run's claim.
+        if (inFlight.get(workload)?.run === run) {
+          inFlight.delete(workload);
+        }
         const durationMs = Math.max(0, this.#clock() - startedAt);
         this.#metrics.recordTickDuration(workload, durationMs);
         const interval = intervals[workload] ?? 0;
@@ -1155,8 +1229,28 @@ export class ApiFootballIngestionLoop {
     if (data === undefined) {
       return;
     }
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.resolve(this.#onFixtureFetched({ workload, resourceId, data }));
+      // Bounded: the bridge runs inside the merged fetch, so a hung bridge
+      // call (a stalled Redis publish, a stuck RPC) would hold the merge and
+      // the tick open. Past the deadline the bridge keeps running on its own
+      // and the fetch returns.
+      const timedOut = Symbol('bridge-timeout');
+      const outcome = await Promise.race([
+        Promise.resolve(this.#onFixtureFetched({ workload, resourceId, data })),
+        new Promise<typeof timedOut>((resolve) => {
+          timer = setTimeout(() => resolve(timedOut), this.#bridgeTimeoutMs);
+        }),
+      ]);
+      if (outcome === timedOut) {
+        this.#log({
+          event: 'ingestion_bridge_timeout',
+          provider: this.#provider,
+          workload,
+          resourceId,
+          timeoutMs: this.#bridgeTimeoutMs,
+        });
+      }
     } catch (error) {
       this.#log({
         event: 'ingestion_bridge_error',
@@ -1165,6 +1259,8 @@ export class ApiFootballIngestionLoop {
         resourceId,
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      clearTimeout(timer);
     }
   }
 }

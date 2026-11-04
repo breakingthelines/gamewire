@@ -87,7 +87,7 @@ export interface CallBudgetCaps {
   readonly planMinuteCeiling: number;
 }
 
-/** The Mega plan targets INF-1 sets in env. The code defaults stay lower. */
+/** The Mega plan caps: the code defaults, and the values INF-1 sets in prod env. */
 export const MEGA_BUDGET_CAPS: CallBudgetCaps = {
   softCap: 130_000,
   hardCap: 140_000,

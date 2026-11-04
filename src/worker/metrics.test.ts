@@ -92,6 +92,7 @@ describe('IngestionMetrics', () => {
     expect(snap.providerStaleServed).toEqual({});
     expect(snap.tickDurationMs).toEqual({});
     expect(snap.tickSkippedInFlight).toEqual({});
+    expect(snap.tickDeadlineExceeded).toEqual({});
     expect(snap.quotaCallsToday).toBe(0);
     expect(snap.quotaPosture).toBe('normal');
   });
@@ -104,6 +105,7 @@ describe('IngestionMetrics', () => {
     metrics.recordTickDuration('fixture-detail-live', 1_200);
     metrics.recordTickDuration('fixture-detail-live', 800);
     metrics.recordTickSkippedInFlight('fixture-detail-live');
+    metrics.recordTickDeadlineExceeded('fixtures-next-7d');
     const snap = metrics.snapshot();
     expect(snap.providerMinuteThrottled).toEqual({ 'fixture-detail-live': 2 });
     expect(snap.providerStaleServed).toEqual({ 'fixture-detail-live': 1 });
@@ -114,5 +116,8 @@ describe('IngestionMetrics', () => {
       totalMs: 2_000,
     });
     expect(snap.tickSkippedInFlight).toEqual({ 'fixture-detail-live': 1 });
+    expect(snap.tickDeadlineExceeded).toEqual({ 'fixtures-next-7d': 1 });
+    metrics.reset();
+    expect(metrics.snapshot().tickDeadlineExceeded).toEqual({});
   });
 });

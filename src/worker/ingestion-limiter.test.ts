@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { InMemoryProviderCache } from './cache.js';
+import { InMemoryProviderCache, type ProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
 import {
   ApiFootballIngestionLoop,
   LAST_GOOD_TTL_SECONDS,
   LOOP_WORKLOAD_PRIORITY,
+  defaultTickDeadlineMs,
   type IngestionFetchOptions,
 } from './ingestion.js';
 import {
@@ -414,7 +415,9 @@ describe('provider header sync', () => {
 
 describe('loop priorities', () => {
   it('the polling loop passes its own class for every call it makes', () => {
-    expect(LOOP_WORKLOAD_PRIORITY).toEqual({
+    // Named entries only, so removing a dead loop workload (GW-3 drops
+    // player-metadata) needs no change here.
+    expect(LOOP_WORKLOAD_PRIORITY).toMatchObject({
       'fixtures-next-7d': 'near-live',
       'fixture-detail-preKO': 'near-live',
       'fixture-detail-live': 'live',
@@ -424,6 +427,10 @@ describe('loop priorities', () => {
       'squad-list-fallback': 'background',
       'team-metadata': 'background',
     });
+    const live = Object.entries(LOOP_WORKLOAD_PRIORITY)
+      .filter(([, priority]) => priority === 'live')
+      .map(([workload]) => workload);
+    expect(live).toEqual(['fixture-detail-live']);
   });
 
   it('runs the live tick and its stats sidecar as live, discovery as near-live', async () => {
@@ -534,5 +541,244 @@ describe('tick in-flight guard and duration metric', () => {
     }
     expect(loop.metrics.snapshot().tickSkippedInFlight).toEqual({ 'team-metadata': 1 });
     expect(loop.metrics.snapshot().tickDurationMs['team-metadata']?.count).toBe(2);
+  });
+});
+
+describe('duplicate-fetch merging is per priority class', () => {
+  it('a live call does not join a background call waiting on the minute limiter', async () => {
+    const h = harness({ caps: { live: 4, 'near-live': 3, background: 1 } });
+    // Fill the background ceiling for this minute.
+    await h.loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: 'fill',
+      priority: 'background',
+    });
+    let releaseSleep: (() => void) | undefined;
+    h.sleep.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseSleep = resolve;
+        })
+    );
+    const background = h.loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: '42',
+      priority: 'background',
+    });
+    for (let i = 0; i < 5; i += 1) {
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    expect(h.sleep).toHaveBeenCalledTimes(1);
+
+    // Same cache key, live class: fetched at once, not merged into the wait.
+    const live = await h.loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: '42',
+      priority: 'live',
+    });
+    expect(live.status).toBe('fetched');
+    expect(live.throttled).toBeUndefined();
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+
+    releaseSleep?.();
+    const settled = await background;
+    expect(settled.priority).toBe('background');
+  });
+
+  it('a live call does not inherit a background denial at the background daily cap', async () => {
+    const quota = new ProviderQuotaTracker({
+      provider: 'api-football',
+      hardCap: 10,
+      softCap: 8,
+      backgroundDailyCap: 1,
+    });
+    const h = harness({ quota });
+    await h.loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: 'fill',
+      priority: 'background',
+    });
+    const [background, live] = await Promise.all([
+      h.loop.fetchWorkload({
+        workload: 'team-match-stats',
+        resourceId: '7',
+        priority: 'background',
+      }),
+      h.loop.fetchWorkload({
+        workload: 'team-match-stats',
+        resourceId: '7',
+        priority: 'live',
+      }),
+    ]);
+    expect(background.status).toBe('denied');
+    expect(live.status).toBe('fetched');
+  });
+
+  it('still merges concurrent callers of the same class', async () => {
+    const h = harness();
+    const [a, b] = await Promise.all([
+      h.loop.fetchWorkload({ workload: 'team-match-stats', resourceId: '9', priority: 'live' }),
+      h.loop.fetchWorkload({ workload: 'team-match-stats', resourceId: '9', priority: 'live' }),
+    ]);
+    expect(a.status).toBe('fetched');
+    expect(b.status).toBe('fetched');
+    expect(h.fetchFn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('provider request timeout', () => {
+  it('a provider request that never answers fails at the deadline and the tick settles', async () => {
+    const fetchFn = vi.fn(() => new Promise<never>(() => undefined)) as unknown as ProviderFetch;
+    const clock = makeClock(T0);
+    const loop = new ApiFootballIngestionLoop({
+      config: { ...config, providerRequestTimeoutMs: 20 },
+      fetchFn,
+      clock: clock.now,
+      logger: quiet,
+    });
+    const result = await loop.fetchWorkload({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-39-season-2026',
+      priority: 'near-live',
+    });
+    expect(result.status).toBe('failed');
+    expect(result.error?.message).toContain('timed out after 20ms');
+
+    // The boot discovery sweep (every competition) settles instead of holding
+    // the in-flight flag forever.
+    const callbacks: Array<() => void> = [];
+    const stop = loop.start({
+      runImmediately: true,
+      intervals: {
+        'fixtures-next-7d': 1_000,
+        'fixture-detail-preKO': 0,
+        'fixture-detail-live': 0,
+        'fixture-detail-fullTime': 0,
+        'events-post-final': 0,
+        'lineups-post-confirm': 0,
+        'squad-list-fallback': 0,
+        'team-metadata': 0,
+      },
+      schedule: (callback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      },
+      cancel: () => undefined,
+    });
+    await vi.waitFor(
+      () => {
+        expect(loop.metrics.snapshot().tickDurationMs['fixtures-next-7d']?.count).toBe(1);
+      },
+      { timeout: 2_000, interval: 10 }
+    );
+    callbacks[0]?.();
+    expect(loop.metrics.snapshot().tickSkippedInFlight).toEqual({});
+    stop();
+  });
+});
+
+describe('tick deadline', () => {
+  it('a run past its deadline stops blocking the workload, and its late settle keeps the new claim', async () => {
+    const clock = makeClock(T0);
+    // The first two runs each hang in their first cache read (a stalled
+    // store), which the provider request timeout does not cover.
+    const inner = new InMemoryProviderCache({ clock: clock.now });
+    const gates: Array<() => void> = [];
+    let gatedReads = 0;
+    const cache: ProviderCache = {
+      backend: 'memory',
+      get: async <T>(key: string): Promise<T | undefined> => {
+        if (key.includes(':team-metadata:') && gatedReads < 2) {
+          gatedReads += 1;
+          await new Promise<void>((resolve) => {
+            gates.push(resolve);
+          });
+        }
+        return inner.get<T>(key);
+      },
+      set: <T>(key: string, value: T, ttlSeconds: number) => inner.set(key, value, ttlSeconds),
+    };
+    const logs: Record<string, unknown>[] = [];
+    const loop = new ApiFootballIngestionLoop({
+      config,
+      cache,
+      fetchFn: fetchMock({ response: [] }),
+      clock: clock.now,
+      logger: (entry) => logs.push(entry),
+    });
+    const callbacks: Array<() => void> = [];
+    const stop = loop.start({
+      teamIds: ['t1'],
+      intervals: {
+        'fixtures-next-7d': 0,
+        'fixture-detail-preKO': 0,
+        'fixture-detail-live': 0,
+        'fixture-detail-fullTime': 0,
+        'events-post-final': 0,
+        'lineups-post-confirm': 0,
+        'team-metadata': 1_000,
+      },
+      tickDeadlineMs: { 'team-metadata': 5_000 },
+      schedule: (callback) => {
+        callbacks.push(callback);
+        return callbacks.length;
+      },
+      cancel: () => undefined,
+    });
+    const tick = callbacks[0];
+    const flush = async () => {
+      for (let i = 0; i < 10; i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+
+    tick?.();
+    await flush();
+    expect(gates).toHaveLength(1);
+    clock.advance(4_000);
+    tick?.();
+    expect(loop.metrics.snapshot().tickSkippedInFlight).toEqual({ 'team-metadata': 1 });
+
+    clock.advance(1_000);
+    tick?.();
+    await flush();
+    expect(loop.metrics.snapshot().tickDeadlineExceeded).toEqual({ 'team-metadata': 1 });
+    expect(logs.some((entry) => entry.event === 'ingestion_tick_deadline_exceeded')).toBe(true);
+    expect(gates).toHaveLength(2);
+
+    // The abandoned run settles late. The new run still holds the flag.
+    gates[0]?.();
+    await flush();
+    expect(loop.metrics.snapshot().tickDurationMs['team-metadata']?.count).toBe(1);
+    tick?.();
+    expect(loop.metrics.snapshot().tickSkippedInFlight).toEqual({ 'team-metadata': 2 });
+
+    gates[1]?.();
+    await flush();
+    stop();
+  });
+
+  it('a hung bridge call does not hold the fetch past the bridge deadline', async () => {
+    const logs: Record<string, unknown>[] = [];
+    const loop = new ApiFootballIngestionLoop({
+      config,
+      fetchFn: fetchMock(),
+      logger: (entry) => logs.push(entry),
+      onFixtureFetched: () => new Promise<void>(() => undefined),
+      bridgeTimeoutMs: 20,
+    });
+    const result = await loop.fetchWorkload({
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      priority: 'live',
+    });
+    expect(result.status).toBe('fetched');
+    expect(logs.some((entry) => entry.event === 'ingestion_bridge_timeout')).toBe(true);
+  });
+
+  it('defaults to four intervals, between 2 and 15 minutes', () => {
+    expect(defaultTickDeadlineMs(30_000)).toBe(2 * MINUTE);
+    expect(defaultTickDeadlineMs(60_000)).toBe(4 * MINUTE);
+    expect(defaultTickDeadlineMs(60 * MINUTE)).toBe(15 * MINUTE);
   });
 });

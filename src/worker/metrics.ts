@@ -48,6 +48,8 @@ export interface MetricsSnapshot {
   readonly providerStaleServed: Record<string, number>;
   readonly tickDurationMs: Record<string, TickDurationStats>;
   readonly tickSkippedInFlight: Record<string, number>;
+  /** Ticks that found the previous run past its deadline and started anyway. */
+  readonly tickDeadlineExceeded: Record<string, number>;
 }
 
 export class IngestionMetrics {
@@ -66,6 +68,7 @@ export class IngestionMetrics {
   readonly #staleServed = new Map<string, number>();
   readonly #tickDurations = new Map<string, TickDurationStats>();
   readonly #tickSkipped = new Map<string, number>();
+  readonly #tickDeadlineExceeded = new Map<string, number>();
   #cacheHits = 0;
   #cacheMisses = 0;
   #quotaCallsToday = 0;
@@ -116,6 +119,10 @@ export class IngestionMetrics {
     this.#bump(this.#tickSkipped, workload);
   }
 
+  recordTickDeadlineExceeded(workload: string): void {
+    this.#bump(this.#tickDeadlineExceeded, workload);
+  }
+
   snapshot(): MetricsSnapshot {
     const total = this.#cacheHits + this.#cacheMisses;
     const ratio = total === 0 ? 0 : this.#cacheHits / total;
@@ -132,6 +139,7 @@ export class IngestionMetrics {
       providerStaleServed: mapToObject(this.#staleServed),
       tickDurationMs: Object.fromEntries(this.#tickDurations),
       tickSkippedInFlight: mapToObject(this.#tickSkipped),
+      tickDeadlineExceeded: mapToObject(this.#tickDeadlineExceeded),
     };
   }
 
@@ -145,6 +153,7 @@ export class IngestionMetrics {
     this.#staleServed.clear();
     this.#tickDurations.clear();
     this.#tickSkipped.clear();
+    this.#tickDeadlineExceeded.clear();
     this.#cacheHits = 0;
     this.#cacheMisses = 0;
     this.#quotaCallsToday = 0;

@@ -2,9 +2,9 @@
  * Provider call quota tracker for the API-Football daily budget.
  *
  * Contract:
- * - hard cap (`GAMEWIRE_PROVIDER_HARD_CAP`, default 70,000): a reservation that
+ * - hard cap (`GAMEWIRE_PROVIDER_HARD_CAP`, default 140,000): a reservation that
  *   would pass it is denied.
- * - soft cap (`GAMEWIRE_PROVIDER_SOFT_CAP`, default 60,000): at or above it the
+ * - soft cap (`GAMEWIRE_PROVIDER_SOFT_CAP`, default 130,000): at or above it the
  *   snapshot reports cached-only. Workflows act on that through
  *   `handleQuotaPosture`; the live loop keeps calling until the hard cap.
  * - background daily cap (`GAMEWIRE_PROVIDER_BACKGROUND_DAILY_CAP`): a
@@ -24,18 +24,22 @@
 
 import type { ProviderPriority } from './minute-limiter.js';
 
-export const DEFAULT_PROVIDER_HARD_CAP = 70_000;
-export const DEFAULT_PROVIDER_SOFT_CAP = 60_000;
-export const DEFAULT_PROVIDER_PLAN_CEILING = 75_000;
-/** Background ceiling when the env sets one explicitly but the soft cap is higher. */
+// Mega plan defaults (spec GW-1 contract 4). Prod and staging both set the
+// hard and soft caps in env, so these apply only when a deployment leaves them
+// out; a missing env no longer falls back to the old 70k.
+export const DEFAULT_PROVIDER_HARD_CAP = 140_000;
+export const DEFAULT_PROVIDER_SOFT_CAP = 130_000;
+export const DEFAULT_PROVIDER_PLAN_CEILING = 150_000;
+/** Background daily cap, clamped to the soft cap by {@link defaultBackgroundDailyCap}. */
 export const DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP = 110_000;
 
 export type ProviderQuotaSource = 'local' | 'provider-header';
 
 /**
  * Background daily cap used when none is configured: 110k, but never above the
- * soft cap. Under today's 60k soft cap that is 60k, the point where workflows
- * already switch to cached-only.
+ * soft cap. With the default 130k soft cap that is 110k. Under today's prod env
+ * (60k soft cap) it is 60k, the point where workflows already switch to
+ * cached-only.
  */
 export const defaultBackgroundDailyCap = (softCap: number, hardCap: number = softCap): number =>
   Math.min(DEFAULT_PROVIDER_BACKGROUND_DAILY_CAP, softCap, hardCap);
