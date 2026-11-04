@@ -134,6 +134,37 @@ the row's `values`; it is never written as 0.
 {"dataset": "player-season-stats", "mode": "nightly"}
 ```
 
+`mode` is `nightly` (the default) or `full`. The spec's `auto` and `dirty`, which
+the K-2 schedule sends, are accepted as `nightly`. `full` walks the named seasons
+latest first. Only one run in a process works on a league-season at a time; a
+second run reports it as `in-progress` and fetches nothing for it.
+
+Row `values` keys for `player-season-stats` (`PLAYER_SEASON_STAT_KEYS` in
+`src/adapters/api-football/enrichment-decoders.ts`). Keys on `PlayerSeasonStats`
+use its field names; the rest are `extra_stats` keys named after the
+`PlayerMatchStats` field where one exists, so provider values and BTL fold deltas
+line up by key. xG and xA are never sent.
+
+| key                | provider field                                            |     | key                   | provider field          |
+| ------------------ | --------------------------------------------------------- | --- | --------------------- | ----------------------- |
+| `appearances`      | `games.appearences`                                       |     | `passes`              | `passes.total`          |
+| `starts`           | `games.lineups`                                           |     | `blocks`              | `tackles.blocks`        |
+| `minutes`          | `games.minutes`                                           |     | `interceptions`       | `tackles.interceptions` |
+| `avg_rating`       | `games.rating`                                            |     | `duels`               | `duels.total`           |
+| `goals`            | `goals.total`                                             |     | `duels_won`           | `duels.won`             |
+| `assists`          | `goals.assists`                                           |     | `dribbles`            | `dribbles.attempts`     |
+| `shots`            | `shots.total`                                             |     | `dribbles_completed`  | `dribbles.success`      |
+| `shots_on_target`  | `shots.on`                                                |     | `dribbled_past`       | `dribbles.past`         |
+| `key_passes`       | `passes.key`                                              |     | `fouls_drawn`         | `fouls.drawn`           |
+| `passes_accuracy`  | `passes.accuracy` (raw: a percentage or a per-game count) |     | `fouls_committed`     | `fouls.committed`       |
+| `tackles`          | `tackles.total`                                           |     | `penalties_won`       | `penalty.won`           |
+| `yellow_cards`     | `cards.yellow`                                            |     | `penalties_committed` | `penalty.commited`      |
+| `red_cards`        | `cards.red`                                               |     | `penalties_scored`    | `penalty.scored`        |
+| `yellow_red_cards` | `cards.yellowred`                                         |     | `penalties_missed`    | `penalty.missed`        |
+| `substitute_in`    | `substitutes.in`                                          |     | `penalties_saved`     | `penalty.saved`         |
+| `substitute_out`   | `substitutes.out`                                         |     | `goals_conceded`      | `goals.conceded`        |
+| `substitute_bench` | `substitutes.bench`                                       |     | `saves`               | `goals.saves`           |
+
 The call budget model works from the real per-fixture mechanism:
 
 ```typescript

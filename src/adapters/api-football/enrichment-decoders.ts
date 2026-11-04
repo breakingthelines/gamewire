@@ -37,10 +37,14 @@ const PLACEHOLDER_NAME = 'data not available';
 
 /**
  * Provider stat path to `ProviderPlayerSeasonStatsRow.values` key. Keys that
- * exist on `PlayerSeasonStats` use its field names; the rest are
- * `extra_stats` keys. xG and xA are absent on purpose: BTL computes them.
- * Changing a key changes what game-service stores, so treat the list as a
- * contract.
+ * exist on `PlayerSeasonStats` use its field names. The rest are
+ * `extra_stats` keys, named after the `PlayerMatchStats` field where one
+ * exists (`passes`, `duels`, `duels_won`, `dribbles`, `dribbles_completed`,
+ * `interceptions`, `fouls_*`, `saves`, `goals_conceded`), so a provider value
+ * plus BTL fold deltas (verdict D10) lines up by key. xG and xA are absent on
+ * purpose: BTL computes them. Changing a key changes what game-service
+ * stores, so treat the list as a contract; the README lists it for GS-2,
+ * GS-3 and PF-G4a.
  */
 export const PLAYER_SEASON_STAT_KEYS: ReadonlyArray<
   readonly [key: string, group: string, field: string]
@@ -67,13 +71,13 @@ export const PLAYER_SEASON_STAT_KEYS: ReadonlyArray<
   ['substitute_bench', 'substitutes', 'bench'],
   ['goals_conceded', 'goals', 'conceded'],
   ['saves', 'goals', 'saves'],
-  ['passes_total', 'passes', 'total'],
+  ['passes', 'passes', 'total'],
   ['blocks', 'tackles', 'blocks'],
   ['interceptions', 'tackles', 'interceptions'],
-  ['duels_total', 'duels', 'total'],
+  ['duels', 'duels', 'total'],
   ['duels_won', 'duels', 'won'],
-  ['dribbles_attempts', 'dribbles', 'attempts'],
-  ['dribbles_success', 'dribbles', 'success'],
+  ['dribbles', 'dribbles', 'attempts'],
+  ['dribbles_completed', 'dribbles', 'success'],
   ['dribbled_past', 'dribbles', 'past'],
   ['fouls_drawn', 'fouls', 'drawn'],
   ['fouls_committed', 'fouls', 'committed'],

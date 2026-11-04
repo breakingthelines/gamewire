@@ -108,6 +108,7 @@ export {
   MAX_ENRICHMENT_CALLS_PER_RUN,
   PROVIDER_ENRICHMENT_DATASETS,
   PROVIDER_ENRICHMENT_MODES,
+  PROVIDER_ENRICHMENT_MODE_ALIASES,
   clampEnrichmentLimit,
   enrichmentCursorKey,
   providerEnrichmentWorkflow,

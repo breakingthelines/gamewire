@@ -30,6 +30,7 @@ import {
   MAX_ENRICHMENT_CALLS_PER_RUN,
   clampEnrichmentLimit,
   enrichmentCursorKey,
+  enrichmentTargetKey,
   providerEnrichmentWorkflow,
   resolveEnrichmentTargets,
   type EnrichmentCursor,
@@ -659,6 +660,212 @@ describe('failures', () => {
   });
 });
 
+describe('paging faults after page 1', () => {
+  it('keeps the page-1 total when a later page has no paging block', async () => {
+    const h = harness({
+      respond: (req) => {
+        if (req.page !== 2) {
+          return undefined;
+        }
+        const { paging: _paging, ...rest } = pageEnvelope(req.league, 2, 3);
+        return rest;
+      },
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(h.urls.map((u) => parseUrl(u).page)).toEqual([1, 2, 3]);
+    expect(out.targets[0]).toMatchObject({ status: 'complete', pagesTotal: 3, pagesFetched: 3 });
+  });
+
+  it('keeps the page-1 total when a later page reports total 0', async () => {
+    const h = harness({
+      respond: (req) => (req.page === 2 ? pageEnvelope(req.league, 2, 0) : undefined),
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(h.urls.map((u) => parseUrl(u).page)).toEqual([1, 2, 3]);
+    expect(out.status).toBe('completed');
+    expect(out.targets[0]).toMatchObject({ status: 'complete', pagesTotal: 3 });
+  });
+
+  it('fails an empty page before the last one and leaves the cursor on it', async () => {
+    let emptyOnce = true;
+    const h = harness({
+      respond: (req) => {
+        if (req.page === 2 && emptyOnce) {
+          emptyOnce = false;
+          return {
+            get: 'players',
+            errors: [],
+            results: 0,
+            paging: { current: 2, total: 3 },
+            response: [],
+          };
+        }
+        return undefined;
+      },
+    });
+    const first = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(first.status).toBe('incomplete');
+    expect(first.targets[0]).toMatchObject({ status: 'failed', nextPage: 2, pagesTotal: 3 });
+    expect(first.targets[0]?.errors[0]).toContain('empty response before page 3');
+    expect(h.ingest).toHaveBeenCalledTimes(1);
+    const cursor = await h.cache.get<EnrichmentCursor>(
+      enrichmentCursorKey('player-season-stats', 88, 2024)
+    );
+    expect(cursor).toMatchObject({ nextPage: 2, totalPages: 3 });
+    expect(cursor?.completedAtMs).toBeUndefined();
+
+    const second = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(second.status).toBe('completed');
+    expect(h.urls.slice(2).map((u) => parseUrl(u).page)).toEqual([2, 3]);
+  });
+
+  it('counts empty pages before the end toward the three-failure abort', async () => {
+    // Every page claims three pages and carries none.
+    const h = harness({
+      respond: (req) => ({
+        errors: [],
+        results: 0,
+        paging: { current: req.page, total: 3 },
+        response: [],
+      }),
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88, 39, 61, 78], seasons: [2024] });
+    expect(out.status).toBe('aborted');
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    expect(out.targets.map((t) => t.status)).toEqual(['failed', 'failed', 'failed', 'not-started']);
+    expect(h.ingest).not.toHaveBeenCalled();
+  });
+
+  it('a good page between empty ones resets the failure count', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.page === 2
+          ? { errors: [], results: 0, paging: { current: 2, total: 3 }, response: [] }
+          : undefined,
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88, 39, 61], seasons: [2024] });
+    expect(out.status).toBe('incomplete');
+    expect(h.fetchFn).toHaveBeenCalledTimes(6);
+    expect(out.targets.map((t) => [t.status, t.nextPage])).toEqual([
+      ['failed', 2],
+      ['failed', 2],
+      ['failed', 2],
+    ]);
+  });
+
+  it('still completes a league-season whose last page is short', async () => {
+    const h = harness({
+      respond: (req) => (req.page === 2 ? pageEnvelope(req.league, 2, 2, 1) : undefined),
+      totals: { '88:2024': 2 },
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(out.targets[0]).toMatchObject({ status: 'complete', pagesFetched: 2 });
+  });
+});
+
+describe('provider rate-limit reply', () => {
+  const rateLimited = {
+    get: 'players',
+    errors: { rateLimit: 'Too many requests. You have exceeded the limit of requests per minute.' },
+    results: 0,
+    paging: { current: 1, total: 1 },
+    response: [],
+  };
+
+  it('waits for the next minute before each retry', async () => {
+    let refusals = 1;
+    const h = harness({
+      totals: { '88:2024': 1 },
+      respond: () => {
+        if (refusals > 0) {
+          refusals -= 1;
+          return rateLimited;
+        }
+        return undefined;
+      },
+    });
+    // Start mid-minute so the wait is measurable.
+    h.advance(20_000);
+    const out = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(out.status).toBe('completed');
+    expect(h.fetchFn).toHaveBeenCalledTimes(2);
+    expect(out.callsUsed).toBe(2);
+    const [refused, retry] = h.fetchTimes;
+    expect(retry! - refused!).toBeGreaterThanOrEqual(40_000);
+    expect(Math.floor(retry! / MINUTE)).toBe(Math.floor(refused! / MINUTE) + 1);
+  });
+
+  it('stops as incomplete after three refused attempts, spending three calls', async () => {
+    const h = harness({ respond: () => rateLimited });
+    const out = await h.run({ mode: 'full', leagueIds: [88, 39], seasons: [2024] });
+    expect(out.status).toBe('incomplete');
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    const minutes = h.fetchTimes.map((t) => Math.floor(t / MINUTE));
+    expect(new Set(minutes).size).toBe(3);
+    expect(out.degradeFlags.some((f) => f.trigger === 'provider-rate-limited')).toBe(true);
+    expect(out.targets.map((t) => t.status)).toEqual(['not-started', 'not-started']);
+  });
+});
+
+describe('in-flight guard', () => {
+  it('reports a league-season another run holds as in-progress and fetches nothing for it', async () => {
+    const inFlight = new Set([enrichmentTargetKey('player-season-stats', 88, 2024)]);
+    const h = harness({ enrichment: { inFlight }, totals: { '39:2024': 1 } });
+    const out = await h.run({ mode: 'full', leagueIds: [88, 39], seasons: [2024] });
+    expect(h.urls.map((u) => parseUrl(u).league)).toEqual([39]);
+    expect(out.targets.map((t) => [t.leagueId, t.status])).toEqual([
+      [88, 'in-progress'],
+      [39, 'complete'],
+    ]);
+    expect(out.status).toBe('incomplete');
+    // The other run's hold is left alone; this run's own hold is released.
+    expect([...inFlight]).toEqual([enrichmentTargetKey('player-season-stats', 88, 2024)]);
+  });
+
+  it('keeps two overlapping runs off the same pages', async () => {
+    const inFlight = new Set<string>();
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    const h = harness({
+      enrichment: { inFlight },
+      totals: { '88:2024': 2 },
+      ingest: async (request) => {
+        calls += 1;
+        if (calls === 1) {
+          await gate;
+        }
+        return { acceptedCount: request.rows.length } as IngestBatchResponse;
+      },
+    });
+    const first = h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    await vi.waitFor(() => expect(calls).toBe(1));
+    const second = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(second.targets[0]?.status).toBe('in-progress');
+    expect(second.callsUsed).toBe(0);
+    release?.();
+    const done = await first;
+    expect(done.targets[0]?.status).toBe('complete');
+    expect(h.urls.map((u) => parseUrl(u).page)).toEqual([1, 2]);
+    expect(inFlight.size).toBe(0);
+  });
+
+  it('releases the hold when a page fails', async () => {
+    const inFlight = new Set<string>();
+    const h = harness({
+      enrichment: { inFlight },
+      ingest: async () => {
+        throw new Error('unimplemented');
+      },
+    });
+    const out = await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    expect(out.targets[0]?.status).toBe('failed');
+    expect(inFlight.size).toBe(0);
+  });
+});
+
 describe('batches', () => {
   it(`splits a page into ingest calls of at most ${ENRICHMENT_INGEST_BATCH_SIZE} rows`, async () => {
     const h = harness({
@@ -703,6 +910,19 @@ describe('target resolution (no season-end gate, verdict D15)', () => {
       targets: [{ leagueId: 88, season: 2026 }],
       unresolved: [253],
     });
+  });
+
+  it('full mode walks seasons latest first whatever the request order', () => {
+    expect(
+      resolveEnrichmentTargets(
+        { mode: 'full', leagueIds: [88], seasons: [2023, 2025, 2024] },
+        CATALOGUE
+      ).targets
+    ).toEqual([
+      { leagueId: 88, season: 2025 },
+      { leagueId: 88, season: 2024 },
+      { leagueId: 88, season: 2023 },
+    ]);
   });
 
   it('full mode uses exactly the requested leagues and seasons, de-duplicated', () => {

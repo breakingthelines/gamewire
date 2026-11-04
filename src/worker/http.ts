@@ -33,6 +33,7 @@ import {
   identityGapScanWorkflow,
   PROVIDER_ENRICHMENT_DATASETS,
   PROVIDER_ENRICHMENT_MODES,
+  PROVIDER_ENRICHMENT_MODE_ALIASES,
   providerEnrichmentToWire,
   providerEnrichmentWorkflow,
   STEADY_STATE_COMPETITIONS,
@@ -700,7 +701,8 @@ type ProviderEnrichmentParse =
 
 /**
  * Parse `/workflows/provider-enrichment`. `dataset` is required; `mode`
- * defaults to `nightly`. `full` requires non-empty `leagueIds` and `seasons`.
+ * defaults to `nightly`. The spec's `auto` and `dirty` (the K-2 schedule body)
+ * are accepted as `nightly`. `full` requires non-empty `leagueIds` and `seasons`.
  */
 export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentParse => {
   if (!isRecord(body)) {
@@ -713,7 +715,8 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   const mode: ProviderEnrichmentMode | undefined =
     body.mode === undefined
       ? 'nightly'
-      : PROVIDER_ENRICHMENT_MODES.find((name) => name === body.mode);
+      : (PROVIDER_ENRICHMENT_MODES.find((name) => name === body.mode) ??
+        (typeof body.mode === 'string' ? PROVIDER_ENRICHMENT_MODE_ALIASES[body.mode] : undefined));
   if (mode === undefined) {
     return { ok: false, reason: 'invalid_mode' };
   }

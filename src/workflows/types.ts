@@ -232,6 +232,12 @@ export interface ProviderEnrichmentDeps {
   readonly minuteCap?: number;
   /** Sleep used while waiting for the enrichment minute limiter. Tests inject a fake. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * League-seasons held by a running enrichment run. Defaults to one set per
+   * process, so overlapping runs never fetch the same league-season. Tests
+   * inject their own.
+   */
+  readonly inFlight?: Set<string>;
 }
 
 export interface WorkflowLogEntry {
@@ -999,6 +1005,9 @@ export interface CompetitionPayloadBackfillWireResult {
 export type ProviderEnrichmentDataset = 'player-season-stats';
 
 /**
+ * Modes after parsing. The wire also accepts the spec's `auto` and `dirty`,
+ * both as `nightly` (see `PROVIDER_ENRICHMENT_MODE_ALIASES`).
+ *
  * - `nightly`: refresh the current season. Leagues default to the catalogue's
  *   domestic leagues and each league's catalogue season, unless the request
  *   names `leagueIds` or `seasons`.
@@ -1042,8 +1051,16 @@ export interface ProviderEnrichmentTargetResult {
    * - `not-started`: the run stopped before reaching this target.
    * - `failed`: a page failed; the cursor still points at it.
    * - `planned`: dry run.
+   * - `in-progress`: another run in this process is working on it; nothing fetched.
    */
-  readonly status: 'complete' | 'partial' | 'fresh' | 'not-started' | 'failed' | 'planned';
+  readonly status:
+    | 'complete'
+    | 'partial'
+    | 'fresh'
+    | 'not-started'
+    | 'failed'
+    | 'planned'
+    | 'in-progress';
   /** Pages the provider reports for this league-season (0 until page 1 is read). */
   readonly pagesTotal: number;
   /** Next page to fetch. */

@@ -29,9 +29,14 @@
  *    "leagueIds":[39,40,41,42,61,71,78,88,94,135,140,144],
  *    "seasons":[2025,2024,2023],"limit":1500}
  *
- * Nightly current-season refresh:
+ * Nightly current-season refresh (the K-2 schedule's `mode: "auto"` and the
+ * spec's `"dirty"` are accepted as `nightly`):
  *
  *   {"dataset":"player-season-stats","mode":"nightly"}
+ *
+ * A 1,500-call run takes about 13 minutes at 120 a minute, so the K-2
+ * activity's StartToClose needs 15 minutes or more. A retry that lands while
+ * the first run is still going finds its league-seasons `in-progress`.
  */
 import { create } from '@bufbuild/protobuf';
 
@@ -70,6 +75,19 @@ export const PROVIDER_ENRICHMENT_DATASETS: readonly ProviderEnrichmentDataset[] 
 
 export const PROVIDER_ENRICHMENT_MODES: readonly ProviderEnrichmentMode[] = ['nightly', 'full'];
 
+/**
+ * Spec mode names accepted on the wire. The spec body is
+ * `mode: "auto"|"dirty"|"full"` and the K-2 schedule sends `mode: "auto"`.
+ * For player season stats both mean the current-season refresh: the spec's
+ * Monday "full" is a refresh of every catalogue league, which is what
+ * `nightly` already does each night, while `full` here is the history
+ * backfill and needs explicit `leagueIds` and `seasons`.
+ */
+export const PROVIDER_ENRICHMENT_MODE_ALIASES: Readonly<Record<string, ProviderEnrichmentMode>> = {
+  auto: 'nightly',
+  dirty: 'nightly',
+};
+
 /** Default provider calls per run: one nightly refresh of the domestic leagues fits. */
 export const DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN = 1_500;
 /** Upper bound on `limit`. The history backfill (about 3,500 calls) takes two or more runs. */
@@ -85,6 +103,22 @@ const RATE_LIMITED_ATTEMPTS = 3;
 const FAILURE_CIRCUIT_THRESHOLD = 3;
 /** Waits for the enrichment minute limiter before the run gives up. */
 const MAX_LIMITER_WAITS = 5;
+/** Margin past the minute boundary before retrying after a provider rate-limit reply. */
+const PROVIDER_RATE_LIMIT_MARGIN_MS = 1_000;
+
+/**
+ * League-seasons an enrichment run in this process is working on, keyed by
+ * {@link enrichmentTargetKey}. A second run (a Temporal retry after an
+ * activity timeout, or a manual run overlapping the nightly one) reports a
+ * held target as `in-progress` instead of fetching the same pages again.
+ */
+const PROCESS_IN_FLIGHT_TARGETS = new Set<string>();
+
+export const enrichmentTargetKey = (
+  dataset: ProviderEnrichmentDataset,
+  leagueId: number,
+  season: number
+): string => `${dataset}:${leagueId}:${season}`;
 
 /**
  * How long a completed or in-progress cursor counts. A nightly refresh redoes
@@ -142,9 +176,9 @@ export const resolveEnrichmentTargets = (
   const unresolved: number[] = [];
 
   if (input.mode === 'full') {
-    // Season-major order: every league for the latest named season first, so
-    // the most useful pools fill first if the run stops part way.
-    for (const season of seasons) {
+    // Season-major order, latest season first whatever order the request
+    // used, so the most useful pools fill first if the run stops part way.
+    for (const season of [...seasons].sort((a, b) => b - a)) {
       for (const leagueId of leagueIds) {
         targets.push({ leagueId, season });
       }
@@ -268,13 +302,16 @@ export const providerEnrichmentWorkflow = async (
       windowSeconds
     );
 
+  const inFlight = deps.enrichment?.inFlight ?? PROCESS_IN_FLIGHT_TARGETS;
+
   if (dryRun) {
     const planned: ProviderEnrichmentTargetResult[] = [];
     for (const target of targets) {
       const cursor = await readCursor(target);
+      const held = inFlight.has(enrichmentTargetKey(input.dataset, target.leagueId, target.season));
       planned.push({
         ...target,
-        status: cursor?.completedAtMs !== undefined ? 'fresh' : 'planned',
+        status: held ? 'in-progress' : cursor?.completedAtMs !== undefined ? 'fresh' : 'planned',
         pagesTotal: cursor?.totalPages ?? 0,
         nextPage: cursor?.nextPage ?? 1,
         pagesFetched: 0,
@@ -339,13 +376,20 @@ export const providerEnrichmentWorkflow = async (
       continue;
     }
 
-    const existing = await readCursor(target);
-    if (existing?.completedAtMs !== undefined) {
+    const targetKey = enrichmentTargetKey(input.dataset, target.leagueId, target.season);
+    if (inFlight.has(targetKey)) {
+      const cursor = await readCursor(target);
+      log({
+        event: 'provider_enrichment.target_in_progress',
+        leagueId: target.leagueId,
+        season: target.season,
+        reason: 'another run in this process holds this league-season',
+      });
       results.push({
         ...target,
-        status: 'fresh',
-        pagesTotal: existing.totalPages,
-        nextPage: existing.nextPage,
+        status: 'in-progress',
+        pagesTotal: cursor?.totalPages ?? 0,
+        nextPage: cursor?.nextPage ?? 1,
         pagesFetched: 0,
         rowsIngested: 0,
         rowsDropped: 0,
@@ -353,219 +397,257 @@ export const providerEnrichmentWorkflow = async (
       });
       continue;
     }
-
-    let cursor: EnrichmentCursor = existing ?? {
-      nextPage: 1,
-      totalPages: 0,
-      startedAtMs: nowMs,
-    };
-    let pagesFetched = 0;
-    let rowsIngested = 0;
-    let rowsDropped = 0;
-    const errors: string[] = [];
-    let targetStatus: ProviderEnrichmentTargetResult['status'] = 'partial';
-
-    pages: while (true) {
-      if (cursor.totalPages > 0 && cursor.nextPage > cursor.totalPages) {
-        cursor = { ...cursor, completedAtMs: clock().getTime() };
-        await writeCursor(target, cursor);
-        targetStatus = 'complete';
-        break;
-      }
-      if (cursor.nextPage > MAX_PAGES_PER_TARGET) {
-        errors.push(`page ${cursor.nextPage} is past the ${MAX_PAGES_PER_TARGET}-page guard`);
-        targetStatus = 'failed';
-        break;
-      }
-      if (callsUsed >= limit) {
-        stop = { status: 'incomplete', reason: `call limit ${limit} reached` };
-        break;
-      }
-
-      const page = cursor.nextPage;
-      let result: IngestionFetchResult | undefined;
-      for (let attempt = 1; attempt <= RATE_LIMITED_ATTEMPTS; attempt += 1) {
-        if (!(await acquireJobToken())) {
-          stop = { status: 'incomplete', reason: 'enrichment minute limiter stayed full' };
-          break pages;
-        }
-        result = await deps.ingestion.fetchWorkload({
-          workload: 'player-season-stats',
-          resourceId: `players-${target.leagueId}-${target.season}-${page}`,
-          path: apiFootballPlayerSeasonStatsPath(target.leagueId, target.season, page),
-          priority: WORKFLOW_PROVIDER_PRIORITY,
-          cache: 'bypass',
+    inFlight.add(targetKey);
+    try {
+      const existing = await readCursor(target);
+      if (existing?.completedAtMs !== undefined) {
+        results.push({
+          ...target,
+          status: 'fresh',
+          pagesTotal: existing.totalPages,
+          nextPage: existing.nextPage,
+          pagesFetched: 0,
+          rowsIngested: 0,
+          rowsDropped: 0,
+          errors: [],
         });
-        if (result.fetch !== undefined && result.status !== 'skipped') {
-          callsUsed += 1;
-        }
-        lastQuota = result.quota;
-        if (result.status !== 'rate_limited') {
+        continue;
+      }
+
+      let cursor: EnrichmentCursor = existing ?? {
+        nextPage: 1,
+        totalPages: 0,
+        startedAtMs: nowMs,
+      };
+      let pagesFetched = 0;
+      let rowsIngested = 0;
+      let rowsDropped = 0;
+      const errors: string[] = [];
+      let targetStatus: ProviderEnrichmentTargetResult['status'] = 'partial';
+
+      pages: while (true) {
+        if (cursor.totalPages > 0 && cursor.nextPage > cursor.totalPages) {
+          cursor = { ...cursor, completedAtMs: clock().getTime() };
+          await writeCursor(target, cursor);
+          targetStatus = 'complete';
           break;
         }
-        log({
-          event: 'provider_enrichment.rate_limited',
-          leagueId: target.leagueId,
-          season: target.season,
-          status: `page ${page} attempt ${attempt}`,
-          message: result.error?.message,
-        });
+        if (cursor.nextPage > MAX_PAGES_PER_TARGET) {
+          errors.push(`page ${cursor.nextPage} is past the ${MAX_PAGES_PER_TARGET}-page guard`);
+          targetStatus = 'failed';
+          break;
+        }
         if (callsUsed >= limit) {
+          stop = { status: 'incomplete', reason: `call limit ${limit} reached` };
           break;
         }
-      }
-      if (!result) {
-        break;
-      }
 
-      if (result.status === 'rate_limited') {
-        degradeFlags.push({
-          trigger: 'provider-rate-limited',
-          action: 'cached-only',
-          detail: result.error?.message,
-        });
-        stop = { status: 'incomplete', reason: 'provider minute limit' };
-        break;
-      }
-
-      if (result.status === 'denied') {
-        const posture = handleQuotaPosture(result.quota);
-        const flag = posture.flag ?? {
-          trigger: 'background-cap' as const,
-          action: 'cached-only' as const,
-          detail: result.error?.message,
-        };
-        degradeFlags.push(flag);
-        stop =
-          posture.action === 'abort'
-            ? { status: 'aborted', reason: 'provider hard cap reached' }
-            : { status: 'incomplete', reason: result.error?.message ?? 'quota denied the call' };
-        break;
-      }
-
-      if (result.status !== 'fetched' || result.data === undefined) {
-        const message = `page ${page}: ${result.status}${result.error ? ` ${result.error.message}` : ''}`;
-        errors.push(message);
-        log({
-          event: 'provider_enrichment.page_failed',
-          leagueId: target.leagueId,
-          season: target.season,
-          status: result.status,
-          message,
-        });
-        targetStatus = 'failed';
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
-          degradeFlags.push({
-            trigger: 'provider-5xx',
-            action: 'circuit-open',
-            detail: `${consecutiveFailures} pages failed in a row`,
+        const page = cursor.nextPage;
+        let result: IngestionFetchResult | undefined;
+        for (let attempt = 1; attempt <= RATE_LIMITED_ATTEMPTS; attempt += 1) {
+          if (!(await acquireJobToken())) {
+            stop = { status: 'incomplete', reason: 'enrichment minute limiter stayed full' };
+            break pages;
+          }
+          result = await deps.ingestion.fetchWorkload({
+            workload: 'player-season-stats',
+            resourceId: `players-${target.leagueId}-${target.season}-${page}`,
+            path: apiFootballPlayerSeasonStatsPath(target.leagueId, target.season, page),
+            priority: WORKFLOW_PROVIDER_PRIORITY,
+            cache: 'bypass',
           });
-          stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
+          if (result.fetch !== undefined && result.status !== 'skipped') {
+            callsUsed += 1;
+          }
+          lastQuota = result.quota;
+          if (result.status !== 'rate_limited') {
+            break;
+          }
+          log({
+            event: 'provider_enrichment.rate_limited',
+            leagueId: target.leagueId,
+            season: target.season,
+            status: `page ${page} attempt ${attempt}`,
+            message: result.error?.message,
+          });
+          if (callsUsed >= limit || attempt === RATE_LIMITED_ATTEMPTS) {
+            break;
+          }
+          if (result.fetch !== undefined) {
+            // The provider itself refused (HTTP 200 with errors.rateLimit). The
+            // local throttle already waited inside the ingestion loop; this
+            // reply did not, so wait for the provider's next minute before the
+            // retry rather than spend another call it will refuse.
+            const nowMsLocal = clock().getTime();
+            await sleep(60_000 - (nowMsLocal % 60_000) + PROVIDER_RATE_LIMIT_MARGIN_MS);
+          }
         }
-        break;
-      }
+        if (!result) {
+          break;
+        }
 
-      const fetchedAtMs = clock().getTime();
-      const decoded = decodePlayerSeasonStatsPage(result.data, {
-        leagueId: target.leagueId,
-        season: target.season,
-        fetchedAtMs,
-      });
-      pagesFetched += 1;
-      rowsDropped += decoded.dropped;
+        if (result.status === 'rate_limited') {
+          degradeFlags.push({
+            trigger: 'provider-rate-limited',
+            action: 'cached-only',
+            detail: result.error?.message,
+          });
+          stop = { status: 'incomplete', reason: 'provider minute limit' };
+          break;
+        }
 
-      if (decoded.providerErrors !== undefined && decoded.rows.length === 0) {
-        const message = `page ${page}: provider errors ${decoded.providerErrors}`;
-        errors.push(message);
-        log({
-          event: 'provider_enrichment.page_failed',
+        if (result.status === 'denied') {
+          const posture = handleQuotaPosture(result.quota);
+          const flag = posture.flag ?? {
+            trigger: 'background-cap' as const,
+            action: 'cached-only' as const,
+            detail: result.error?.message,
+          };
+          degradeFlags.push(flag);
+          stop =
+            posture.action === 'abort'
+              ? { status: 'aborted', reason: 'provider hard cap reached' }
+              : { status: 'incomplete', reason: result.error?.message ?? 'quota denied the call' };
+          break;
+        }
+
+        if (result.status !== 'fetched' || result.data === undefined) {
+          const message = `page ${page}: ${result.status}${result.error ? ` ${result.error.message}` : ''}`;
+          errors.push(message);
+          log({
+            event: 'provider_enrichment.page_failed',
+            leagueId: target.leagueId,
+            season: target.season,
+            status: result.status,
+            message,
+          });
+          targetStatus = 'failed';
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
+            degradeFlags.push({
+              trigger: 'provider-5xx',
+              action: 'circuit-open',
+              detail: `${consecutiveFailures} pages failed in a row`,
+            });
+            stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
+          }
+          break;
+        }
+
+        const fetchedAtMs = clock().getTime();
+        const decoded = decodePlayerSeasonStatsPage(result.data, {
           leagueId: target.leagueId,
           season: target.season,
-          status: 'provider_error',
-          message,
-        });
-        targetStatus = 'failed';
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
-          stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
-        }
-        break;
-      }
-
-      try {
-        rowsIngested += await ingestRows(ingest, decoded.rows, {
-          leagueId: target.leagueId,
-          season: target.season,
-          page,
           fetchedAtMs,
         });
-      } catch (error) {
-        const message = `page ${page}: ingest failed: ${error instanceof Error ? error.message : String(error)}`;
-        errors.push(message);
+        pagesFetched += 1;
+        rowsDropped += decoded.dropped;
+
+        // A later page with no `paging` block or `total: 0` keeps the total
+        // page 1 reported, so a malformed page cannot end the league-season.
+        const totalPages =
+          page > 1 && decoded.paging.total === 0 ? cursor.totalPages : decoded.paging.total;
+        // An empty page before the last one is a provider fault, not the end of
+        // the data: fail it so the cursor stays on it and the run retries it.
+        const emptyBeforeEnd = decoded.entries === 0 && page < totalPages;
+
+        if ((decoded.providerErrors !== undefined && decoded.rows.length === 0) || emptyBeforeEnd) {
+          const message =
+            decoded.providerErrors !== undefined
+              ? `page ${page}: provider errors ${decoded.providerErrors}`
+              : `page ${page}: empty response before page ${totalPages}`;
+          errors.push(message);
+          log({
+            event: 'provider_enrichment.page_failed',
+            leagueId: target.leagueId,
+            season: target.season,
+            status: 'provider_error',
+            message,
+          });
+          targetStatus = 'failed';
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
+            stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
+          }
+          break;
+        }
+
+        try {
+          rowsIngested += await ingestRows(ingest, decoded.rows, {
+            leagueId: target.leagueId,
+            season: target.season,
+            page,
+            fetchedAtMs,
+          });
+        } catch (error) {
+          const message = `page ${page}: ingest failed: ${error instanceof Error ? error.message : String(error)}`;
+          errors.push(message);
+          log({
+            event: 'provider_enrichment.ingest_failed',
+            leagueId: target.leagueId,
+            season: target.season,
+            message,
+          });
+          targetStatus = 'failed';
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
+            stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
+          }
+          break;
+        }
+        consecutiveFailures = 0;
+
+        // Page 1 sets the total; later pages may revise it upward or downward
+        // but never to 0 (handled above). A total of 0 on page 1 means the
+        // provider has nothing for this league-season.
+        cursor = { ...cursor, nextPage: page + 1, totalPages };
+        if (totalPages === 0 || page >= totalPages) {
+          cursor = { ...cursor, completedAtMs: clock().getTime() };
+          targetStatus = 'complete';
+        }
+        await writeCursor(target, cursor);
         log({
-          event: 'provider_enrichment.ingest_failed',
+          event: 'provider_enrichment.page',
           leagueId: target.leagueId,
           season: target.season,
-          message,
+          status: `page ${page}/${totalPages}`,
+          callsUsed,
+          rowsIngested: decoded.rows.length,
         });
-        targetStatus = 'failed';
-        consecutiveFailures += 1;
-        if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
-          stop = { status: 'aborted', reason: `${consecutiveFailures} pages failed in a row` };
+        if (targetStatus === 'complete') {
+          break;
         }
-        break;
-      }
-      consecutiveFailures = 0;
 
-      // Page 1 sets the total; later pages may revise it. A total of 0 means
-      // the provider has nothing for this league-season.
-      const totalPages = decoded.paging.total;
-      cursor = { ...cursor, nextPage: page + 1, totalPages };
-      if (totalPages === 0 || page >= totalPages) {
-        cursor = { ...cursor, completedAtMs: clock().getTime() };
-        targetStatus = 'complete';
+        const posture = handleQuotaPosture(result.quota);
+        if (posture.action !== 'continue') {
+          if (posture.flag) {
+            degradeFlags.push(posture.flag);
+          }
+          stop =
+            posture.action === 'abort'
+              ? { status: 'aborted', reason: 'provider hard cap reached' }
+              : { status: 'incomplete', reason: posture.flag?.detail ?? posture.action };
+          break;
+        }
       }
-      await writeCursor(target, cursor);
-      log({
-        event: 'provider_enrichment.page',
-        leagueId: target.leagueId,
-        season: target.season,
-        status: `page ${page}/${totalPages}`,
-        callsUsed,
-        rowsIngested: decoded.rows.length,
+
+      if (stop && targetStatus === 'partial' && pagesFetched === 0) {
+        // The run stopped before this league-season fetched anything.
+        targetStatus = 'not-started';
+      }
+      results.push({
+        ...target,
+        status: targetStatus,
+        pagesTotal: cursor.totalPages,
+        nextPage: cursor.nextPage,
+        pagesFetched,
+        rowsIngested,
+        rowsDropped,
+        errors,
       });
-      if (targetStatus === 'complete') {
-        break;
-      }
-
-      const posture = handleQuotaPosture(result.quota);
-      if (posture.action !== 'continue') {
-        if (posture.flag) {
-          degradeFlags.push(posture.flag);
-        }
-        stop =
-          posture.action === 'abort'
-            ? { status: 'aborted', reason: 'provider hard cap reached' }
-            : { status: 'incomplete', reason: posture.flag?.detail ?? posture.action };
-        break;
-      }
+    } finally {
+      inFlight.delete(targetKey);
     }
-
-    if (stop && targetStatus === 'partial' && pagesFetched === 0) {
-      // The run stopped before this league-season fetched anything.
-      targetStatus = 'not-started';
-    }
-    results.push({
-      ...target,
-      status: targetStatus,
-      pagesTotal: cursor.totalPages,
-      nextPage: cursor.nextPage,
-      pagesFetched,
-      rowsIngested,
-      rowsDropped,
-      errors,
-    });
   }
 
   if (stop) {

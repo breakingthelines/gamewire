@@ -115,13 +115,13 @@ describe('decodePlayerSeasonStatsPage', () => {
       red_cards: 1,
       substitute_in: 0,
       goals_conceded: 0,
-      passes_total: 1818,
+      passes: 1818,
       blocks: 29,
       interceptions: 27,
-      duels_total: 191,
+      duels: 191,
       duels_won: 121,
-      dribbles_attempts: 5,
-      dribbles_success: 4,
+      dribbles: 5,
+      dribbles_completed: 4,
       fouls_drawn: 11,
       fouls_committed: 19,
       penalties_scored: 0,
@@ -214,5 +214,29 @@ describe('decodePlayerSeasonStatsPage', () => {
 describe('playerSeasonValues', () => {
   it('ignores missing sections', () => {
     expect(playerSeasonValues({ games: { minutes: 90 } })).toEqual({ minutes: 90 });
+  });
+});
+
+describe('PLAYER_SEASON_STAT_KEYS contract', () => {
+  it('names extra keys after the PlayerMatchStats fields they share', () => {
+    const keys = new Set(PLAYER_SEASON_STAT_KEYS.map(([key]) => key));
+    for (const key of ['passes', 'duels', 'duels_won', 'dribbles', 'dribbles_completed']) {
+      expect(keys.has(key)).toBe(true);
+    }
+    for (const old of ['passes_total', 'duels_total', 'dribbles_attempts', 'dribbles_success']) {
+      expect(keys.has(old)).toBe(false);
+    }
+  });
+
+  it('matches the key table in the README', () => {
+    const readme = readFileSync(new URL('../../../README.md', import.meta.url), 'utf8');
+    const documented = new Map<string, string>();
+    for (const match of readme.matchAll(/\|\s*`([a-z_]+)`\s*\|\s*`([a-z]+\.[a-z]+)`/g)) {
+      documented.set(match[1]!, match[2]!);
+    }
+    expect(documented.size).toBe(PLAYER_SEASON_STAT_KEYS.length);
+    for (const [key, group, field] of PLAYER_SEASON_STAT_KEYS) {
+      expect(documented.get(key)).toBe(`${group}.${field}`);
+    }
   });
 });

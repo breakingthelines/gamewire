@@ -1148,7 +1148,8 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     it.each([
       [{}, 'unknown_dataset'],
       [{ dataset: 'odds' }, 'unknown_dataset'],
-      [{ dataset: 'player-season-stats', mode: 'auto' }, 'invalid_mode'],
+      [{ dataset: 'player-season-stats', mode: 'weekly' }, 'invalid_mode'],
+      [{ dataset: 'player-season-stats', mode: 7 }, 'invalid_mode'],
       [{ dataset: 'player-season-stats', mode: 'full' }, 'full_mode_needs_league_ids_and_seasons'],
       [
         { dataset: 'player-season-stats', mode: 'full', leagueIds: [39] },
@@ -1222,6 +1223,17 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
         })
       );
     });
+
+    it.each(['auto', 'dirty'])(
+      'accepts the K-2 schedule body with mode %s as nightly',
+      async (mode) => {
+        const response = await post({ dataset: 'player-season-stats', mode });
+        expect(response.status).toBe(200);
+        expect(await finalCompleted(response)).toMatchObject({
+          result: { mode: 'nightly', status: 'disabled' },
+        });
+      }
+    );
 
     it('accepts a nightly body with only the dataset', async () => {
       const response = await post({ dataset: 'player-season-stats' });
