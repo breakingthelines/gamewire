@@ -18,6 +18,15 @@ export type GamewireProviderMode = 'replay' | 'live';
 export interface GamewireWorkerConfig {
   port: number;
   gameServiceUrl: string;
+  /**
+   * `GAME_SERVICE_JOBS_URL`: the `game-service-profile-jobs` Deployment
+   * (`profile-spec.md` §3.4), which alone serves `IngestProviderFixtureResults`
+   * — the serving pods behind `gameServiceUrl` return `UNIMPLEMENTED`
+   * (PF-GW1 review finding #4). Defaults to a distinct in-mesh hostname so
+   * an unset env var fails fast against a real cluster rather than quietly
+   * routing to the serving pods.
+   */
+  gameServiceJobsUrl: string;
   identityServiceUrl: string;
   providerId: string;
   providerKind: string;
@@ -332,6 +341,7 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
   return {
     port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
     gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
+    gameServiceJobsUrl: env.GAME_SERVICE_JOBS_URL ?? 'http://game-service-profile-jobs:9090',
     identityServiceUrl: env.IDENTITY_SERVICE_URL ?? 'http://identity:9090',
     providerId: env.GAMEWIRE_PROVIDER_ID ?? 'api-football',
     providerKind: env.GAMEWIRE_PROVIDER_KIND ?? 'football',

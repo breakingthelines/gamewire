@@ -129,6 +129,55 @@ export type FootballGameBridgeClient = FootballGameLookupClient &
   FootballGameIngestClient &
   FootballGameMissingPayloadsClient;
 
+/**
+ * Narrow client boundary for `IngestProviderFixtureResults`, the one RPC
+ * PF-GW1 needs. `profile-spec.md` §3.4 serves this RPC ONLY from the
+ * `game-service-profile-jobs` Deployment — the regular serving pods return
+ * `UNIMPLEMENTED` — so this is wired from a transport pointed at that
+ * Deployment (`GAME_SERVICE_JOBS_URL`), separately from
+ * `FootballGameIngestClient`/`gameService`, which other workflows call
+ * against the serving pods.
+ */
+export interface GameServiceProfileJobsClient {
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
+}
+
+export interface FetchGameServiceProfileJobsClientOptions {
+  /** Base URL of the `game-service-profile-jobs` gRPC server. */
+  readonly baseUrl: string;
+  readonly timeoutMs?: number;
+  /** See {@link FetchFootballGameLookupClientOptions.interceptors}. */
+  readonly interceptors?: readonly Interceptor[];
+}
+
+/**
+ * Build a `GameServiceProfileJobsClient` backed by a real gRPC transport,
+ * pointed at the jobs-only Deployment. Bare, like
+ * {@link createFetchFootballGameLookupClient}: no client-side auth
+ * metadata is attached.
+ */
+export const createFetchGameServiceProfileJobsClient = (
+  options: FetchGameServiceProfileJobsClientOptions
+): GameServiceProfileJobsClient => {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
+  const interceptors = options.interceptors;
+  const transport = createGrpcTransport({
+    baseUrl: stripTrailingSlash(options.baseUrl),
+    ...(interceptors && interceptors.length > 0 ? { interceptors: [...interceptors] } : {}),
+  });
+  const client = createClient(GameService, transport);
+
+  return {
+    ingestProviderFixtureResults(
+      request: IngestProviderFixtureResultsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderFixtureResults(request, { timeoutMs });
+    },
+  };
+};
+
 export interface FetchFootballGameLookupClientOptions {
   /** Base URL of the game-service gRPC server, e.g. `http://game-service:50059`. */
   readonly baseUrl: string;

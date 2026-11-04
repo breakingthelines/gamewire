@@ -66,7 +66,8 @@ export type IngestionWorkload =
   | 'squad-list-fallback'
   | 'competition-standings'
   | 'competition-current-season'
-  | 'team-metadata';
+  | 'team-metadata'
+  | 'provider-fixture-results';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -113,6 +114,12 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // repeated fetch within a day to a single provider call per competition.
   'competition-current-season': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
+  // PF-GW1 (`workflows/provider-fixture-results.ts`): a league/season or
+  // league/date-range `/fixtures` list fetched only by that workflow, never
+  // by the steady-state loop (tick interval 0, below). A 24h TTL re-dedupes
+  // a same-day re-run (an operator retry, a kernel schedule firing twice)
+  // to a single provider call; it is never read back by the live tick.
+  'provider-fixture-results': 24 * 60 * 60,
 } as const;
 
 /**
@@ -170,6 +177,12 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   // stays available for direct fetchWorkload calls only.
   'competition-current-season': 0,
   'team-metadata': 6 * 60 * 60 * 1000,
+  // Not on the steady-state polling cron: PF-GW1 is invoked only via its own
+  // `/workflows/provider-fixture-results` endpoint (kernel-scheduled or
+  // ops one-shot), never by `enqueueTick`. A 0 interval keeps it off the
+  // loop; the workload identifier stays available for direct
+  // `fetchWorkload` calls only.
+  'provider-fixture-results': 0,
 } as const;
 
 /**
@@ -1287,6 +1300,15 @@ const BRIDGE_WORKLOADS: ReadonlySet<IngestionWorkload> = new Set([
   // upcoming (e.g. FIFA World Cup 2026 before its opener) never created any
   // canonical games. The bridge's list branch never publishes a
   // match-concluded fact — it only upserts the SCHEDULED game + crosswalk.
+  //
+  // `provider-fixture-results` is deliberately NOT a member of this set.
+  // PF-GW1 fetches reference-set leagues and seasons the catalogue does not
+  // cover (profile-spec.md §2.3, ADR-053): running its list payload through
+  // `ingestFixtureList` would mint canonical `games` rows and
+  // `provider_game_mappings` crosswalk entries for leagues/seasons BTL does
+  // not catalogue, which the spec forbids this workflow from ever doing.
+  // It must also stay out of the asset-mirror bridge for the same reason
+  // (both bridges are driven off this one set, see `#notifyFixtureFetched`).
   'fixtures-next-7d',
   'events-post-final',
   'lineups-post-confirm',
@@ -1419,6 +1441,12 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       return apiFootballLeaguePath(currentSeasonResourceLeagueId(resourceId));
     case 'team-metadata':
       return `/teams?id=${encodeURIComponent(resourceId)}`;
+    case 'provider-fixture-results':
+      // PF-GW1's workflow always passes an explicit `options.path`
+      // (`seasonFixturesPath`/`nightlyFixturesPath`), so this fallback is
+      // never reached in practice; it exists only so the switch stays
+      // exhaustive over `IngestionWorkload`.
+      return '/fixtures';
   }
 }
 

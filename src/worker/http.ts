@@ -12,6 +12,7 @@ import type {
   FootballGameIngestClient,
   FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
+  GameServiceProfileJobsClient,
 } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
@@ -285,6 +286,13 @@ export interface WorkerHttpHandlerOptions {
    */
   readonly gameService?: FootballGameIngestClient;
   /**
+   * game-service client used by the provider-fixture-results workflow's
+   * `IngestProviderFixtureResults` call. Wired separately from
+   * `gameService`: that RPC is served only by `game-service-profile-jobs`,
+   * never the serving pods `gameService` targets.
+   */
+  readonly gameServiceJobs?: GameServiceProfileJobsClient;
+  /**
    * Game-service lookup client used by the statsbomb-backfill workflow to
    * resolve a provider fixture id to the canonical BTL game id via
    * LookupGameByFixture.
@@ -447,6 +455,7 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
     logger: options.workflowLogger,
     gameServiceMissingPayloads: options.gameServiceMissingPayloads,
     gameService: options.gameService,
+    gameServiceJobs: options.gameServiceJobs,
     gameLookup: options.gameLookup,
     identity: options.identity,
   };
@@ -691,12 +700,26 @@ const parseProviderFixtureResultsMode = (
   return undefined;
 };
 
-const parseProviderFixtureResultsInput = (body: unknown): ProviderFixtureResultsInput => {
+/**
+ * PF-GW1 finding #2: a missing or unknown `mode` must be a `400`, not a
+ * silent fall-through to the workflow's own `'history'` default. PF-K1's
+ * kernel schedule posts this body every night; if kernel and gamewire ever
+ * disagree on the mode string, an unrecognised value must fail loudly here
+ * rather than quietly running the ~92-call history backfill (and, through
+ * finding #1, minting canonical games) on every scheduled fire.
+ */
+const parseProviderFixtureResultsInput = (
+  body: unknown
+): ProviderFixtureResultsInput | undefined => {
   if (!isRecord(body)) {
-    return {};
+    return undefined;
+  }
+  const mode = parseProviderFixtureResultsMode(body.mode);
+  if (mode === undefined) {
+    return undefined;
   }
   return {
-    mode: parseProviderFixtureResultsMode(body.mode),
+    mode,
     leagueIds: asNumberList(body.leagueIds),
     seasons: asNumberList(body.seasons),
     nightlyLeagueIds: asNumberList(body.nightlyLeagueIds),
@@ -952,6 +975,12 @@ export const handleWorkerRequest = async (
 
     if (request.pathname === '/workflows/provider-fixture-results') {
       const input = parseProviderFixtureResultsInput(request.body);
+      if (!input) {
+        return jsonResponse(400, {
+          status: 'bad_request',
+          reason: 'missing_or_invalid_mode',
+        });
+      }
       return streamingResponse(
         startWorkflowStream({
           workflow: workflowName,

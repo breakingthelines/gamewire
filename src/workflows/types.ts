@@ -17,6 +17,7 @@ import type {
   FootballGameIngestClient,
   FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
+  GameServiceProfileJobsClient,
 } from '../worker/clients/game-service.js';
 import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
@@ -177,6 +178,15 @@ export interface WorkflowDeps {
    * and provider-fetched, but not written to game-service).
    */
   readonly gameService?: FootballGameIngestClient;
+  /**
+   * game-service client used by {@link providerFixtureResultsWorkflow}'s
+   * `IngestProviderFixtureResults` call. Wired separately from
+   * {@link gameService}: `profile-spec.md` §3.4 serves this one RPC only
+   * from the `game-service-profile-jobs` Deployment, never the serving
+   * pods `gameService` targets. When unset, league/season cells with
+   * finished fixtures are reported `skipped` rather than silently dropped.
+   */
+  readonly gameServiceJobs?: GameServiceProfileJobsClient;
   /**
    * Identity-server lookup client used by {@link squadSweepWorkflow} to
    * resolve provider team ids to canonical btl_football_team_* ids before

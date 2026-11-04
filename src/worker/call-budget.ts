@@ -16,11 +16,15 @@
  * checked against the target load, not today's.
  *
  * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
- * `nightly` mode only (`date=yesterday` for reference-set leagues outside
- * the catalogue, ~11/day). Its one-time `history` backfill (~92 calls, the
- * 20-league reference set plus UEFA 2/3/848 across 2023-2026) is a single
- * run outside steady state, the same category as the Mega season-fill
- * history backfill (`mega-spec.md` §1.3) — not part of this per-day model.
+ * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
+ * outside the catalogue, ~11/day) as an unconditional (`planned: false`)
+ * line, not a planned one: it is built now, off by default behind
+ * `GAMEWIRE_PROVIDER_FIXTURE_RESULTS`, so `includePlanned: false` must
+ * still show this load once the flag is on. Its one-time `history` backfill
+ * (~92 calls, the 20-league reference set plus UEFA 2/3/848 across
+ * 2023-2026) is a single run outside steady state, the same category as
+ * the Mega season-fill history backfill (`mega-spec.md` §1.3) — not part
+ * of this per-day model.
  */
 
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
@@ -224,6 +228,20 @@ export function estimateCallBudget(
       peakMinute: 0,
       planned: false,
     },
+    {
+      // PF-GW1 is built now (gated by GAMEWIRE_PROVIDER_FIXTURE_RESULTS,
+      // off by default), not an unbuilt Mega dataset, so it belongs here
+      // rather than in `plannedLines()` — `includePlanned:false` must not
+      // hide real load once the flag flips on (finding #9).
+      workload: 'provider-fixture-results',
+      priority: 'background',
+      strategy:
+        'PF-GW1 nightly league=L&season=S&from/to for reference-set leagues outside the catalogue',
+      avgPerDay: 11,
+      peakDay: 11,
+      peakMinute: 0,
+      planned: false,
+    },
   ];
 
   if (a.includePlanned) {
@@ -380,11 +398,5 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     background('team-transfers', 60, 0, 'weekly'),
     background('trophies', 393, 0, 'weekly, a quarter partition per run'),
     background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
-    background(
-      'provider-fixture-results',
-      11,
-      11,
-      'PF-GW1 nightly date=yesterday for reference-set leagues outside the catalogue'
-    ),
   ];
 }

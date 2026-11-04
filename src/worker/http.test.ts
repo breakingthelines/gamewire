@@ -17,6 +17,7 @@ import type { CompetitionEntry } from '../workflows/index.js';
 const config: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
+  gameServiceJobsUrl: 'http://game-service-profile-jobs:9090',
   identityServiceUrl: 'http://identity:9090',
   providerId: 'api-football',
   providerKind: 'football',
@@ -1102,5 +1103,175 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(entry.event).toBe('workflow-auth-rejected');
     expect(entry.workflow).toBe('daily-anchor');
     expect(String(entry.reason)).toMatch(/^auth_context:/);
+  });
+
+  describe('provider-fixture-results (PF-GW1)', () => {
+    const enabledConfig: GamewireWorkerConfig = {
+      ...config,
+      providerFixtureResultsEnabled: true,
+    };
+
+    it('503s with feature_disabled when the kill switch is off (the default)', async () => {
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: { mode: 'nightly' },
+          rawBody: JSON.stringify({ mode: 'nightly' }),
+          headers: { 'btl-auth-context': token },
+        },
+        config,
+        {
+          ingestion: buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({
+        status: 'unavailable',
+        reason: 'feature_disabled',
+        feature: 'GAMEWIRE_PROVIDER_FIXTURE_RESULTS',
+      });
+    });
+
+    it('requires a valid btl-auth-context even when the kill switch is on', async () => {
+      const { verifier } = makeVerifier();
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: { mode: 'nightly' },
+          rawBody: JSON.stringify({ mode: 'nightly' }),
+          headers: {},
+        },
+        enabledConfig,
+        {
+          ingestion: buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(401);
+    });
+
+    it('returns 400 missing_or_invalid_mode when mode is missing', async () => {
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: {},
+          rawBody: '{}',
+          headers: { 'btl-auth-context': token },
+        },
+        enabledConfig,
+        {
+          ingestion: buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({
+        status: 'bad_request',
+        reason: 'missing_or_invalid_mode',
+      });
+    });
+
+    it("returns 400 missing_or_invalid_mode for PF-K1's unrecognised 'nightly-refresh' string", async () => {
+      // Finding #2: kernel-service's schedule (PF-K1) posts
+      // {"mode":"nightly-refresh"}, which this endpoint does not accept.
+      // An unrecognised mode must 400, not silently fall through to the
+      // ~92-call `history` default on a scheduled, unattended endpoint.
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: { mode: 'nightly-refresh' },
+          rawBody: JSON.stringify({ mode: 'nightly-refresh' }),
+          headers: { 'btl-auth-context': token },
+        },
+        enabledConfig,
+        {
+          ingestion: buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({
+        status: 'bad_request',
+        reason: 'missing_or_invalid_mode',
+      });
+    });
+
+    it('runs provider-fixture-results end to end when the kill switch is on and mode is valid', async () => {
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: { mode: 'nightly', nightlyLeagueIds: [88] },
+          rawBody: JSON.stringify({ mode: 'nightly', nightlyLeagueIds: [88] }),
+          headers: { 'btl-auth-context': token },
+        },
+        enabledConfig,
+        {
+          ingestion: buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(200);
+      const completed = await finalCompleted(response);
+      expect(completed).toMatchObject({
+        event: 'completed',
+        workflow: 'provider-fixture-results',
+        status: 'ok',
+      });
+      const result = completed.result as Record<string, unknown> | undefined;
+      expect(result).toMatchObject({ mode: 'nightly' });
+    });
+
+    it('runs history mode and never calls fetchWorkload with the fixtures-next-7d workload', async () => {
+      // Finding #1, at the HTTP boundary: whatever mode is requested, the
+      // workload passed to the ingestion loop must never be
+      // 'fixtures-next-7d' (which would run the match-concluded +
+      // asset-mirror bridges).
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const ingestion = buildIngestion();
+      const response = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-fixture-results',
+          body: { mode: 'history', leagueIds: [39], seasons: [2026] },
+          rawBody: JSON.stringify({ mode: 'history', leagueIds: [39], seasons: [2026] }),
+          headers: { 'btl-auth-context': token },
+        },
+        enabledConfig,
+        {
+          ingestion,
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+        }
+      );
+      expect(response.status).toBe(200);
+      await finalCompleted(response);
+      const fetchWorkload = ingestion.fetchWorkload as unknown as {
+        mock: { calls: readonly [IngestionFetchOptions][] };
+      };
+      expect(fetchWorkload.mock.calls.length).toBeGreaterThan(0);
+      for (const [options] of fetchWorkload.mock.calls) {
+        expect(options.workload).toBe('provider-fixture-results');
+      }
+    });
   });
 });

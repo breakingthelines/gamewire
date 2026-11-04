@@ -5,11 +5,17 @@
  * pi-ratings, `profile-spec.md` §2.3, ADR-053 "League strength and
  * adjustment") with finished fixture results for seasons and leagues the
  * `games` table does not hold. It never creates a game — rows land in
- * `provider_fixture_results`, a table outside the games/occurrences graph —
- * and it never writes national teams or friendlies (`profile-spec.md` §2.3
- * step 1, ADR-053).
+ * `provider_fixture_results`, a table outside the games/occurrences graph,
+ * via its own `provider-fixture-results` ingestion workload (never
+ * `fixtures-next-7d`, which the match-concluded + asset-mirror bridges
+ * would otherwise run against) — and it never writes national teams or
+ * friendlies (`profile-spec.md` §2.3 step 1, ADR-053; enforced by an
+ * ALLOWLIST of reference-set + UEFA league ids, not a denylist).
  *
- * Two modes, selected by `input.mode` (default `history`):
+ * Two modes, selected by `input.mode` with no default — the HTTP layer
+ * (`worker/http.ts`) rejects a request with a missing or unknown `mode` as
+ * `400`, rather than silently defaulting a scheduled endpoint to the far
+ * more expensive `history` run:
  *
  *   - `history`: a one-time backfill over an explicit (or default) league x
  *     season grid, one `/fixtures?league=L&season=S` call per cell. The
@@ -18,7 +24,9 @@
  *     that link it ({@link REFERENCE_UEFA_LEAGUE_IDS}), across
  *     {@link REFERENCE_SEASONS} (2023-2026) — 23 x 4 = 92 calls, matching
  *     the spec's sizing (`profile-spec.md` §7.1, unit PF-GW1).
- *   - `nightly`: `/fixtures?league=L&date=yesterday` for reference-set
+ *   - `nightly`: `/fixtures?league=L&season=S&from=<D-3>&to=<D-1>` (API-
+ *     Football's `date` filter needs a literal `YYYY-MM-DD`, not the string
+ *     `"yesterday"` — see {@link nightlyFixturesPath}) for reference-set
  *     leagues that are NOT in `deps.competitions` today, so their current
  *     season's results never land in `games` through any other path.
  *     Computed fresh every run against the live catalogue
@@ -32,6 +40,11 @@
  * every other workflow uses (`deps.ingestion.fetchWorkload`), so the GW-1
  * limiter, the background daily cap, and the degrade postures all apply
  * unchanged.
+ *
+ * The ingest RPC (`deps.gameServiceJobs.ingestProviderFixtureResults`) is
+ * served only by the `game-service-profile-jobs` Deployment
+ * (`profile-spec.md` §3.4); it is wired separately from `deps.gameService`,
+ * which other workflows call against the serving pods.
  *
  * Idempotency. Rows are keyed server-side by `(provider_code,
  * provider_fixture_id)` (an upsert, per `IngestProviderFixtureResultsRequest`'s
@@ -91,13 +104,19 @@ export const REFERENCE_UEFA_LEAGUE_IDS: readonly number[] = [2, 3, 848];
 export const REFERENCE_SEASONS: readonly number[] = [2023, 2024, 2025, 2026];
 
 /**
- * Never written, under any input, history or nightly: UEFA Nations League
- * and International Friendlies (the Mega GW-5 ids, `mega-spec.md` GW-5).
- * Defence in depth on top of the reference lists above never naming a
- * national-team or friendlies id in the first place — a caller cannot
- * smuggle one through `leagueIds`/`nightlyLeagueIds`.
+ * Every league id `leagueIds`/`nightlyLeagueIds` may name: the reference
+ * set plus the UEFA cross-link ids. This is an ALLOWLIST, not a denylist —
+ * a two-item denylist (formerly just UEFA Nations League 5 and
+ * International Friendlies 10) let any other national-team competition
+ * (World Cup 1, WC qualifiers 29-34, Euro 4, Copa América 9, ...) through
+ * an override untouched. `profile-spec.md` §2.3 requires an explicit
+ * rated-competition list; anything not in it is dropped regardless of
+ * where it came from (an explicit override or a default).
  */
-const EXCLUDED_LEAGUE_IDS: ReadonlySet<number> = new Set([5, 10]);
+const ALLOWED_LEAGUE_IDS: ReadonlySet<number> = new Set([
+  ...REFERENCE_LEAGUE_IDS,
+  ...REFERENCE_UEFA_LEAGUE_IDS,
+]);
 
 /** Per-run provider-call ceiling. The default grid is 92 calls; this leaves generous headroom for an operator override without risking the shared daily budget. */
 export const DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS = 200;
@@ -117,8 +136,43 @@ const STATUS_TO_PROTO: Readonly<Record<string, ProviderFixtureResultStatus>> = {
 const seasonFixturesPath = (leagueId: number, season: number): string =>
   `/fixtures?league=${leagueId}&season=${season}`;
 
-const yesterdayFixturesPath = (leagueId: number): string =>
-  `/fixtures?league=${leagueId}&date=yesterday`;
+/**
+ * European-season convention (`pdata/leaguerate.py`, `REFERENCE_SEASONS`):
+ * a season starting in July runs July-June and is labelled by its start
+ * year. `now`'s UTC month decides which labelled season "yesterday" falls
+ * in — this only matters in the handful of days either side of the
+ * July rollover.
+ */
+const seasonYearForDate = (now: Date): number => {
+  const year = now.getUTCFullYear();
+  const month = now.getUTCMonth(); // 0-indexed; 6 = July
+  return month >= 6 ? year : year - 1;
+};
+
+const isoDate = (date: Date): string => date.toISOString().slice(0, 10);
+
+const addUtcDays = (date: Date, days: number): Date =>
+  new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+
+/**
+ * `nightly` mode's fixture path (finding PF-GW1 #3). API-Football's
+ * `date` filter takes a literal `YYYY-MM-DD`, not the string `"yesterday"`
+ * — the old `date=yesterday` call always returned an `errors` envelope
+ * with an empty `response`, so every nightly run silently ingested 0 rows
+ * while still reporting `ok`.
+ *
+ * `league=L&season=S&from=<D-3>&to=<D-1>` instead: still one call, an
+ * idempotent upsert on the ingest side, and — unlike a single day — it
+ * recovers a result missed by an outage, a late settlement, or a skipped
+ * night, rather than losing it for good. `season` is passed explicitly
+ * (whether `league` is accepted without it is unverified).
+ */
+const nightlyFixturesPath = (leagueId: number, now: Date): string => {
+  const season = seasonYearForDate(now);
+  const from = isoDate(addUtcDays(now, -3));
+  const to = isoDate(addUtcDays(now, -1));
+  return `/fixtures?league=${leagueId}&season=${season}&from=${from}&to=${to}`;
+};
 
 export const providerFixtureResultsWorkflow = async (
   input: ProviderFixtureResultsInput,
@@ -183,7 +237,7 @@ export const providerFixtureResultsWorkflow = async (
       continue;
     }
 
-    const result = await runTarget({ target, mode, deps, budget, log });
+    const result = await runTarget({ target, mode, deps, budget, log, now: startedAt });
     leagues.push(result.summary);
     callsBudgeted += result.summary.callsBudgeted;
     callsUsed += result.summary.callsUsed;
@@ -204,9 +258,12 @@ export const providerFixtureResultsWorkflow = async (
   }
 
   const finishedAt = clock();
-  const status: ProviderFixtureResultsOutput['status'] = leagues.every(
-    (l) => l.status !== 'skipped'
-  )
+  // Finding PF-GW1 #5: a target's `status: 'failed'` (ingest rejected,
+  // UNIMPLEMENTED, no provider envelope) used to leave the overall status
+  // `complete` — only `skipped` (budget exhaustion) downgraded it. A
+  // nightly run that failed every league could pass the "3 nights green"
+  // gate with nothing written.
+  const status: ProviderFixtureResultsOutput['status'] = leagues.every((l) => l.status === 'ok')
     ? 'complete'
     : 'incomplete';
 
@@ -290,9 +347,10 @@ const resolveNightlyTargets = (
 /**
  * Reference-set domestic leagues with no catalogue entry at all — their
  * current season's finished fixtures never land in `games` through any
- * other path, so the nightly `date=yesterday` pull is the only source for
- * them. Self-correcting: a league the catalogue later adds (Mega's GW-5)
- * drops out the next time this runs, with no change needed here.
+ * other path, so the nightly {@link nightlyFixturesPath} pull is the only
+ * source for them. Self-correcting: a league the catalogue later adds
+ * (Mega's GW-5) drops out the next time this runs, with no change needed
+ * here.
  */
 export const resolveNightlyLeagueIds = (
   competitions: readonly CompetitionEntry[]
@@ -305,7 +363,7 @@ const dedupeLeagueIds = (ids: readonly number[]): readonly number[] => {
   const seen = new Set<number>();
   const out: number[] = [];
   for (const id of ids) {
-    if (!Number.isInteger(id) || id <= 0 || EXCLUDED_LEAGUE_IDS.has(id) || seen.has(id)) {
+    if (!Number.isInteger(id) || id <= 0 || !ALLOWED_LEAGUE_IDS.has(id) || seen.has(id)) {
       continue;
     }
     seen.add(id);
@@ -324,6 +382,8 @@ interface RunTargetArgs {
   readonly deps: WorkflowDeps;
   readonly budget: RunBudget;
   readonly log: NonNullable<WorkflowDeps['logger']>;
+  /** The run's own "now", used for `nightly`'s date window. */
+  readonly now: Date;
 }
 
 interface RunTargetOutcome {
@@ -334,7 +394,7 @@ interface RunTargetOutcome {
 }
 
 const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
-  const { target, mode, deps, budget, log } = args;
+  const { target, mode, deps, budget, log, now } = args;
   const flags: DegradeFlag[] = [];
   const errors: string[] = [];
   let callsBudgeted = 0;
@@ -344,15 +404,22 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
   const path =
     mode === 'history' && target.season !== undefined
       ? seasonFixturesPath(target.leagueId, target.season)
-      : yesterdayFixturesPath(target.leagueId);
+      : nightlyFixturesPath(target.leagueId, now);
   const resourceId =
     mode === 'history'
       ? `provider-fixture-results-${target.leagueId}-${target.season}`
       : `provider-fixture-results-nightly-${target.leagueId}`;
 
+  // PF-GW1 finding #1: this must NEVER be 'fixtures-next-7d'. That workload
+  // is a member of `ingestion.ts`'s BRIDGE_WORKLOADS, so every list payload
+  // would be re-run through the match-concluded bridge's `ingestFixtureList`
+  // (minting canonical `games` rows + crosswalk entries for leagues/seasons
+  // the catalogue does not cover — the spec's "never creates a game") and
+  // through the asset-mirror bridge. `provider-fixture-results` is its own
+  // workload, deliberately excluded from both.
   const result = await deps.ingestion.fetchWorkload({
     priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: 'fixtures-next-7d',
+    workload: 'provider-fixture-results',
     resourceId,
     path,
   });
@@ -401,7 +468,12 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
     };
   }
 
-  const rows = fixtureResultRowsFromEnvelope(result.data, target.leagueId);
+  // PF-GW1 finding #8: `deps.clock`, not `Date.now()` — a cache hit must not
+  // stamp "now" as the fetch time. `result` carries no fetch-time field of
+  // its own, so this is the closest available proxy (the run's clock), and
+  // it is deterministic under test fakes.
+  const fetchedAtMs = deps.clock ? deps.clock().getTime() : Date.now();
+  const rows = fixtureResultRowsFromEnvelope(result.data, target.leagueId, fetchedAtMs);
 
   log({
     event: 'provider_fixture_results.league_fetched',
@@ -412,17 +484,24 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
   });
 
   if (rows.length === 0) {
+    // A genuinely empty `{response: []}` (no finished fixtures yet) is
+    // `ok`. A missing envelope under a degrade action (`cached-only` with
+    // no prior cache to fall back to, under a soft cap or a provider
+    // outage) is NOT the same as "nothing to report" — finding PF-GW1 #5:
+    // a provider outage used to report 0 rows and `ok`, so a nightly run
+    // that wrote nothing could still pass the P2 "green 3 nights" gate.
+    const noEnvelope = result.data === undefined && action !== 'continue';
     return {
       summary: {
         leagueId: target.leagueId,
         season: target.season,
-        status: 'ok',
+        status: noEnvelope ? 'failed' : 'ok',
         fixturesFound: 0,
         rowsAccepted: 0,
         rowsSkipped: 0,
         callsBudgeted,
         callsUsed,
-        errors,
+        errors: noEnvelope ? [...errors, 'no_envelope_from_provider'] : errors,
       },
       flags,
       action,
@@ -430,7 +509,12 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
     };
   }
 
-  if (!deps.gameService) {
+  // PF-GW1 finding #4: `IngestProviderFixtureResults` is served only by
+  // `game-service-profile-jobs` (`profile-spec.md` §3.4); serving pods
+  // return UNIMPLEMENTED. `deps.gameServiceJobs` is wired from a client
+  // pointed at that Deployment, separately from `deps.gameService` (which
+  // squad-sweep and friends use against the serving pods).
+  if (!deps.gameServiceJobs) {
     return {
       summary: {
         leagueId: target.leagueId,
@@ -441,7 +525,7 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
         rowsSkipped: rows.length,
         callsBudgeted,
         callsUsed,
-        errors: [...errors, 'game_service_not_wired'],
+        errors: [...errors, 'game_service_jobs_not_wired'],
       },
       flags,
       action,
@@ -451,7 +535,6 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
 
   let rowsAccepted = 0;
   let rowsSkipped = 0;
-  const fetchedAtMs = deps.clock ? deps.clock().getTime() : Date.now();
   for (const chunk of chunkRows(rows, MAX_ROWS_PER_INGEST_BATCH)) {
     const resourceLabel =
       mode === 'history' ? `${target.leagueId}-${target.season}` : `nightly-${target.leagueId}`;
@@ -467,7 +550,7 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
       rows: chunk,
     });
     try {
-      const response = await deps.gameService.ingestProviderFixtureResults(request);
+      const response = await deps.gameServiceJobs.ingestProviderFixtureResults(request);
       rowsAccepted += response.acceptedCount + response.updatedCount;
       rowsSkipped += response.skippedCount;
     } catch (err) {
@@ -510,11 +593,15 @@ const chunkRows = <T>(rows: readonly T[], size: number): T[][] => {
  * scoreline are kept — everything else (scheduled, postponed, cancelled,
  * walkover/awarded with no real scoreline) has nothing a league-strength
  * model should score. `leagueId` is the request's own league id, used as a
- * fallback when an item's `league.id` is missing.
+ * fallback when an item's `league.id` is missing. `fetchedAtMs` stamps
+ * every row's `fetchedAt` (finding PF-GW1 #8) — it must be the run's own
+ * clock, not `Date.now()`, so a cache hit does not claim "fetched now".
+ * Defaults to `Date.now()` only so direct callers (tests) need not pass it.
  */
 export const fixtureResultRowsFromEnvelope = (
   data: unknown,
-  leagueId: number
+  leagueId: number,
+  fetchedAtMs: number = Date.now()
 ): ReturnType<typeof create<typeof ProviderFixtureResultRowSchema>>[] => {
   if (!isRecord(data) || !Array.isArray(data.response)) {
     return [];
@@ -571,7 +658,7 @@ export const fixtureResultRowsFromEnvelope = (
         homeGoals,
         awayGoals,
         status: STATUS_TO_PROTO[status] ?? ProviderFixtureResultStatus.UNSPECIFIED,
-        fetchedAt: create(TimestampSchema, timestampFromMs(Date.now())),
+        fetchedAt: create(TimestampSchema, timestampFromMs(fetchedAtMs)),
       })
     );
   }
@@ -645,5 +732,5 @@ export const __test = {
   resolveNightlyTargets,
   dedupeLeagueIds,
   fixtureResultRowsFromEnvelope,
-  EXCLUDED_LEAGUE_IDS,
+  ALLOWED_LEAGUE_IDS,
 };

@@ -19,6 +19,7 @@ import { Singleflight } from './singleflight.js';
 const baseConfig: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
+  gameServiceJobsUrl: 'http://game-service-profile-jobs:9090',
   identityServiceUrl: 'http://identity:9090',
   providerId: 'api-football',
   providerKind: 'football',
@@ -85,6 +86,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'competition-standings': 6 * 60 * 60,
       'competition-current-season': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
+      'provider-fixture-results': 24 * 60 * 60,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Match-stats workloads have no standalone cron tick: they ride the live
@@ -101,6 +103,41 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     // never on the steady-state cron — a 0 interval keeps `enqueueTick` from
     // scheduling a standalone poll.
     expect(INGESTION_TICK_INTERVAL_MS['competition-current-season']).toBe(0);
+    // PF-GW1 is invoked only via its own /workflows/provider-fixture-results
+    // endpoint, never the steady-state cron.
+    expect(INGESTION_TICK_INTERVAL_MS['provider-fixture-results']).toBe(0);
+  });
+
+  it("never notifies onFixtureFetched for the 'provider-fixture-results' workload (PF-GW1 finding #1)", async () => {
+    // 'fixtures-next-7d' is a BRIDGE_WORKLOADS member, so using it for
+    // PF-GW1 would run the match-concluded bridge's ingestFixtureList
+    // (minting canonical games + crosswalk rows for leagues/seasons
+    // outside the catalogue) and the asset-mirror bridge, on every call.
+    // 'provider-fixture-results' is its own workload, deliberately absent
+    // from BRIDGE_WORKLOADS, so the bridge callback must never fire for it.
+    const fetchFn = buildFetchMock({
+      response: [{ fixture: { id: 1 }, league: { id: 39, season: 2026 }, teams: {}, goals: {} }],
+    });
+    const onFixtureFetched = vi.fn();
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+      onFixtureFetched,
+    });
+
+    const result = await loop.fetchWorkload({
+      priority: 'background',
+      workload: 'provider-fixture-results',
+      resourceId: 'provider-fixture-results-39-2026',
+      path: '/fixtures?league=39&season=2026',
+    });
+
+    expect(result.status).toBe('fetched');
+    // Give the fire-and-forget bridge notification a tick to run, if it
+    // were going to run at all.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onFixtureFetched).not.toHaveBeenCalled();
   });
 
   it('fetches once on miss and caches under provider:workload:resource', async () => {
