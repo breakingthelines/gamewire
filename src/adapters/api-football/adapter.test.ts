@@ -1,3 +1,6 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { toBinary } from '@bufbuild/protobuf';
 import { describe, expect, it } from 'vitest';
 
@@ -29,7 +32,6 @@ import {
   apiFootballIngestSquadListRequestFromSquads,
   apiFootballIngestStandingsRequestFromStandings,
   apiFootballIngestTeamMatchStatsRequestFromStatistics,
-  apiFootballLivePath,
   apiFootballStandingPath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
@@ -77,7 +79,6 @@ describe('API-Football adapter', () => {
     ]);
     expect(apiFootballFixtureSyncPaths()).toHaveLength(27);
     expect(apiFootballStandingSyncPaths()).toHaveLength(27);
-    expect(apiFootballLivePath()).toBe('/fixtures?live=all');
     expect(apiFootballStatusPath()).toBe('/status');
     expect(apiFootballSquadPath('10379')).toBe('/players/squads?team=10379');
   });
@@ -1412,5 +1413,37 @@ describe('API-Football current-season mapping', () => {
     });
     expect(request.seasons[0]!.startsOn).toBeUndefined();
     expect(request.seasons[0]!.endsOn).toBeUndefined();
+  });
+});
+
+describe('dead live-fixtures path removal (GW-3)', () => {
+  it('leaves no fixtures?live=all path builder anywhere in src/', () => {
+    const srcRoot = join(import.meta.dirname, '..', '..');
+    const selfPath = join(import.meta.dirname, 'adapter.test.ts');
+    const liveQuery = ['fixtures?live', '=all'].join('');
+    const liveFnName = ['apiFootball', 'LivePath'].join('');
+    const offenders: string[] = [];
+
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir)) {
+        const fullPath = join(dir, entry);
+        const stat = statSync(fullPath);
+        if (stat.isDirectory()) {
+          walk(fullPath);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry) || fullPath === selfPath) {
+          continue;
+        }
+        const contents = readFileSync(fullPath, 'utf8');
+        if (contents.includes(liveQuery) || contents.includes(liveFnName)) {
+          offenders.push(fullPath);
+        }
+      }
+    };
+
+    walk(srcRoot);
+
+    expect(offenders).toEqual([]);
   });
 });

@@ -3,7 +3,6 @@ import {
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
-  apiFootballLivePath,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
 } from '../adapters/api-football/index.js';
@@ -65,7 +64,6 @@ const cacheTtlByWorkload: Record<string, number> = {
   lineup: 60 * 60,
   occurrences: 60 * 60,
   standings: 6 * 60 * 60,
-  live: 15,
   status: 60,
 };
 
@@ -136,8 +134,6 @@ function apiFootballPathFor(workload: string, resourceId: string): string {
       return apiFootballEventPath(resourceId);
     case 'standings':
       return apiFootballStandingSyncPaths()[0] ?? '/standings';
-    case 'live':
-      return apiFootballLivePath();
     case 'status':
       return apiFootballStatusPath();
     default:
@@ -162,8 +158,6 @@ function relatedPathsFor(
       return [apiFootballLineupPath(resourceId)];
     case 'occurrences':
       return [apiFootballEventPath(resourceId)];
-    case 'live':
-      return [apiFootballLivePath()];
     case 'status':
       return [apiFootballStatusPath()];
     default:

@@ -58,8 +58,7 @@ export type IngestionWorkload =
   | 'squad-list-fallback'
   | 'competition-standings'
   | 'competition-current-season'
-  | 'team-metadata'
-  | 'player-metadata';
+  | 'team-metadata';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -106,7 +105,6 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // repeated fetch within a day to a single provider call per competition.
   'competition-current-season': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
-  'player-metadata': 24 * 60 * 60,
 } as const;
 
 /**
@@ -164,7 +162,6 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   // stays available for direct fetchWorkload calls only.
   'competition-current-season': 0,
   'team-metadata': 6 * 60 * 60 * 1000,
-  'player-metadata': 6 * 60 * 60 * 1000,
 } as const;
 
 export interface IngestionFetchOptions {
@@ -229,7 +226,6 @@ export interface IngestionLoopStartOptions {
   /** One-shot fixture ids to fetch during an immediate boot tick. */
   readonly bootstrapFixtureIds?: readonly string[];
   readonly teamIds?: readonly string[];
-  readonly playerIds?: readonly string[];
   /** Run one tick immediately on start, then continue on the normal intervals. */
   readonly runImmediately?: boolean;
   /** Override ms intervals for tests. */
@@ -853,21 +849,6 @@ export class ApiFootballIngestionLoop {
       });
     }
 
-    const playerIds = options.playerIds ?? [];
-    if (playerIds.length > 0) {
-      enqueueTick('player-metadata', async () => {
-        await Promise.allSettled(
-          playerIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'player-metadata',
-              resourceId: id,
-              path: `/players?id=${encodeURIComponent(id)}`,
-            })
-          )
-        );
-      });
-    }
-
     this.#timers.push(...stopHandles);
 
     // Resilience: ALWAYS re-establish the in-flight fixture set at boot. The
@@ -1102,8 +1083,6 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       return apiFootballLeaguePath(currentSeasonResourceLeagueId(resourceId));
     case 'team-metadata':
       return `/teams?id=${encodeURIComponent(resourceId)}`;
-    case 'player-metadata':
-      return `/players?id=${encodeURIComponent(resourceId)}`;
   }
 }
 

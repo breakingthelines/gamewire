@@ -84,7 +84,6 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'competition-standings': 6 * 60 * 60,
       'competition-current-season': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
-      'player-metadata': 24 * 60 * 60,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Match-stats workloads have no standalone cron tick: they ride the live
@@ -419,7 +418,6 @@ describe('ApiFootballIngestionLoop.start', () => {
     const stop = loop.start({
       fixtureIds: ['1', '2'],
       teamIds: ['t1'],
-      playerIds: ['p1'],
       intervals: {
         'fixtures-next-7d': 1_000,
         'fixture-detail-preKO': 1_000,
@@ -428,16 +426,15 @@ describe('ApiFootballIngestionLoop.start', () => {
         'events-post-final': 1_000,
         'lineups-post-confirm': 1_000,
         'team-metadata': 1_000,
-        'player-metadata': 1_000,
       },
       schedule,
       cancel,
     });
 
-    // 1 fixtures-next-7d + 5 dynamic fixture workloads + 1 team + 1 player = 8
-    expect(schedule).toHaveBeenCalledTimes(8);
+    // 1 fixtures-next-7d + 5 dynamic fixture workloads + 1 team = 7
+    expect(schedule).toHaveBeenCalledTimes(7);
     stop();
-    expect(cancel).toHaveBeenCalledTimes(8);
+    expect(cancel).toHaveBeenCalledTimes(7);
     expect(cancel.mock.calls.map((args) => args[0])).toEqual(handles);
   });
 
