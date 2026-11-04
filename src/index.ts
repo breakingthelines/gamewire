@@ -21,7 +21,6 @@ export {
   apiFootballFixturePath,
   apiFootballFixtureSyncPaths,
   apiFootballLineupPath,
-  apiFootballLivePath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
   apiFootballReplayLineupsRequest,

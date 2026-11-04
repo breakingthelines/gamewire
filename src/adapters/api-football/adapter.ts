@@ -159,10 +159,6 @@ export function apiFootballStandingSyncPaths(
   );
 }
 
-export function apiFootballLivePath(): string {
-  return '/fixtures?live=all';
-}
-
 export function apiFootballStatusPath(): string {
   return '/status';
 }

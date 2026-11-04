@@ -33,7 +33,6 @@ export {
   apiFootballIngestPlayerMatchStatsRequestFromPlayers,
   apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballLineupPath,
-  apiFootballLivePath,
   apiFootballSeasonProviderId,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,

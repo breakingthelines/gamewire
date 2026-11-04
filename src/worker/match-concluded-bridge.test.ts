@@ -457,7 +457,6 @@ describe('isFixtureDetailWorkload', () => {
     expect(isFixtureDetailWorkload('fixtures-next-7d')).toBe(false);
     expect(isFixtureDetailWorkload('lineups-post-confirm')).toBe(false);
     expect(isFixtureDetailWorkload('team-metadata')).toBe(false);
-    expect(isFixtureDetailWorkload('player-metadata')).toBe(false);
   });
 });
 
@@ -561,11 +560,6 @@ describe('createMatchConcludedBridge', () => {
     await bridge({
       workload: 'team-metadata',
       resourceId: 't1',
-      data: { response: [] },
-    });
-    await bridge({
-      workload: 'player-metadata',
-      resourceId: 'p1',
       data: { response: [] },
     });
 

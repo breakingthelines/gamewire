@@ -28,7 +28,6 @@ export {
   apiFootballIngestTeamMatchStatsRequestFromStatistics,
   apiFootballLeaguePath,
   apiFootballLineupPath,
-  apiFootballLivePath,
   apiFootballReplayFixturesRequest,
   apiFootballReplayGameRequest,
   apiFootballReplayLineupsRequest,
