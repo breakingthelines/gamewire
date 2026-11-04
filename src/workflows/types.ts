@@ -214,7 +214,8 @@ export interface WorkflowLogEntry {
     | 'squad-sweep'
     | 'statsbomb-backfill'
     | 'identity-gap-scan'
-    | 'competition-payload-backfill';
+    | 'competition-payload-backfill'
+    | 'provider-fixture-results';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -953,4 +954,90 @@ export interface CompetitionPayloadBackfillWireResult {
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
   readonly dryRun: boolean;
   readonly reason?: string;
+}
+
+/**
+ * PF-GW1: provider-fixture-results workflow (`profile-spec.md` §1.7, §2.3,
+ * §9.1; `mega-verdict.md` T-D8). Feeds `IngestProviderFixtureResults` so
+ * game-service can compute club Elo + pi-ratings over seasons and leagues
+ * `games` does not hold. Never creates a game, never writes national teams
+ * or friendlies.
+ *
+ * Two modes:
+ *   - `history` (default): walks an explicit (or the default 20-league
+ *     reference set + UEFA 2/3/848) x season grid with
+ *     `/fixtures?league=L&season=S`, one call per cell. The one-time
+ *     backfill the spec sizes at ~92 calls.
+ *   - `nightly`: `/fixtures?league=L&date=yesterday` for reference-set
+ *     leagues NOT in `deps.competitions` (so their current season never
+ *     lands in `games` at all), computed fresh each run so a later
+ *     catalogue addition (e.g. GW-5) drops a league out of this list
+ *     without a code change here. Sized at ~10 calls/day.
+ */
+export type ProviderFixtureResultsMode = 'history' | 'nightly';
+
+export interface ProviderFixtureResultsInput {
+  /** Defaults to `'history'`. */
+  readonly mode?: ProviderFixtureResultsMode;
+  /**
+   * `history` only: explicit league ids to walk. Defaults to the 20-league
+   * reference set plus UEFA 2/3/848. Any national-team or friendlies id is
+   * dropped (defence in depth: a caller must not be able to smuggle one
+   * through an override).
+   */
+  readonly leagueIds?: readonly number[];
+  /** `history` only: seasons to walk. Defaults to 2023-2026. */
+  readonly seasons?: readonly number[];
+  /**
+   * `nightly` only: explicit league ids to refresh. Defaults to the
+   * reference set minus `deps.competitions`, computed at run time.
+   */
+  readonly nightlyLeagueIds?: readonly number[];
+  /** Hard ceiling on provider calls this run may spend. Defaults to `DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS`. */
+  readonly maxCallsPerRun?: number;
+  /** ISO-8601 instant used as "now" for `date=yesterday` and fetch metadata. Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+export interface ProviderFixtureResultsLeagueResult {
+  readonly leagueId: number;
+  /** `history` only. */
+  readonly season?: number;
+  readonly status: 'ok' | 'skipped' | 'failed';
+  /** Finished (FT/AET/PEN) fixtures found in the envelope. */
+  readonly fixturesFound: number;
+  readonly rowsAccepted: number;
+  readonly rowsSkipped: number;
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly errors: readonly string[];
+}
+
+export interface ProviderFixtureResultsOutput {
+  readonly mode: ProviderFixtureResultsMode;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  /** `complete` when every target ran; `incomplete` when the per-run call budget was spent first. */
+  readonly status: 'complete' | 'incomplete';
+  readonly leagues: readonly ProviderFixtureResultsLeagueResult[];
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly rowsAccepted: number;
+  readonly rowsSkipped: number;
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+}
+
+export interface ProviderFixtureResultsWireResult {
+  readonly mode: ProviderFixtureResultsMode;
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly status: ProviderFixtureResultsOutput['status'];
+  readonly leagues: readonly ProviderFixtureResultsLeagueResult[];
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly rowsAccepted: number;
+  readonly rowsSkipped: number;
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
 }

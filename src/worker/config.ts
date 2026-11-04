@@ -63,6 +63,13 @@ export interface GamewireWorkerConfig {
   providerRequestTimeoutMs?: number;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
+  /**
+   * `GAMEWIRE_PROVIDER_FIXTURE_RESULTS` (`off` | `on`, default `off`): kill
+   * switch for the PF-GW1 `/workflows/provider-fixture-results` workflow
+   * (player-profile league strength inputs, `profile-spec.md` §1.7, §2.3).
+   * Off serves `503 feature_disabled` without touching the provider.
+   */
+  providerFixtureResultsEnabled: boolean;
   /** Fixture ids to poll immediately on boot, useful for deterministic staging smoke. */
   bootstrapFixtureIds: readonly string[];
   /** Run one polling tick at boot instead of waiting for the first interval. */
@@ -353,6 +360,11 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       'gamewire ingestion enabled flag'
     ),
     bootstrapFixtureIds: parseStringList(env.GAMEWIRE_BOOTSTRAP_FIXTURE_IDS),
+    providerFixtureResultsEnabled: parseBoolean(
+      env.GAMEWIRE_PROVIDER_FIXTURE_RESULTS,
+      false,
+      'gamewire provider fixture results flag'
+    ),
     ingestionRunImmediateTick: parseBoolean(
       env.GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK ?? env.GAMEWIRE_RUN_IMMEDIATE_TICK,
       providerMode === 'live',

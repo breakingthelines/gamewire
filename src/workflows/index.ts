@@ -35,6 +35,11 @@ export type {
   IdentityGapScanWireResult,
   MatchdayCalendar,
   MatchdayWindow,
+  ProviderFixtureResultsInput,
+  ProviderFixtureResultsLeagueResult,
+  ProviderFixtureResultsMode,
+  ProviderFixtureResultsOutput,
+  ProviderFixtureResultsWireResult,
   SeasonBackfillInput,
   SeasonBackfillOutput,
   SeasonBackfillTarget,
@@ -65,6 +70,7 @@ export {
   dailyAnchorToWire,
   hourlyMatchdayToWire,
   identityGapScanToWire,
+  providerFixtureResultsToWire,
   seasonBackfillToWire,
   squadSweepToWire,
   statsbombBackfillToWire,
@@ -92,3 +98,11 @@ export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-back
 export { squadSweepWorkflow } from './squad-sweep.js';
 export { statsbombBackfillWorkflow } from './statsbomb-backfill.js';
 export { identityGapScanWorkflow } from './identity-gap-scan.js';
+export {
+  DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS,
+  REFERENCE_LEAGUE_IDS,
+  REFERENCE_SEASONS,
+  REFERENCE_UEFA_LEAGUE_IDS,
+  providerFixtureResultsWorkflow,
+  resolveNightlyLeagueIds,
+} from './provider-fixture-results.js';

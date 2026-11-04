@@ -22,6 +22,7 @@ import {
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
   type IngestPlayerMatchStatsRequest,
+  type IngestProviderFixtureResultsRequest,
   type IngestTeamMatchStatsRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import {
@@ -414,6 +415,16 @@ const fakeGameService = (options: {
       playerStatsCalls.push(request);
       return create(IngestBatchResponseSchema, {
         acceptedCount: request.playerStats.length,
+        updatedCount: 0,
+        replayId: request.metadata?.replayId ?? '',
+      });
+    },
+    async ingestProviderFixtureResults(request: IngestProviderFixtureResultsRequest) {
+      // The match-concluded bridge does not ingest provider fixture results
+      // (the provider-fixture-results workflow owns that path, PF-GW1). The
+      // stub keeps the FootballGameBridgeClient contract type-checking.
+      return create(IngestBatchResponseSchema, {
+        acceptedCount: request.rows.length,
         updatedCount: 0,
         replayId: request.metadata?.replayId ?? '',
       });

@@ -29,6 +29,8 @@ import {
   hourlyMatchdayWorkflow,
   identityGapScanToWire,
   identityGapScanWorkflow,
+  providerFixtureResultsToWire,
+  providerFixtureResultsWorkflow,
   STEADY_STATE_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
@@ -46,6 +48,7 @@ import {
   type DailyAnchorInput,
   type HourlyMatchdayInput,
   type IdentityGapScanInput,
+  type ProviderFixtureResultsInput,
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
   type SquadSweepInput,
@@ -165,7 +168,8 @@ type WorkflowName =
   | 'squad-sweep'
   | 'statsbomb-backfill'
   | 'identity-gap-scan'
-  | 'competition-payload-backfill';
+  | 'competition-payload-backfill'
+  | 'provider-fixture-results';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -427,6 +431,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/competition-payload-backfill') {
     return 'competition-payload-backfill';
   }
+  if (pathname === '/workflows/provider-fixture-results') {
+    return 'provider-fixture-results';
+  }
   return 'daily-anchor';
 };
 
@@ -675,6 +682,29 @@ const parseCompetitionPayloadBackfillInput = (
   };
 };
 
+const parseProviderFixtureResultsMode = (
+  value: unknown
+): ProviderFixtureResultsInput['mode'] | undefined => {
+  if (value === 'history' || value === 'nightly') {
+    return value;
+  }
+  return undefined;
+};
+
+const parseProviderFixtureResultsInput = (body: unknown): ProviderFixtureResultsInput => {
+  if (!isRecord(body)) {
+    return {};
+  }
+  return {
+    mode: parseProviderFixtureResultsMode(body.mode),
+    leagueIds: asNumberList(body.leagueIds),
+    seasons: asNumberList(body.seasons),
+    nightlyLeagueIds: asNumberList(body.nightlyLeagueIds),
+    maxCallsPerRun: asNumber(body.maxCallsPerRun),
+    nowUtc: asString(body.nowUtc),
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -755,7 +785,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/squad-sweep' ||
       request.pathname === '/workflows/statsbomb-backfill' ||
       request.pathname === '/workflows/identity-gap-scan' ||
-      request.pathname === '/workflows/competition-payload-backfill')
+      request.pathname === '/workflows/competition-payload-backfill' ||
+      request.pathname === '/workflows/provider-fixture-results')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -790,6 +821,20 @@ export const handleWorkerRequest = async (
       });
     }
     const workflowName = workflowNameFromPath(request.pathname);
+
+    if (
+      request.pathname === '/workflows/provider-fixture-results' &&
+      !cfg.providerFixtureResultsEnabled
+    ) {
+      // Kill switch (PF-GW1): off by default. Ships inert until
+      // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=on, and rolling back is an env
+      // flip, not a deploy.
+      return jsonResponse(503, {
+        status: 'unavailable',
+        reason: 'feature_disabled',
+        feature: 'GAMEWIRE_PROVIDER_FIXTURE_RESULTS',
+      });
+    }
 
     if (request.pathname === '/workflows/webhook-completed') {
       const input = parseWebhookCompletedInput(request.body);
@@ -901,6 +946,18 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => competitionPayloadBackfillWorkflow(input, { ...baseDeps, logger }),
           toWire: competitionPayloadBackfillToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/provider-fixture-results') {
+      const input = parseProviderFixtureResultsInput(request.body);
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => providerFixtureResultsWorkflow(input, { ...baseDeps, logger }),
+          toWire: providerFixtureResultsToWire,
         })
       );
     }

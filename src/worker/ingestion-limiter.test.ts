@@ -33,6 +33,7 @@ const config: GamewireWorkerConfig = {
   providerHardCap: 100,
   providerSoftCap: 90,
   ingestionEnabled: true,
+  providerFixtureResultsEnabled: false,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: false,
   authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',

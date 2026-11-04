@@ -11,6 +11,7 @@ import {
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
   type IngestPlayerMatchStatsRequest,
+  type IngestProviderFixtureResultsRequest,
   type IngestTeamMatchStatsRequest,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
@@ -32,6 +33,9 @@ export interface GameServiceIngestClient {
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
   listProviderConfigs(request: ListProviderConfigsRequest): Promise<ListProviderConfigsResponse>;
   reportProviderHealth(request: ReportProviderHealthRequest): Promise<ReportProviderHealthResponse>;
 }
@@ -110,6 +114,15 @@ export interface FootballGameIngestClient {
   ingestCurrentSeasons(request: IngestCurrentSeasonsRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
+  /**
+   * PF-GW1: upserts finished fixture results for the player-profile league
+   * strength ratings (club Elo + pi-ratings, `profile-spec.md` §2.3). Never
+   * creates a game; game-service writes to `provider_fixture_results`, a
+   * table outside the `games`/occurrences graph.
+   */
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient &
@@ -191,6 +204,11 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse> {
       return client.ingestPlayerMatchStats(request, { timeoutMs });
+    },
+    ingestProviderFixtureResults(
+      request: IngestProviderFixtureResultsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderFixtureResults(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

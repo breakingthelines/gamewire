@@ -14,6 +14,13 @@
  * Planned lines (`planned: true`) are the Mega enrichment datasets that are
  * not built yet (GW-6 to GW-8). They are included by default so the caps are
  * checked against the target load, not today's.
+ *
+ * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
+ * `nightly` mode only (`date=yesterday` for reference-set leagues outside
+ * the catalogue, ~11/day). Its one-time `history` backfill (~92 calls, the
+ * 20-league reference set plus UEFA 2/3/848 across 2023-2026) is a single
+ * run outside steady state, the same category as the Mega season-fill
+ * history backfill (`mega-spec.md` §1.3) — not part of this per-day model.
  */
 
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
@@ -373,5 +380,11 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     background('team-transfers', 60, 0, 'weekly'),
     background('trophies', 393, 0, 'weekly, a quarter partition per run'),
     background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
+    background(
+      'provider-fixture-results',
+      11,
+      11,
+      'PF-GW1 nightly date=yesterday for reference-set leagues outside the catalogue'
+    ),
   ];
 }
