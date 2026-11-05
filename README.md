@@ -130,8 +130,8 @@ A provider null is left out of the row's `values`; it is never written as 0.
 | `player-season-stats` | `/players?league&season&page`                                     | catalogue domestic leagues at their catalogue season                     | 1,500         | `IngestProviderPlayerSeasonStats` |
 | `injuries-league`     | `/injuries?league&season`                                         | catalogue leagues with injuries coverage (`INJURIES_COVERED_LEAGUE_IDS`) | 60            | `IngestAvailability` (INJURIES)   |
 | `player-sidelined`    | `/sidelined?players=a-b`, 20 a call                               | players `injuries-league` listed for a fixture in the last 30 days       | 300           | `IngestAvailability` (SIDELINED)  |
-| `team-transfers`      | `/transfers?team=T`                                               | teams in the cached fixture lists of the catalogue domestic leagues      | 500           | `IngestTransfers`                 |
-| `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | a quarter of the same teams (ISO week mod 4, or `partition` 0 to 3)      | 600           | `IngestTrophies`                  |
+| `team-transfers`      | `/transfers?team=T`                                               | teams in the fixture lists of the catalogue domestic leagues             | 500           | `IngestTransfers`                 |
+| `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | teams whose id mod 4 is the week counter mod 4 (or `partition` 0 to 3)   | 600           | `IngestTrophies`                  |
 
 The GW-6b datasets keep only a small marker per finished unit (a league-season,
 a team, or a batch of ids) so a stopped run resumes, and `injuries-league` keeps
@@ -142,6 +142,21 @@ provider no longer lists. An empty list, a reply with provider errors, or a
 failed batch removes nothing. Trophies and sidelined spells use the provider's
 multi-id form (`players=a-b-c`, up to 20 ids), which costs one call. Coach
 trophies run only for `coachIds` named in the request.
+
+- Sidelined markers are per player, so a stopped run resumes however the next
+  run's scope is batched.
+- The team scope reads each league's fixture list from the key the live loop's
+  discovery caches (6h). A missing list is fetched once through the same cached
+  path and counts against the run's limit. A league still without teams is
+  reported as a `failed` target and the run ends `incomplete`.
+- Trophy rows are packed so a request holds at most 500 trophies (the
+  game-service limit). A subject with more than 500 loses exact repeats, then
+  places other than Winner, and the count shows in `rowsDropped`.
+- The trophies week counter steps every Monday 00:00 UTC and runs on across
+  year ends, so the partition never repeats in consecutive weeks.
+- `injuries-league` accepts only catalogue leagues in `leagueIds`; a league
+  outside it is reported as `failed` unless the request sets
+  `allowUncatalogued: true`.
 
 ```jsonc
 // history backfill: leagues and seasons are explicit, nothing is gated on a season's end

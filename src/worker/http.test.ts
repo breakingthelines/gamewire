@@ -1458,6 +1458,15 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       [{ dataset: 'trophies', partition: 'auto' }],
       [{ dataset: 'trophies', mode: 'full', playerIds: ['276', 874], coachIds: [1] }],
       [{ dataset: 'team-transfers', mode: 'full', teamIds: [194] }],
+      [
+        {
+          dataset: 'injuries-league',
+          mode: 'full',
+          leagueIds: [999],
+          seasons: [2025],
+          allowUncatalogued: true,
+        },
+      ],
     ])('accepts the GW-6b body %j (disabled by default)', async (body) => {
       const ingestion = buildIngestion();
       const response = await post(body, { ingestion });

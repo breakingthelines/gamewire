@@ -1162,11 +1162,17 @@ export interface ProviderEnrichmentInput {
   readonly teamIds?: readonly string[];
   /**
    * `trophies` without `playerIds`, `coachIds` or `teamIds`: which quarter of
-   * the default team scope to cover (0 to 3). Defaults to the ISO week number
-   * mod 4, so every team comes round once every four weeks. Named `teamIds`
-   * are all covered.
+   * the default team scope to cover (0 to 3): teams whose id mod 4 equals it.
+   * Defaults to a continuous week counter mod 4 (`trophiesWeek`), so every
+   * team comes round once every four weeks. Named `teamIds` are all covered.
    */
   readonly partition?: number;
+  /**
+   * `injuries-league`: accept `leagueIds` outside the catalogue. Off by
+   * default, because rows for a league identity does not know yet bind under
+   * a sentinel season.
+   */
+  readonly allowUncatalogued?: boolean;
   /** Ignore stored cursors and start every league-season from page 1. */
   readonly reset?: boolean;
   /** Plan only: resolve targets and cursors, make no provider calls and no writes. */

@@ -788,7 +788,7 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   ) {
     return { ok: false, reason: 'ids_not_used_by_dataset' };
   }
-  // K-2 sends `partition: "auto"`, which is the default (ISO week mod 4).
+  // K-2 sends `partition: "auto"`, which is the default (week counter mod 4).
   const partition =
     body.partition === undefined || body.partition === 'auto'
       ? undefined
@@ -828,6 +828,7 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       coachIds,
       teamIds,
       partition,
+      allowUncatalogued: asBoolean(body.allowUncatalogued),
       reset: asBoolean(body.reset),
       dryRun: asBoolean(body.dryRun),
       nowUtc: asString(body.nowUtc),

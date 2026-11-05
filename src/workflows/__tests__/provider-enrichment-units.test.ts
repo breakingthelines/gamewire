@@ -17,6 +17,7 @@ import { AvailabilitySource } from '@breakingthelines/protos/btl/game/v1/types/p
 import { describe, expect, it, vi } from 'vitest';
 
 import { InMemoryProviderCache } from '../../worker/cache.js';
+import { parseProviderEnrichmentInput } from '../../worker/http.js';
 import type { ProviderEnrichmentIngestClient } from '../../worker/clients/game-service.js';
 import type { GamewireWorkerConfig } from '../../worker/config.js';
 import { ApiFootballIngestionLoop } from '../../worker/ingestion.js';
@@ -27,12 +28,16 @@ import { clampEnrichmentLimit, providerEnrichmentWorkflow } from '../provider-en
 import {
   DEFAULT_UNIT_MAX_CALLS_PER_RUN,
   INJURIES_COVERED_LEAGUE_IDS,
+  MAX_TROPHIES_PER_INGEST,
   SIDELINED_LOOKBACK_MS,
   injuryDigestKey,
-  isoWeekNumber,
   mergeInjuryDigest,
+  packTrophyRows,
   resolveInjuriesTargets,
+  sidelinedMemberKey,
+  teamTrophiesPartition,
   trophiesPartition,
+  trophiesWeek,
   unitMarkerKey,
   type InjuryPlayerDigest,
 } from '../provider-enrichment-units.js';
@@ -74,7 +79,7 @@ const config: GamewireWorkerConfig = {
 
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
-/** Thursday 2026-11-05 03:00 UTC, ISO week 45. */
+/** Thursday 2026-11-05 03:00 UTC. */
 const T0 = Date.UTC(2026, 10, 5, 3, 0, 0);
 
 const entry = (
@@ -148,12 +153,17 @@ const transfersEnvelope = (team: string, moves = 2) => ({
   })),
 });
 
-const trophiesEnvelope = (subjectIds: string[]) => ({
+const trophiesEnvelope = (subjectIds: string[], perSubject: (id: string) => number = () => 1) => ({
   get: 'trophies',
   errors: [],
   response: subjectIds.map((id) => ({
     id: Number(id),
-    trophies: [{ league: 'Cup', country: 'X', season: '2024/2025', place: 'Winner' }],
+    trophies: Array.from({ length: perSubject(id) }, (_, i) => ({
+      league: `Cup ${i}`,
+      country: 'X',
+      season: '2024/2025',
+      place: i % 3 === 0 ? 'Winner' : '2nd Place',
+    })),
   })),
 });
 
@@ -404,13 +414,47 @@ describe('injuries-league', () => {
       resolveInjuriesTargets({ mode: 'nightly', leagueIds: [88], seasons: [2023] }, CATALOGUE)
     ).toEqual([{ leagueId: 88, season: 2023 }]);
     expect(
-      resolveInjuriesTargets({ mode: 'full', leagueIds: [88, 39], seasons: [2024, 2025] }, [])
+      resolveInjuriesTargets(
+        { mode: 'full', leagueIds: [88, 39], seasons: [2024, 2025] },
+        CATALOGUE
+      )
     ).toEqual([
       { leagueId: 88, season: 2025 },
       { leagueId: 39, season: 2025 },
       { leagueId: 88, season: 2024 },
       { leagueId: 39, season: 2024 },
     ]);
+  });
+
+  it('refuses a named league outside the catalogue unless allowUncatalogued is set', async () => {
+    expect(
+      resolveInjuriesTargets({ mode: 'full', leagueIds: [88, 999], seasons: [2025] }, CATALOGUE)
+    ).toEqual([{ leagueId: 88, season: 2025 }]);
+    expect(resolveInjuriesTargets({ mode: 'nightly', leagueIds: [999] }, CATALOGUE)).toEqual([]);
+    const h = harness();
+    const out = await h.run('injuries-league', { mode: 'full', leagueIds: [999], seasons: [2025] });
+    expect(out.status).toBe('incomplete');
+    expect(out.targets).toMatchObject([{ unit: 'league-999', status: 'failed' }]);
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    const allowed = await h.run('injuries-league', {
+      mode: 'full',
+      leagueIds: [999],
+      seasons: [2025],
+      allowUncatalogued: true,
+    });
+    expect(allowed.status).toBe('completed');
+    expect(h.paths()).toEqual(['/injuries?league=999&season=2025']);
+  });
+
+  it('parses allowUncatalogued from the request body', () => {
+    const parsed = parseProviderEnrichmentInput({
+      dataset: 'injuries-league',
+      leagueIds: [999],
+      allowUncatalogued: true,
+    });
+    expect(parsed.ok && parsed.input.allowUncatalogued).toBe(true);
+    const plain = parseProviderEnrichmentInput({ dataset: 'injuries-league', leagueIds: [999] });
+    expect(plain.ok && plain.input.allowUncatalogued).toBeFalsy();
   });
 
   it('sends one pull as batches of 500 sharing a sync id, final_batch on the last only', async () => {
@@ -569,6 +613,28 @@ describe('player-sidelined', () => {
     expect(h.paths()[2]).toBe(`/sidelined?players=${ids(41, 5).join('-')}`);
   });
 
+  it('resumes per player after a stop, however the next scope is batched', async () => {
+    const h = harness();
+    const first = await h.run('player-sidelined', {
+      playerIds: ids(100, 25).map(String),
+      limit: 1,
+    });
+    expect(first.status).toBe('incomplete');
+    expect(
+      await h.cache.get(unitMarkerKey('player-sidelined', sidelinedMemberKey('100')))
+    ).toBeDefined();
+    h.urls.length = 0;
+    // The scope moved: ten new players sort ahead of the old ones.
+    const second = await h.run('player-sidelined', { playerIds: ids(90, 35).map(String) });
+    expect(second.status).toBe('completed');
+    expect(h.paths()).toEqual([`/sidelined?players=${[...ids(90, 10), ...ids(120, 5)].join('-')}`]);
+    h.urls.length = 0;
+    const third = await h.run('player-sidelined', { playerIds: ids(90, 35).map(String) });
+    expect(third.status).toBe('completed');
+    expect(third.reason).toContain('35 players');
+    expect(h.urls).toHaveLength(0);
+  });
+
   it('skips when nothing is in scope', async () => {
     const h = harness();
     const out = await h.run('player-sidelined');
@@ -581,7 +647,7 @@ describe('player-sidelined', () => {
 describe('team-transfers', () => {
   it('scopes to the teams of the cached domestic fixture lists, sorted', async () => {
     const h = harness();
-    await h.seedFixtureLists({ 39: [33, 40], 88: [194, 415], 2: [541, 33] });
+    await h.seedFixtureLists({ 39: [33, 40], 88: [194, 415], 144: [415], 2: [541, 33] });
     const out = await h.run('team-transfers');
     expect(out.status).toBe('completed');
     // The Champions League list (2) is not domestic: 541 is not fetched.
@@ -601,11 +667,73 @@ describe('team-transfers', () => {
     });
   });
 
-  it('skips when the fixture lists are not cached', async () => {
-    const h = harness();
+  it('fetches a missing fixture list under the discovery key, then reads it from cache', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/fixtures'
+          ? fixtureList(
+              req.params.get('league') === '39'
+                ? [33, 40]
+                : req.params.get('league') === '88'
+                  ? [194]
+                  : [3]
+            )
+          : undefined,
+    });
+    await h.seedFixtureLists({ 144: [600] });
     const out = await h.run('team-transfers');
-    expect(out.status).toBe('skipped');
-    expect(out.reason).toContain('teamIds');
+    expect(out.status).toBe('completed');
+    expect(h.paths()).toEqual([
+      '/fixtures?league=39&season=2026',
+      '/fixtures?league=88&season=2026',
+      '/transfers?team=33',
+      '/transfers?team=40',
+      '/transfers?team=194',
+      '/transfers?team=600',
+    ]);
+    expect(out.callsUsed).toBe(6);
+    // The list is held under the key the live loop's discovery writes, not a new one.
+    const key = h.deps.ingestion.cacheKeyFor('fixtures-next-7d', 'league-39-season-2026');
+    expect(h.cacheSet.mock.calls.some((call) => call[0] === key)).toBe(true);
+    for (const call of h.cacheSet.mock.calls) {
+      const name = String(call[0]);
+      expect(name.startsWith('enrich:') || name.includes('fixtures-next-7d')).toBe(true);
+    }
+    h.urls.length = 0;
+    h.advance(HOUR);
+    await h.run('team-transfers');
+    expect(h.paths().filter((p) => p.startsWith('/fixtures'))).toEqual([]);
+  });
+
+  it('lists a league without a fixture list as failed and ends incomplete', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/fixtures'
+          ? req.params.get('league') === '88'
+            ? { errors: { requests: 'limit' }, response: [] }
+            : fixtureList([33, 40])
+          : undefined,
+    });
+    const out = await h.run('team-transfers');
+    expect(out.status).toBe('incomplete');
+    const gap = out.targets.find((t) => t.unit === 'fixtures-league-88-season-2026');
+    expect(gap).toMatchObject({ status: 'failed', leagueId: 88, season: 2026 });
+    expect(out.targets.filter((t) => t.status === 'complete').map((t) => t.unit)).toEqual([
+      'team-33',
+      'team-40',
+    ]);
+  });
+
+  it('a dry run reports a missing fixture list without fetching it', async () => {
+    const h = harness();
+    await h.seedFixtureLists({ 39: [33], 144: [600] });
+    const out = await h.run('team-transfers', { dryRun: true });
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(out.targets.map((t) => `${t.unit}:${t.status}`)).toEqual([
+      'fixtures-league-88-season-2026:failed',
+      'team-33:planned',
+      'team-600:planned',
+    ]);
   });
 
   it('splits a large team into ingest calls of 500', async () => {
@@ -646,17 +774,99 @@ describe('trophies', () => {
     expect(rows[0]?.subjectSnapshot?.label).toBe('S7000');
   });
 
-  it('covers a quarter of the team scope per run, by ISO week unless named', async () => {
+  it('covers the teams whose id mod 4 is the partition', async () => {
     const h = harness({ squadSize: 1 });
-    await h.seedFixtureLists({ 39: [1, 2, 3, 4], 88: [5, 6, 7, 8] });
+    await h.seedFixtureLists({ 39: [1, 2, 3, 4], 88: [5, 6, 7, 8], 144: [13] });
     await h.run('trophies', { partition: 1 });
     expect(h.paths().filter((p) => p.startsWith('/players/squads'))).toEqual([
-      '/players/squads?team=2',
-      '/players/squads?team=6',
+      '/players/squads?team=1',
+      '/players/squads?team=5',
+      '/players/squads?team=13',
     ]);
-    expect(isoWeekNumber(T0)).toBe(45);
-    expect(trophiesPartition(undefined, T0)).toBe(1);
+  });
+
+  it('keeps a team in its partition when the team list changes', async () => {
+    const squads = (h: ReturnType<typeof harness>) =>
+      h.paths().filter((p) => p.startsWith('/players/squads'));
+    const before = harness({ squadSize: 1 });
+    await before.seedFixtureLists({ 39: [1, 2, 3, 4], 88: [5, 6, 7, 8] });
+    await before.run('trophies', { partition: 2 });
+    // Next week a league is cold and a team is promoted: membership holds.
+    const after = harness({ squadSize: 1 });
+    await after.seedFixtureLists({ 39: [1, 2, 3, 4, 10] });
+    await after.run('trophies', { partition: 2 });
+    expect(squads(before)).toEqual(['/players/squads?team=2', '/players/squads?team=6']);
+    expect(squads(after)).toEqual(['/players/squads?team=2', '/players/squads?team=10']);
+    expect(teamTrophiesPartition('194')).toBe(2);
+  });
+
+  it('steps the week counter every Monday, across a 53-week year', () => {
+    const monday = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d);
+    // 2026-12-28 is the Monday of ISO week 53, 2027-01-04 of ISO week 1.
+    const w53 = trophiesWeek(monday(2026, 12, 28));
+    expect(trophiesWeek(monday(2027, 1, 4))).toBe(w53 + 1);
+    expect(trophiesWeek(monday(2027, 1, 4) - 1)).toBe(w53);
+    expect(trophiesWeek(monday(2026, 12, 28) + 6 * DAY + 23 * HOUR)).toBe(w53);
+    expect(trophiesPartition(undefined, monday(2027, 1, 4))).not.toBe(
+      trophiesPartition(undefined, monday(2026, 12, 28))
+    );
     expect(trophiesPartition(3, T0)).toBe(3);
+    expect(trophiesPartition(undefined, T0)).toBe(trophiesWeek(T0) % 4);
+  });
+
+  it('packs ingest calls to the server limit of 500 trophies each', async () => {
+    const h = harness({
+      squadSize: 45,
+      respond: (req) =>
+        req.path === '/trophies'
+          ? trophiesEnvelope((req.params.get('players') ?? '').split('-'), (id) =>
+              Number(id) % 2 === 0 ? 70 : 30
+            )
+          : undefined,
+      ingest: {
+        // Mirrors game-service validateNestedRows on IngestTrophies.
+        ingestTrophies: vi.fn(async (r: IngestTrophiesRequest) => {
+          const nested = r.rows.reduce((sum, row) => sum + row.trophies.length, 0);
+          if (nested > 500 || r.rows.length > 500) {
+            throw new Error(`InvalidArgument: at most 500 trophies per batch, got ${nested}`);
+          }
+          return { acceptedCount: r.rows.length } as IngestBatchResponse;
+        }),
+      },
+    });
+    const out = await h.run('trophies', { teamIds: ['7'] });
+    expect(out.status).toBe('completed');
+    expect(out.targets[0]).toMatchObject({ status: 'complete', rowsIngested: 45, rowsDropped: 0 });
+    // 20 players at 50 on average is 1,000 trophies a provider call: at least 2 ingest calls each.
+    expect(vi.mocked(h.ingest.ingestTrophies!).mock.calls.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('trims one subject over 500 trophies, keeping winners first', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/trophies'
+          ? trophiesEnvelope(['874', '276'], (id) => (id === '874' ? 874 : 10))
+          : undefined,
+      ingest: {
+        ingestTrophies: vi.fn(async (r: IngestTrophiesRequest) => {
+          const nested = r.rows.reduce((sum, row) => sum + row.trophies.length, 0);
+          if (nested > 500) {
+            throw new Error(`InvalidArgument: got ${nested}`);
+          }
+          h.trophies.push(r);
+          return { acceptedCount: r.rows.length } as IngestBatchResponse;
+        }),
+      },
+    });
+    const out = await h.run('trophies', { playerIds: ['874', '276'] });
+    expect(out.status).toBe('completed');
+    const rows = h.trophies.flatMap((r) => r.rows);
+    const big = rows.find((row) => row.providerSubjectId === '874')!;
+    expect(big.trophies).toHaveLength(MAX_TROPHIES_PER_INGEST);
+    // 874 entries, every third a winner: all 292 winners stay.
+    expect(big.trophies.filter((t) => t.place === 'Winner')).toHaveLength(292);
+    expect(rows.find((row) => row.providerSubjectId === '276')?.trophies).toHaveLength(10);
+    expect(out.rowsDropped).toBe(374);
   });
 
   it('names coaches and players explicitly', async () => {
@@ -680,6 +890,42 @@ describe('trophies', () => {
     expect(await h.cache.get(unitMarkerKey('trophies', 'squad-7'))).toBeUndefined();
     const second = await h.run('trophies', { teamIds: ['7'] });
     expect(second.targets[0]?.status).toBe('complete');
+  });
+});
+
+describe('packTrophyRows', () => {
+  const row = (id: string, count: number, places: string[] = ['Winner']) =>
+    ({
+      providerSubjectId: id,
+      trophies: Array.from({ length: count }, (_, i) => ({
+        competitionName: `C${i}`,
+        country: 'X',
+        seasonText: '2024',
+        place: places[i % places.length]!,
+      })),
+    }) as unknown as Parameters<typeof packTrophyRows>[0][number];
+
+  it('never splits a subject and never passes 500 trophies a request', () => {
+    const rows = [row('1', 300), row('2', 250), row('3', 0), row('4', 200), row('5', 500)];
+    const packed = packTrophyRows(rows);
+    expect(packed.trimmed).toBe(0);
+    expect(packed.batches.map((b) => b.rows.map((r) => r.providerSubjectId))).toEqual([
+      ['1'],
+      ['2', '3', '4'],
+      ['5'],
+    ]);
+    expect(packed.batches.map((b) => b.start)).toEqual([0, 1, 4]);
+  });
+
+  it('drops exact repeats before places other than Winner', () => {
+    const repeated = row('9', 400);
+    const doubled = {
+      ...repeated,
+      trophies: [...repeated.trophies, ...repeated.trophies.slice(0, 150)],
+    } as typeof repeated;
+    const packed = packTrophyRows([doubled]);
+    expect(packed.trimmed).toBe(150);
+    expect(packed.batches[0]?.rows[0]?.trophies).toHaveLength(400);
   });
 });
 

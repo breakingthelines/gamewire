@@ -19,6 +19,8 @@
  * player or coach ids (sidelined, trophies). A completed unit writes its
  * marker; a re-run inside the marker window reports it `fresh` and fetches
  * nothing, so a run stopped by the call limit resumes where it stopped.
+ * Sidelined batches are cut from a scope that changes between runs, so their
+ * markers are kept per player and the batches are cut from the players still due.
  */
 import { create } from '@bufbuild/protobuf';
 import { timestampFromMs } from '@bufbuild/protobuf/wkt';
@@ -134,6 +136,14 @@ export const TROPHIES_PARTITIONS = 4;
 
 /** Rows per ingest call (GS-2 rejects larger batches). */
 export const UNIT_INGEST_BATCH_SIZE = 500;
+/**
+ * Trophies per `IngestTrophies` call, summed over every row of the request.
+ * game-service rejects a request whose nested trophies exceed
+ * `MaxProviderIngestRows` (500) with InvalidArgument.
+ */
+export const MAX_TROPHIES_PER_INGEST = 500;
+
+const DAY_MS = 24 * 60 * 60 * 1_000;
 
 export const unitMarkerKey = (dataset: UnitEnrichmentDataset, unit: string): string =>
   `enrich:${dataset}:done:${unit}`;
@@ -150,6 +160,14 @@ export const injuryDigestKey = (leagueId: number, season: number): string =>
 export interface UnitMarker {
   readonly completedAtMs: number;
 }
+
+/** The ingest method each dataset writes through. */
+export const UNIT_DATASET_NEEDS: Readonly<Record<UnitEnrichmentDataset, UnitPlan['needs']>> = {
+  'injuries-league': 'ingestAvailability',
+  'player-sidelined': 'ingestAvailability',
+  'team-transfers': 'ingestTransfers',
+  trophies: 'ingestTrophies',
+};
 
 /** What a provider call gave back to a unit. */
 export type UnitFetch =
@@ -190,9 +208,22 @@ export interface UnitOutcome {
 export interface EnrichmentUnit {
   /** Stable name, used for the marker and the in-flight guard. */
   readonly key: string;
+  /**
+   * Marker names written on completion in place of `key`'s, one per member
+   * (sidelined: one per player), so the next plan can leave them out however
+   * it cuts its batches.
+   */
+  readonly memberKeys?: readonly string[];
   readonly leagueId: number;
   readonly season: number;
   readonly run: (ctx: UnitContext) => Promise<UnitOutcome>;
+}
+
+/** A league whose teams are missing from the team scope this run. */
+export interface ScopeGap {
+  readonly leagueId: number;
+  readonly season: number;
+  readonly reason: string;
 }
 
 export interface UnitPlan {
@@ -201,17 +232,35 @@ export interface UnitPlan {
   readonly emptyReason?: string;
   /** Ingest method the dataset needs. */
   readonly needs: 'ingestAvailability' | 'ingestTransfers' | 'ingestTrophies';
+  /** Team scope: leagues whose fixture list could not be read or fetched. */
+  readonly gaps?: readonly ScopeGap[];
+  /** Sidelined: players left out because their marker is still fresh. */
+  readonly freshMembers?: number;
 }
 
 /**
- * Build the units for a dataset. Reads only the catalogue, cached fixture
- * lists (team scope) and the injuries digest (sidelined scope): no provider call.
+ * Fetch one league's `/fixtures?league&season` list through the loop's normal
+ * cached path, under the same key discovery writes (no new cache entry).
+ */
+export type FixtureListLoader = (entry: CompetitionEntry) => Promise<UnitFetch>;
+
+export interface PlanOptions {
+  /** Absent on a dry run: a missing fixture list is then reported, not fetched. */
+  readonly loadFixtureList?: FixtureListLoader;
+}
+
+/**
+ * Build the units for a dataset from the catalogue, the cached fixture lists
+ * (team scope), the injuries digest and per-player markers (sidelined scope).
+ * The only provider call is `loadFixtureList` for a league whose list is not
+ * cached.
  */
 export const planUnitDataset = async (
   dataset: UnitEnrichmentDataset,
   input: ProviderEnrichmentInput,
   deps: WorkflowDeps,
-  nowMs: number
+  nowMs: number,
+  options: PlanOptions = {}
 ): Promise<UnitPlan> => {
   switch (dataset) {
     case 'injuries-league':
@@ -219,9 +268,9 @@ export const planUnitDataset = async (
     case 'player-sidelined':
       return planSidelined(input, deps, nowMs);
     case 'team-transfers':
-      return planTransfers(input, deps);
+      return planTransfers(input, deps, options);
     case 'trophies':
-      return planTrophies(input, deps, nowMs);
+      return planTrophies(input, deps, nowMs, options);
   }
 };
 
@@ -236,19 +285,25 @@ interface LeagueSeason {
  * Injuries league-seasons. `full` takes `leagueIds` x `seasons` as given.
  * `nightly` covers `leagueIds` (default: catalogue leagues with injuries
  * coverage) at `seasons` (default: each league's catalogue season).
+ *
+ * Named leagues must be in the catalogue unless `allowUncatalogued` is set:
+ * rows for a league identity does not know yet would bind under a sentinel.
  */
 export const resolveInjuriesTargets = (
-  input: Pick<ProviderEnrichmentInput, 'mode' | 'leagueIds' | 'seasons'>,
+  input: Pick<ProviderEnrichmentInput, 'mode' | 'leagueIds' | 'seasons' | 'allowUncatalogued'>,
   competitions: readonly CompetitionEntry[]
 ): readonly LeagueSeason[] => {
-  const leagueIds = uniquePositiveInts(input.leagueIds ?? []);
+  const catalogued = new Set(competitions.map((entry) => entry.apiFootballLeagueId));
+  const leagueIds = uniquePositiveInts(input.leagueIds ?? []).filter(
+    (id) => input.allowUncatalogued === true || catalogued.has(id)
+  );
   const seasons = uniquePositiveInts(input.seasons ?? []).sort((a, b) => b - a);
   if (input.mode === 'full') {
     return seasons.flatMap((season) => leagueIds.map((leagueId) => ({ leagueId, season })));
   }
   const catalogue = new Map(competitions.map((entry) => [entry.apiFootballLeagueId, entry]));
   const leagues =
-    leagueIds.length > 0
+    (input.leagueIds?.length ?? 0) > 0
       ? leagueIds
       : competitions
           .map((entry) => entry.apiFootballLeagueId)
@@ -267,18 +322,28 @@ export const resolveInjuriesTargets = (
   return targets;
 };
 
+export interface TeamScope {
+  readonly teamIds: readonly string[];
+  readonly gaps: readonly ScopeGap[];
+}
+
 /**
  * Team scope for transfers and trophies: `teamIds` when given, else every
- * team in the cached fixture lists of the catalogue's domestic leagues (or of
- * `leagueIds`). The fixture lists are the daily-anchor discovery payloads the
- * squad sweep also reads, so this costs no provider call. Sorted numerically.
+ * team in the fixture lists of the catalogue's domestic leagues (or of
+ * `leagueIds`, catalogue leagues only). A list is read from the key the live
+ * loop's discovery writes (`fixtures-next-7d`, 6h). That entry is missing for
+ * about an hour in every seven, and for a league whose discovery fetch
+ * failed, so a missing list is fetched through `loadFixtureList` under the
+ * same key. A league still without teams is returned as a gap. Sorted
+ * numerically.
  */
 export const resolveTeamScope = async (
   input: Pick<ProviderEnrichmentInput, 'teamIds' | 'leagueIds'>,
-  deps: WorkflowDeps
-): Promise<readonly string[]> => {
+  deps: WorkflowDeps,
+  loadFixtureList?: FixtureListLoader
+): Promise<TeamScope> => {
   if (input.teamIds && input.teamIds.length > 0) {
-    return sortIds(input.teamIds);
+    return { teamIds: sortIds(input.teamIds), gaps: [] };
   }
   const leagueFilter = new Set(uniquePositiveInts(input.leagueIds ?? []));
   const entries = deps.competitions.filter((entry) =>
@@ -287,34 +352,57 @@ export const resolveTeamScope = async (
       : TEAM_SCOPE_TIERS.has(entry.tier)
   );
   const seen = new Set<string>();
+  const gaps: ScopeGap[] = [];
   for (const entry of entries) {
-    const key = deps.ingestion.cacheKeyFor(
-      'fixtures-next-7d',
-      `league-${entry.apiFootballLeagueId}-season-${entry.season}`
-    );
-    const cached = await deps.ingestion.cache.get<unknown>(key);
-    if (cached === undefined) {
+    const gap = (reason: string) =>
+      gaps.push({ leagueId: entry.apiFootballLeagueId, season: entry.season, reason });
+    const key = deps.ingestion.cacheKeyFor('fixtures-next-7d', fixtureListResourceId(entry));
+    let list = await deps.ingestion.cache.get<unknown>(key);
+    if (list === undefined) {
+      if (!loadFixtureList) {
+        gap('fixture list not cached; a run fetches it');
+        continue;
+      }
+      const fetched = await loadFixtureList(entry);
+      if (!fetched.ok) {
+        gap(fetched.stopped ? 'fixture list not fetched: run stopped' : fetched.message);
+        continue;
+      }
+      list = fetched.data;
+    }
+    const teams = teamIdsFromFixtureListEnvelope(list);
+    if (teams.length === 0) {
+      gap('fixture list has no teams');
       continue;
     }
-    for (const id of teamIdsFromFixtureListEnvelope(cached)) {
+    for (const id of teams) {
       seen.add(id);
     }
   }
-  return sortIds([...seen]);
+  return { teamIds: sortIds([...seen]), gaps };
 };
 
-/** ISO-8601 week number (1 to 53) of a UTC instant. */
-export const isoWeekNumber = (ms: number): number => {
-  const date = new Date(ms);
-  const day = date.getUTCDay() || 7;
-  const thursday = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate() + 4 - day);
-  const yearStart = Date.UTC(new Date(thursday).getUTCFullYear(), 0, 1);
-  return Math.floor((thursday - yearStart) / 86_400_000 / 7) + 1;
-};
+/** The resource id the live loop's discovery caches a league's fixture list under. */
+export const fixtureListResourceId = (entry: CompetitionEntry): string =>
+  `league-${entry.apiFootballLeagueId}-season-${entry.season}`;
 
-/** The trophies partition for a run: the request's, else ISO week mod 4. */
+/**
+ * A continuous week counter: whole weeks since the Monday before the epoch
+ * (1970-01-01 was a Thursday), so it steps every Monday 00:00 UTC and never
+ * repeats a value across a year end, unlike an ISO week number (2026 has 53).
+ */
+export const trophiesWeek = (ms: number): number => Math.floor((Math.floor(ms / DAY_MS) + 3) / 7);
+
+/** The trophies partition for a run: the request's, else the week counter mod 4. */
 export const trophiesPartition = (partition: number | undefined, nowMs: number): number =>
-  partition !== undefined ? partition : isoWeekNumber(nowMs) % TROPHIES_PARTITIONS;
+  partition !== undefined ? partition : trophiesWeek(nowMs) % TROPHIES_PARTITIONS;
+
+/**
+ * The partition a team belongs to, from its provider id, so membership does
+ * not move when the team list changes (a cold league, promotion).
+ */
+export const teamTrophiesPartition = (teamId: string): number =>
+  Number(teamId) % TROPHIES_PARTITIONS;
 
 /** Players listed in the injuries digests within the lookback, sorted. */
 export const sidelinedScopeFromDigests = async (
@@ -368,9 +456,18 @@ const planInjuries = (
   competitions: readonly CompetitionEntry[]
 ): UnitPlan => {
   const targets = resolveInjuriesTargets(input, competitions);
+  const catalogued = new Set(competitions.map((entry) => entry.apiFootballLeagueId));
+  const refused = uniquePositiveInts(input.leagueIds ?? []).filter(
+    (id) => input.allowUncatalogued !== true && !catalogued.has(id)
+  );
   return {
     needs: 'ingestAvailability',
     units: targets.map((target) => injuriesUnit(target)),
+    gaps: refused.map((leagueId) => ({
+      leagueId,
+      season: 0,
+      reason: 'league not in the catalogue; pass allowUncatalogued to fetch it',
+    })),
     emptyReason: 'no league-seasons with injuries coverage',
   };
 };
@@ -388,30 +485,58 @@ const planSidelined = async (
           resolveInjuriesTargets({ ...input, mode: 'nightly' }, deps.competitions),
           nowMs
         );
+  const windowMs = UNIT_MARKER_WINDOW_SECONDS['player-sidelined'][input.mode] * 1_000;
+  const due: string[] = [];
+  let fresh = 0;
+  for (const ids of chunk(playerIds, MARKER_READ_CONCURRENCY)) {
+    const markers = input.reset
+      ? ids.map(() => undefined)
+      : await Promise.all(
+          ids.map((id) =>
+            deps.ingestion.cache.get<UnitMarker>(
+              unitMarkerKey('player-sidelined', sidelinedMemberKey(id))
+            )
+          )
+        );
+    ids.forEach((id, index) => {
+      const marker = markers[index];
+      if (marker && nowMs - marker.completedAtMs <= windowMs) {
+        fresh += 1;
+      } else {
+        due.push(id);
+      }
+    });
+  }
   return {
     needs: 'ingestAvailability',
-    units: chunk(playerIds, PROVIDER_MULTI_ID_MAX).map((ids) => sidelinedUnit(ids)),
+    units: chunk(due, PROVIDER_MULTI_ID_MAX).map((ids) => sidelinedUnit(ids)),
+    freshMembers: fresh,
     emptyReason:
-      'no players listed by injuries-league in the last 30 days; run injuries-league or pass playerIds',
+      fresh > 0
+        ? `all ${fresh} players in scope are fresh`
+        : 'no players listed by injuries-league in the last 30 days; run injuries-league or pass playerIds',
   };
 };
 
 const planTransfers = async (
   input: ProviderEnrichmentInput,
-  deps: WorkflowDeps
+  deps: WorkflowDeps,
+  options: PlanOptions
 ): Promise<UnitPlan> => {
-  const teams = await resolveTeamScope(input, deps);
+  const scope = await resolveTeamScope(input, deps, options.loadFixtureList);
   return {
     needs: 'ingestTransfers',
-    units: teams.map((teamId) => transfersUnit(teamId)),
-    emptyReason: 'no teams: the catalogue fixture lists are not cached; pass teamIds',
+    units: scope.teamIds.map((teamId) => transfersUnit(teamId)),
+    gaps: scope.gaps,
+    emptyReason: 'no teams in the catalogue fixture lists; pass teamIds',
   };
 };
 
 const planTrophies = async (
   input: ProviderEnrichmentInput,
   deps: WorkflowDeps,
-  nowMs: number
+  nowMs: number,
+  options: PlanOptions
 ): Promise<UnitPlan> => {
   const units: EnrichmentUnit[] = [];
   const explicitPlayers = sortIds(input.playerIds ?? []);
@@ -425,16 +550,17 @@ const planTrophies = async (
   if (explicitPlayers.length > 0 || explicitCoaches.length > 0) {
     return { needs: 'ingestTrophies', units };
   }
-  const teams = await resolveTeamScope(input, deps);
+  const scope = await resolveTeamScope(input, deps, options.loadFixtureList);
   const partition = trophiesPartition(input.partition, nowMs);
   const selected =
     input.teamIds && input.teamIds.length > 0
-      ? teams
-      : teams.filter((_, index) => index % TROPHIES_PARTITIONS === partition);
+      ? scope.teamIds
+      : scope.teamIds.filter((teamId) => teamTrophiesPartition(teamId) === partition);
   return {
     needs: 'ingestTrophies',
     units: selected.map((teamId) => squadTrophiesUnit(teamId)),
-    emptyReason: 'no teams: the catalogue fixture lists are not cached; pass teamIds or playerIds',
+    gaps: scope.gaps,
+    emptyReason: `no teams in partition ${partition} of the catalogue fixture lists; pass teamIds or playerIds`,
   };
 };
 
@@ -519,8 +645,15 @@ const injuriesUnit = (target: LeagueSeason): EnrichmentUnit => ({
   },
 });
 
+/** Sidelined markers are kept per player. */
+export const sidelinedMemberKey = (playerId: string): string => `player-${playerId}`;
+
+/** Marker reads in flight at once while planning the sidelined scope. */
+const MARKER_READ_CONCURRENCY = 100;
+
 const sidelinedUnit = (playerIds: readonly string[]): EnrichmentUnit => ({
   key: `players-${playerIds.join('-')}`,
+  memberKeys: playerIds.map(sidelinedMemberKey),
   leagueId: 0,
   season: 0,
   run: async (ctx) => {
@@ -613,9 +746,18 @@ const fetchAndIngestTrophies = async (
   if (decoded.providerErrors !== undefined && decoded.entries === 0) {
     return { ok: false, stopped: false, message: `provider errors ${decoded.providerErrors}` };
   }
+  const packed = packTrophyRows(decoded.rows);
+  if (packed.trimmed > 0) {
+    ctx.log({
+      event: 'provider_enrichment.trophies_trimmed',
+      status: `${subject}-${ids[0]}-${ids.length}`,
+      reason: `${packed.trimmed} trophies over ${MAX_TROPHIES_PER_INGEST} for one subject; runner-up and other places dropped first`,
+    });
+  }
   try {
-    const accepted = await ingestInBatches(decoded.rows, async (batch, start) =>
-      ctx.ingest.ingestTrophies!(
+    let accepted = 0;
+    for (const { rows, start } of packed.batches) {
+      const response = await ctx.ingest.ingestTrophies!(
         create(IngestTrophiesRequestSchema, {
           metadata: metadata(
             'trophies',
@@ -624,11 +766,12 @@ const fetchAndIngestTrophies = async (
             fetchedAtMs,
             start
           ),
-          rows: batch as TrophyRow[],
+          rows,
         })
-      )
-    );
-    return { ok: true, accepted, dropped: decoded.dropped };
+      );
+      accepted += response.acceptedCount;
+    }
+    return { ok: true, accepted, dropped: decoded.dropped + packed.trimmed };
   } catch (error) {
     return { ok: false, stopped: false, message: `ingest failed: ${errorMessage(error)}` };
   }
@@ -687,6 +830,83 @@ const squadTrophiesUnit = (teamId: string): EnrichmentUnit => ({
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────
+
+const trophyIdentity = (trophy: TrophyRow['trophies'][number]): string =>
+  [trophy.competitionName, trophy.country, trophy.seasonText, trophy.place]
+    .map((part) => part.trim())
+    .join('\u0000');
+
+/**
+ * Split trophy rows into `IngestTrophies` requests whose trophies, summed
+ * over the request, stay within {@link MAX_TROPHIES_PER_INGEST}, and whose
+ * rows stay within {@link UNIT_INGEST_BATCH_SIZE}. A subject is never split
+ * across requests: game-service replaces a subject's whole list per row, so a
+ * second part would delete the first. A subject with more trophies than one
+ * request holds first loses exact repeats (game-service keeps only the first
+ * anyway), then non-winner places from the end, keeping provider order.
+ * `start` is the index of the request's first row.
+ */
+export const packTrophyRows = (
+  rows: readonly TrophyRow[],
+  maxTrophies = MAX_TROPHIES_PER_INGEST
+): {
+  readonly batches: readonly { readonly rows: TrophyRow[]; readonly start: number }[];
+  readonly trimmed: number;
+} => {
+  const batches: { rows: TrophyRow[]; start: number }[] = [];
+  let trimmed = 0;
+  let current: TrophyRow[] = [];
+  let currentStart = 0;
+  let currentTrophies = 0;
+  rows.forEach((original, index) => {
+    let row = original;
+    if (row.trophies.length > maxTrophies) {
+      const seen = new Set<string>();
+      const unique = row.trophies.filter((trophy) => {
+        const identity = trophyIdentity(trophy);
+        if (seen.has(identity)) {
+          return false;
+        }
+        seen.add(identity);
+        return true;
+      });
+      let keep = unique;
+      if (keep.length > maxTrophies) {
+        const winners = keep.filter((t) => t.place.trim().toLowerCase() === 'winner').length;
+        let othersLeft = Math.max(0, maxTrophies - winners);
+        let winnersLeft = maxTrophies;
+        keep = keep.filter((t) => {
+          if (t.place.trim().toLowerCase() === 'winner') {
+            winnersLeft -= 1;
+            return winnersLeft >= 0;
+          }
+          othersLeft -= 1;
+          return othersLeft >= 0;
+        });
+      }
+      trimmed += row.trophies.length - keep.length;
+      row = { ...row, trophies: keep };
+    }
+    const size = row.trophies.length;
+    if (
+      current.length > 0 &&
+      (currentTrophies + size > maxTrophies || current.length >= UNIT_INGEST_BATCH_SIZE)
+    ) {
+      batches.push({ rows: current, start: currentStart });
+      current = [];
+      currentTrophies = 0;
+    }
+    if (current.length === 0) {
+      currentStart = index;
+    }
+    current.push(row);
+    currentTrophies += size;
+  });
+  if (current.length > 0) {
+    batches.push({ rows: current, start: currentStart });
+  }
+  return { batches, trimmed };
+};
 
 const ingestInBatches = async <TRow>(
   rows: readonly TRow[],

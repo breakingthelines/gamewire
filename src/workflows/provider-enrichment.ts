@@ -48,7 +48,10 @@ import {
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import type { ProviderPlayerSeasonStatsRow } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
 
-import { API_FOOTBALL_PROVIDER_ID } from '../adapters/api-football/index.js';
+import {
+  API_FOOTBALL_PROVIDER_ID,
+  apiFootballFixtureSyncPaths,
+} from '../adapters/api-football/index.js';
 import {
   apiFootballPlayerSeasonStatsPath,
   decodePlayerSeasonStatsPage,
@@ -60,12 +63,15 @@ import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { handleQuotaPosture } from './degrade.js';
 import {
   DEFAULT_UNIT_MAX_CALLS_PER_RUN,
+  UNIT_DATASET_NEEDS,
   UNIT_ENRICHMENT_DATASETS,
   UNIT_MARKER_WINDOW_SECONDS,
+  fixtureListResourceId,
   isUnitEnrichmentDataset,
   planUnitDataset,
   unitMarkerKey,
   type EnrichmentUnit,
+  type ScopeGap,
   type UnitContext,
   type UnitEnrichmentDataset,
   type UnitMarker,
@@ -742,7 +748,10 @@ interface UnitRunEnv {
  * marker per completed unit so a stopped run resumes.
  *
  * In each unit result `pagesFetched` is the provider calls the unit made and
- * `pagesTotal` the calls it needed as far as it got; `nextPage` is 0.
+ * `pagesTotal` the calls it needed as far as it got; `nextPage` is 0. A
+ * league the team scope could not cover (no fixture list) and a named league
+ * outside the catalogue are listed as `failed` targets, so the run ends
+ * `incomplete` instead of `completed`.
  */
 const runUnitDataset = async (
   input: ProviderEnrichmentInput,
@@ -751,9 +760,12 @@ const runUnitDataset = async (
   env: UnitRunEnv
 ): Promise<ProviderEnrichmentOutput> => {
   const { clock, nowMs, limit, dryRun, degradeFlags, log, finish } = env;
-  const plan = await planUnitDataset(dataset, input, deps, nowMs);
-  if (plan.units.length === 0) {
-    return finish('skipped', { reason: plan.emptyReason ?? 'nothing to fetch' });
+  const needs = UNIT_DATASET_NEEDS[dataset];
+  const ingest = deps.enrichment?.ingest;
+  if (!dryRun && (!ingest || typeof ingest[needs] !== 'function')) {
+    return finish('skipped', {
+      reason: `game-service ${needs} ingest client is not wired`,
+    });
   }
 
   const cache = deps.ingestion.cache;
@@ -786,23 +798,21 @@ const runUnitDataset = async (
     rowsDropped: outcome?.rowsDropped ?? 0,
     errors: outcome?.errors ?? [],
   });
-
-  if (dryRun) {
-    const planned: ProviderEnrichmentTargetResult[] = [];
-    for (const unit of plan.units) {
-      const held = inFlight.has(holdKey(unit));
-      const marker = held ? undefined : await readMarker(unit);
-      planned.push(result(unit, held ? 'in-progress' : marker ? 'fresh' : 'planned'));
-    }
-    return finish('completed', { targets: planned, reason: 'dry run' });
-  }
-
-  const ingest = deps.enrichment?.ingest;
-  if (!ingest || typeof ingest[plan.needs] !== 'function') {
-    return finish('skipped', {
-      reason: `game-service ${plan.needs} ingest client is not wired`,
-    });
-  }
+  const gapResult = (gap: ScopeGap): ProviderEnrichmentTargetResult => ({
+    unit:
+      gap.season > 0
+        ? `fixtures-league-${gap.leagueId}-season-${gap.season}`
+        : `league-${gap.leagueId}`,
+    leagueId: gap.leagueId,
+    season: gap.season,
+    status: 'failed',
+    pagesTotal: 0,
+    nextPage: 0,
+    pagesFetched: 0,
+    rowsIngested: 0,
+    rowsDropped: 0,
+    errors: [gap.reason],
+  });
 
   const sleep = deps.enrichment?.sleep ?? defaultSleep;
   const acquireJobToken = jobTokenAcquirer(deps, clock, sleep);
@@ -813,7 +823,22 @@ const runUnitDataset = async (
   /** A posture seen on a successful call: the unit keeps its data, the run stops after it. */
   let stopAfterUnit: { status: 'incomplete' | 'aborted'; reason: string } | undefined;
 
-  const fetch: UnitContext['fetch'] = async ({ workload, resourceId, path }) => {
+  /**
+   * One provider call under the run's guards. Unit calls bypass the cache
+   * (D9); the team scope's fixture-list fallback uses it, under the key the
+   * live loop's discovery writes, so a cached list costs nothing.
+   */
+  const guardedFetch = async ({
+    workload,
+    resourceId,
+    path,
+    cacheMode,
+  }: {
+    readonly workload: Parameters<UnitContext['fetch']>[0]['workload'];
+    readonly resourceId: string;
+    readonly path: string;
+    readonly cacheMode: 'use' | 'bypass';
+  }): ReturnType<UnitContext['fetch']> => {
     if (stop || stopAfterUnit) {
       return { ok: false, stopped: true };
     }
@@ -832,7 +857,7 @@ const runUnitDataset = async (
         resourceId,
         path,
         priority: WORKFLOW_PROVIDER_PRIORITY,
-        cache: 'bypass',
+        cache: cacheMode,
       });
       if (last.fetch !== undefined && last.status !== 'skipped') {
         callsUsed += 1;
@@ -878,6 +903,9 @@ const runUnitDataset = async (
           : { status: 'incomplete', reason: last.error?.message ?? 'quota denied the call' };
       return { ok: false, stopped: true };
     }
+    if (last.status === 'cached' && cacheMode === 'use' && last.data !== undefined) {
+      return { ok: true, data: last.data };
+    }
     if (last.status !== 'fetched' || last.data === undefined) {
       return {
         ok: false,
@@ -897,17 +925,70 @@ const runUnitDataset = async (
     }
     return { ok: true, data: last.data };
   };
+  const fetch: UnitContext['fetch'] = (args) => guardedFetch({ ...args, cacheMode: 'bypass' });
+
+  const plan = await planUnitDataset(dataset, input, deps, nowMs, {
+    loadFixtureList: dryRun
+      ? undefined
+      : (entry: CompetitionEntry) =>
+          guardedFetch({
+            workload: 'fixtures-next-7d',
+            resourceId: fixtureListResourceId(entry),
+            path: apiFootballFixtureSyncPaths([entry])[0] ?? '/fixtures',
+            cacheMode: 'use',
+          }),
+  });
+  const gapResults = (plan.gaps ?? []).map(gapResult);
+  for (const gap of plan.gaps ?? []) {
+    log({
+      event: 'provider_enrichment.scope_gap',
+      leagueId: gap.leagueId,
+      season: gap.season || undefined,
+      reason: gap.reason,
+    });
+  }
+  if (plan.units.length === 0) {
+    if (gapResults.length > 0) {
+      const finalStop = stop ?? stopAfterUnit;
+      return finish(finalStop?.status ?? 'incomplete', {
+        targets: gapResults,
+        callsUsed,
+        finalQuota: lastQuota,
+        reason:
+          finalStop?.reason ??
+          `${plan.emptyReason ?? 'nothing to fetch'}; ${gapResults.length} leagues missing`,
+      });
+    }
+    if ((plan.freshMembers ?? 0) > 0) {
+      return finish('completed', { callsUsed, finalQuota: lastQuota, reason: plan.emptyReason });
+    }
+    return finish('skipped', {
+      callsUsed,
+      finalQuota: lastQuota,
+      reason: plan.emptyReason ?? 'nothing to fetch',
+    });
+  }
+
+  if (dryRun) {
+    const planned: ProviderEnrichmentTargetResult[] = [...gapResults];
+    for (const unit of plan.units) {
+      const held = inFlight.has(holdKey(unit));
+      const marker = held ? undefined : await readMarker(unit);
+      planned.push(result(unit, held ? 'in-progress' : marker ? 'fresh' : 'planned'));
+    }
+    return finish('completed', { targets: planned, reason: 'dry run' });
+  }
 
   const ctx: UnitContext = {
     fetch,
-    ingest,
+    ingest: ingest!,
     cache,
     clockMs: () => clock().getTime(),
     nowMs,
     log,
   };
 
-  const results: ProviderEnrichmentTargetResult[] = [];
+  const results: ProviderEnrichmentTargetResult[] = [...gapResults];
   for (const unit of plan.units) {
     if (stop || stopAfterUnit) {
       results.push(result(unit, 'not-started'));
@@ -932,10 +1013,11 @@ const runUnitDataset = async (
       const outcome = await unit.run(ctx);
       if (outcome.status === 'complete') {
         consecutiveFailures = 0;
-        await cache.set<UnitMarker>(
-          unitMarkerKey(dataset, unit.key),
-          { completedAtMs: clock().getTime() },
-          windowSeconds
+        const marker: UnitMarker = { completedAtMs: clock().getTime() };
+        await Promise.all(
+          (unit.memberKeys ?? [unit.key]).map((member) =>
+            cache.set<UnitMarker>(unitMarkerKey(dataset, member), marker, windowSeconds)
+          )
         );
         results.push(result(unit, 'complete', outcome));
         log({
