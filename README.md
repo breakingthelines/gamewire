@@ -117,27 +117,53 @@ The per-minute buckets live in each worker process. Prod and staging share one
 API-Football key, so each gets its own full set of minute ceilings; staging needs
 its own lower minute caps before the live tick gets faster.
 
-Provider enrichment runs through `POST /workflows/provider-enrichment`. Only
-`player-season-stats` (`/players?league&season&page`) exists so far. A dataset
-runs only when `GAMEWIRE_ENRICHMENT_DATASETS` names it; the default is empty, so
-nothing runs. Calls are `background`, held to `GAMEWIRE_ENRICHMENT_MINUTE_CAP`
-(default 120, never above the background ceiling) and to a per-run `limit`
-(default 1,500, at most 4,000). Pages are not cached: each one goes straight to
-game-service `IngestProviderPlayerSeasonStats`, and only a small page cursor per
-league-season is kept so a stopped run resumes. A provider null is left out of
-the row's `values`; it is never written as 0.
+Provider enrichment runs through `POST /workflows/provider-enrichment`. A
+dataset runs only when `GAMEWIRE_ENRICHMENT_DATASETS` names it; the default is
+empty, so nothing runs. Calls are `background`, held to
+`GAMEWIRE_ENRICHMENT_MINUTE_CAP` (default 120, never above the background
+ceiling) and to a per-run `limit` (default per dataset, at most 4,000). Provider
+responses are not cached: each one goes straight to its game-service ingest RPC.
+A provider null is left out of the row's `values`; it is never written as 0.
+
+| dataset               | provider call                                                     | scope when the request names none                                        | default limit | ingest RPC                        |
+| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------- | --------------------------------- |
+| `player-season-stats` | `/players?league&season&page`                                     | catalogue domestic leagues at their catalogue season                     | 1,500         | `IngestProviderPlayerSeasonStats` |
+| `injuries-league`     | `/injuries?league&season`                                         | catalogue leagues with injuries coverage (`INJURIES_COVERED_LEAGUE_IDS`) | 60            | `IngestAvailability` (INJURIES)   |
+| `player-sidelined`    | `/sidelined?players=a-b`, 20 a call                               | players `injuries-league` listed for a fixture in the last 30 days       | 300           | `IngestAvailability` (SIDELINED)  |
+| `team-transfers`      | `/transfers?team=T`                                               | teams in the cached fixture lists of the catalogue domestic leagues      | 500           | `IngestTransfers`                 |
+| `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | a quarter of the same teams (ISO week mod 4, or `partition` 0 to 3)      | 600           | `IngestTrophies`                  |
+
+The GW-6b datasets keep only a small marker per finished unit (a league-season,
+a team, or a batch of ids) so a stopped run resumes, and `injuries-league` keeps
+a digest of player ids and kickoffs (the sidelined scope). An injuries pull
+sends every batch with the same `replace_scope` and `sync_id` and sets
+`final_batch` on the last one only, so game-service removes absences the
+provider no longer lists. An empty list, a reply with provider errors, or a
+failed batch removes nothing. Trophies and sidelined spells use the provider's
+multi-id form (`players=a-b-c`, up to 20 ids), which costs one call. Coach
+trophies run only for `coachIds` named in the request.
 
 ```jsonc
 // history backfill: leagues and seasons are explicit, nothing is gated on a season's end
 {"dataset": "player-season-stats", "mode": "full", "leagueIds": [39, 88], "seasons": [2025, 2024, 2023], "limit": 1500}
 // nightly current-season refresh: catalogue domestic leagues at their catalogue season
 {"dataset": "player-season-stats", "mode": "nightly"}
+// GW-6b: the K-2 schedule bodies, and explicit scopes
+{"dataset": "injuries-league"}
+{"dataset": "player-sidelined"}
+{"dataset": "team-transfers"}
+{"dataset": "trophies", "partition": "auto"}
+{"dataset": "injuries-league", "mode": "full", "leagueIds": [88], "seasons": [2025]}
+{"dataset": "trophies", "playerIds": [276, 874], "coachIds": [1]}
+{"dataset": "team-transfers", "teamIds": [194]}
 ```
 
 `mode` is `nightly` (the default) or `full`. The spec's `auto` and `dirty`, which
-the K-2 schedule sends, are accepted as `nightly`. `full` walks the named seasons
-latest first. Only one run in a process works on a league-season at a time; a
-second run reports it as `in-progress` and fetches nothing for it.
+the K-2 schedule sends, are accepted as `nightly`. `full` never uses a default
+scope: `player-season-stats` and `injuries-league` need `leagueIds` and
+`seasons` (walked latest first), the others need `playerIds`, `coachIds` or
+`teamIds`. Only one run in a process works on a unit at a time; a second run
+reports it as `in-progress` and fetches nothing for it.
 
 Provider fixture results run through `POST /workflows/provider-fixture-results`
 and feed game-service `IngestProviderFixtureResults` on the profile jobs Service

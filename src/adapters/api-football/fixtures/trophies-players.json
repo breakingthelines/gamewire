@@ -1,0 +1,84 @@
+{
+  "get": "trophies",
+  "parameters": {
+    "players": "276-874"
+  },
+  "errors": [],
+  "results": 2,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "id": 276,
+      "trophies": [
+        {
+          "league": "Paulista A1",
+          "country": "Brazil",
+          "season": null,
+          "place": "Winner"
+        },
+        {
+          "league": "Paulista A1",
+          "country": "Brazil",
+          "season": "2012",
+          "place": "Winner"
+        },
+        {
+          "league": "Paulista A1",
+          "country": "Brazil",
+          "season": "2011",
+          "place": "Winner"
+        },
+        {
+          "league": "Paulista A1",
+          "country": "Brazil",
+          "season": "2010",
+          "place": "Winner"
+        },
+        {
+          "league": "Paulista A1",
+          "country": "Brazil",
+          "season": null,
+          "place": "Winner"
+        }
+      ]
+    },
+    {
+      "id": 874,
+      "trophies": [
+        {
+          "league": "League Cup",
+          "country": "England",
+          "season": null,
+          "place": "Winner"
+        },
+        {
+          "league": "League Cup",
+          "country": "England",
+          "season": "2008/2009",
+          "place": "Winner"
+        },
+        {
+          "league": "League Cup",
+          "country": "England",
+          "season": "2005/2006",
+          "place": "Winner"
+        },
+        {
+          "league": "League Cup",
+          "country": "England",
+          "season": null,
+          "place": "Winner"
+        },
+        {
+          "league": "League Cup",
+          "country": "England",
+          "season": "2002/2003",
+          "place": "2nd Place"
+        }
+      ]
+    }
+  ]
+}

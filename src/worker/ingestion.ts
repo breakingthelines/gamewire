@@ -32,7 +32,13 @@ import {
   apiFootballStandingPath,
   providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
-import { apiFootballPlayerSeasonStatsPath } from '../adapters/api-football/enrichment-decoders.js';
+import {
+  apiFootballInjuriesLeaguePath,
+  apiFootballPlayerSeasonStatsPath,
+  apiFootballSidelinedPath,
+  apiFootballTransfersPath,
+  apiFootballTrophiesPath,
+} from '../adapters/api-football/enrichment-decoders.js';
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import type { ProviderCache } from './cache.js';
 import { InMemoryProviderCache } from './cache.js';
@@ -69,7 +75,11 @@ export type IngestionWorkload =
   | 'competition-current-season'
   | 'team-metadata'
   | 'provider-fixture-results'
-  | 'player-season-stats';
+  | 'player-season-stats'
+  | 'injuries-league'
+  | 'player-sidelined'
+  | 'team-transfers'
+  | 'trophies';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -126,6 +136,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // (verdict D9, the shared Redis has no maxmemory). The TTL is 0 so a direct
   // call without the bypass caches nothing either.
   'player-season-stats': 0,
+  // GW-6b enrichment datasets: never cached, same as player-season-stats (D9).
+  'injuries-league': 0,
+  'player-sidelined': 0,
+  'team-transfers': 0,
+  trophies: 0,
 } as const;
 
 /**
@@ -191,6 +206,11 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'provider-fixture-results': 0,
   // Driven only by POST /workflows/provider-enrichment.
   'player-season-stats': 0,
+  // GW-6b enrichment datasets: driven only by the same endpoint.
+  'injuries-league': 0,
+  'player-sidelined': 0,
+  'team-transfers': 0,
+  trophies: 0,
 } as const;
 
 /**
@@ -1468,6 +1488,20 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
         ? apiFootballPlayerSeasonStatsPath(Number(match[1]), Number(match[2]), Number(match[3]))
         : '/players';
     }
+    // GW-6b: the provider-enrichment workflow always passes `path`; these
+    // fallbacks only shape a direct call by resource id.
+    case 'injuries-league': {
+      const match = /^injuries-(\d+)-(\d+)$/.exec(resourceId.trim());
+      return match
+        ? apiFootballInjuriesLeaguePath(Number(match[1]), Number(match[2]))
+        : '/injuries';
+    }
+    case 'player-sidelined':
+      return apiFootballSidelinedPath(resourceId.trim().split('-').filter(Boolean));
+    case 'team-transfers':
+      return apiFootballTransfersPath(resourceId.trim());
+    case 'trophies':
+      return apiFootballTrophiesPath('player', resourceId.trim().split('-').filter(Boolean));
   }
 }
 

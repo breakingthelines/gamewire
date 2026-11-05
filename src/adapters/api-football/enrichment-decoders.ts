@@ -1,8 +1,9 @@
 /**
  * Decoders for API-Football enrichment datasets (Mega plan, spec GW-6).
  *
- * Only the player season stats dataset is built so far (GW-6a). Each decoder
- * turns one provider envelope into GS-2 ingest rows and never invents values:
+ * Player season stats (GW-6a); injuries, sidelined spells, transfers and
+ * trophies (GW-6b). Each decoder turns one provider envelope into GS-2 ingest
+ * rows and never invents values:
  *
  * - A provider `null` is left out of `values`. A missing key means "the
  *   provider said nothing"; `0` means the provider said 0 (profile-spec §1.5).
@@ -17,9 +18,21 @@ import {
   ProviderEntitySnapshotSchema,
   type ProviderEntitySnapshot,
 } from '@breakingthelines/protos/btl/game/v1/types/game_pb';
+import { SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import {
+  AvailabilityKind,
+  AvailabilityRowSchema,
+  AvailabilitySource,
+  AvailabilityStatus,
   ProviderPlayerSeasonStatsRowSchema,
+  TransferRowSchema,
+  TrophyEntrySchema,
+  TrophyRowSchema,
+  type AvailabilityRow,
   type ProviderPlayerSeasonStatsRow,
+  type TransferRow,
+  type TrophyEntry,
+  type TrophyRow,
 } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
 
 /** `/players?league=L&season=S&page=P`. Pages are 1-based. */
@@ -304,4 +317,397 @@ const decodeProviderErrors = (envelope: unknown): string | undefined => {
     return Object.keys(errors).length > 0 ? JSON.stringify(errors).slice(0, 300) : undefined;
   }
   return undefined;
+};
+
+// ── GW-6b: availability, transfers, trophies ──────────────────────────────
+
+/** Most ids the provider takes in one `players=` or `coachs=` parameter. */
+export const PROVIDER_MULTI_ID_MAX = 20;
+
+/** `/injuries?league=L&season=S`. One unpaginated list for the whole season. */
+export const apiFootballInjuriesLeaguePath = (leagueId: number, season: number): string =>
+  `/injuries?league=${encodeURIComponent(String(leagueId))}` +
+  `&season=${encodeURIComponent(String(season))}`;
+
+/** `/sidelined?players=a-b-c`, up to {@link PROVIDER_MULTI_ID_MAX} ids. */
+export const apiFootballSidelinedPath = (playerIds: readonly string[]): string =>
+  `/sidelined?players=${playerIds.map((id) => encodeURIComponent(id)).join('-')}`;
+
+/** `/transfers?team=T`: every transfer of every player the provider links to the team. */
+export const apiFootballTransfersPath = (teamId: string): string =>
+  `/transfers?team=${encodeURIComponent(teamId)}`;
+
+/** `/trophies?players=a-b` or `/trophies?coachs=a-b`, up to {@link PROVIDER_MULTI_ID_MAX} ids. */
+export const apiFootballTrophiesPath = (
+  subject: 'player' | 'coach',
+  ids: readonly string[]
+): string =>
+  `/trophies?${subject === 'player' ? 'players' : 'coachs'}=` +
+  ids.map((id) => encodeURIComponent(id)).join('-');
+
+/** `/players/squads?team=T`: the current squad, used to scope player trophies. */
+export const apiFootballSquadPath = (teamId: string): string =>
+  `/players/squads?team=${encodeURIComponent(teamId)}`;
+
+/** Provider id parser, exported for the enrichment workflow's id lists. */
+export const parseProviderId = (value: unknown): string | undefined => providerId(value);
+
+/** The provider's non-empty `errors` field, or undefined. */
+export const providerErrorsOf = (envelope: unknown): string | undefined =>
+  decodeProviderErrors(envelope);
+
+const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})/;
+
+/** First ten characters as an ISO date when they are one, else ''. */
+const isoDate = (value: unknown): string => {
+  const str = text(value);
+  const match = ISO_DATE.exec(str);
+  if (!match) {
+    return '';
+  }
+  const date = `${match[1]}-${match[2]}-${match[3]}`;
+  const parsed = Date.parse(`${date}T00:00:00Z`);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString().startsWith(date) ? date : '';
+};
+
+const isPlaceholderName = (value: unknown): boolean =>
+  text(value).toLowerCase() === PLACEHOLDER_NAME;
+
+/** Provider injury `type` to status: "Missing Fixture" is out, "Questionable" doubtful. */
+export const availabilityStatusFor = (type: unknown): AvailabilityStatus => {
+  const value = text(type).toLowerCase();
+  if (value === 'missing fixture') {
+    return AvailabilityStatus.OUT;
+  }
+  if (value === 'questionable') {
+    return AvailabilityStatus.DOUBTFUL;
+  }
+  return AvailabilityStatus.UNKNOWN;
+};
+
+const SUSPENSION_REASON = /card|suspen/i;
+const INJURY_REASON =
+  /injur|knock|surgery|broken|fracture|strain|sprain|tear|torn|muscle|tendon|ligament|concussion|bruise|contusion|illness|\bill\b|virus|sick|health|medical|hamstring|cruciate|meniscus/i;
+
+/**
+ * Provider reason text to kind. A card or suspension is SUSPENSION, a known
+ * injury or illness word is INJURY, anything else ("Inactive", "Personal
+ * Reasons", "Lacking Match Fitness") is OTHER.
+ */
+export const availabilityKindFor = (reason: unknown): AvailabilityKind => {
+  const value = text(reason);
+  if (value === '') {
+    return AvailabilityKind.OTHER;
+  }
+  if (SUSPENSION_REASON.test(value)) {
+    return AvailabilityKind.SUSPENSION;
+  }
+  if (INJURY_REASON.test(value)) {
+    return AvailabilityKind.INJURY;
+  }
+  return AvailabilityKind.OTHER;
+};
+
+export interface DecodedEnrichmentResponse<TRow> {
+  readonly rows: readonly TRow[];
+  /** Provider `response[]` entries seen. */
+  readonly entries: number;
+  /** Entries or rows dropped: placeholder or missing ids, bad dates, another league. */
+  readonly dropped: number;
+  /** The provider's non-empty `errors` field. */
+  readonly providerErrors?: string;
+}
+
+export interface InjuriesPlayerSighting {
+  readonly providerPlayerId: string;
+  /** Kickoff of the fixture the row is for, in ms. */
+  readonly fixtureAtMs: number;
+}
+
+export interface DecodedInjuries extends DecodedEnrichmentResponse<AvailabilityRow> {
+  /** One entry per row: who was listed for which kickoff (feeds the sidelined scope). */
+  readonly sightings: readonly InjuriesPlayerSighting[];
+}
+
+/**
+ * Decode `/injuries?league=L&season=S` into INJURIES rows, one per (player,
+ * fixture). Rows for another league, or with no player or fixture id, are
+ * dropped.
+ */
+export const decodeInjuries = (
+  envelope: unknown,
+  options: { readonly leagueId: number; readonly season: number; readonly fetchedAtMs: number }
+): DecodedInjuries => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { rows: [], sightings: [], entries: 0, dropped: 0, providerErrors };
+  }
+  const league = String(options.leagueId);
+  const fetchedAt = timestampFromMs(options.fetchedAtMs);
+  const rows: AvailabilityRow[] = [];
+  const sightings: InjuriesPlayerSighting[] = [];
+  let dropped = 0;
+  for (const entry of envelope.response) {
+    if (!isRecord(entry)) {
+      dropped += 1;
+      continue;
+    }
+    const player = isRecord(entry.player) ? entry.player : {};
+    const team = isRecord(entry.team) ? entry.team : {};
+    const fixture = isRecord(entry.fixture) ? entry.fixture : {};
+    const entryLeague = isRecord(entry.league) ? providerId(entry.league.id) : undefined;
+    const playerId = providerId(player.id);
+    const fixtureId = providerId(fixture.id);
+    const kickoffMs = fixtureKickoffMs(fixture);
+    const startDate = kickoffMs === undefined ? isoDate(fixture.date) : isoDateFromMs(kickoffMs);
+    if (
+      playerId === undefined ||
+      fixtureId === undefined ||
+      isPlaceholderName(player.name) ||
+      startDate === '' ||
+      (entryLeague !== undefined && entryLeague !== league)
+    ) {
+      dropped += 1;
+      continue;
+    }
+    rows.push(
+      create(AvailabilityRowSchema, {
+        source: AvailabilitySource.INJURIES,
+        providerPlayerId: playerId,
+        providerTeamId: providerId(team.id) ?? '',
+        providerFixtureId: fixtureId,
+        providerCompetitionId: league,
+        seasonYear: options.season,
+        playerSnapshot: create(ProviderEntitySnapshotSchema, {
+          label: text(player.name),
+          imageUrl: text(player.photo),
+        }),
+        teamSnapshot: teamSnapshot(team),
+        status: availabilityStatusFor(player.type),
+        kind: availabilityKindFor(player.reason),
+        reason: text(player.reason),
+        startDate,
+        endDate: '',
+        fixtureAt: kickoffMs === undefined ? undefined : timestampFromMs(kickoffMs),
+        fetchedAt,
+      })
+    );
+    if (kickoffMs !== undefined) {
+      sightings.push({ providerPlayerId: playerId, fixtureAtMs: kickoffMs });
+    }
+  }
+  return { rows, sightings, entries: envelope.response.length, dropped, providerErrors };
+};
+
+const fixtureKickoffMs = (fixture: Record<string, unknown>): number | undefined => {
+  const seconds = parseProviderNumber(fixture.timestamp);
+  if (seconds !== undefined && seconds > 0) {
+    return seconds * 1_000;
+  }
+  const parsed = Date.parse(text(fixture.date));
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+const isoDateFromMs = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Decode `/sidelined?players=a-b` (grouped by player id) into SIDELINED rows,
+ * one per spell. A spell has no team, fixture, competition or season. Status
+ * is OUT: a spell is time the player missed. Spells with no valid start date
+ * are dropped. `subjectsAnswered` lists the ids the provider returned.
+ */
+export const decodeSidelined = (
+  envelope: unknown,
+  options: { readonly fetchedAtMs: number }
+): DecodedEnrichmentResponse<AvailabilityRow> & { readonly subjectsAnswered: number } => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { rows: [], entries: 0, dropped: 0, providerErrors, subjectsAnswered: 0 };
+  }
+  const fetchedAt = timestampFromMs(options.fetchedAtMs);
+  const rows: AvailabilityRow[] = [];
+  let dropped = 0;
+  let subjectsAnswered = 0;
+  for (const entry of envelope.response) {
+    const playerId = isRecord(entry) ? providerId(entry.id) : undefined;
+    if (!isRecord(entry) || playerId === undefined || !Array.isArray(entry.sidelined)) {
+      dropped += 1;
+      continue;
+    }
+    subjectsAnswered += 1;
+    for (const spell of entry.sidelined) {
+      const start = isRecord(spell) ? isoDate(spell.start) : '';
+      if (!isRecord(spell) || start === '') {
+        dropped += 1;
+        continue;
+      }
+      const type = text(spell.type);
+      rows.push(
+        create(AvailabilityRowSchema, {
+          source: AvailabilitySource.SIDELINED,
+          providerPlayerId: playerId,
+          providerTeamId: '',
+          providerFixtureId: '',
+          providerCompetitionId: '',
+          seasonYear: 0,
+          status: AvailabilityStatus.OUT,
+          kind: availabilityKindFor(type),
+          reason: type,
+          startDate: start,
+          endDate: isoDate(spell.end),
+          fetchedAt,
+        })
+      );
+    }
+  }
+  return { rows, entries: envelope.response.length, dropped, providerErrors, subjectsAnswered };
+};
+
+/**
+ * Decode `/transfers?team=T` into one row per transfer. The response lists
+ * each player's whole transfer history, not only moves involving T. `type`
+ * is kept raw as `fee_text` ("€ 50M", "Loan", "Free", or '' for null). A
+ * missing team id is stored as '' (the provider has some moves with no
+ * club on one side). Transfers with no valid date are dropped.
+ */
+export const decodeTransfers = (
+  envelope: unknown,
+  options: { readonly fetchedAtMs: number }
+): DecodedEnrichmentResponse<TransferRow> => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { rows: [], entries: 0, dropped: 0, providerErrors };
+  }
+  const fetchedAt = timestampFromMs(options.fetchedAtMs);
+  const rows: TransferRow[] = [];
+  let dropped = 0;
+  for (const entry of envelope.response) {
+    const player = isRecord(entry) && isRecord(entry.player) ? entry.player : undefined;
+    const playerId = player ? providerId(player.id) : undefined;
+    const transfers = isRecord(entry) && Array.isArray(entry.transfers) ? entry.transfers : [];
+    if (!player || playerId === undefined || isPlaceholderName(player.name)) {
+      dropped += Math.max(1, transfers.length);
+      continue;
+    }
+    const playerSnap = create(ProviderEntitySnapshotSchema, { label: text(player.name) });
+    for (const move of transfers) {
+      const date = isRecord(move) ? isoDate(move.date) : '';
+      if (!isRecord(move) || date === '') {
+        dropped += 1;
+        continue;
+      }
+      const teams = isRecord(move.teams) ? move.teams : {};
+      const teamIn = isRecord(teams.in) ? teams.in : {};
+      const teamOut = isRecord(teams.out) ? teams.out : {};
+      rows.push(
+        create(TransferRowSchema, {
+          providerPlayerId: playerId,
+          playerSnapshot: playerSnap,
+          transferDate: date,
+          providerTeamInId: providerId(teamIn.id) ?? '',
+          teamInSnapshot: teamSnapshot(teamIn),
+          providerTeamOutId: providerId(teamOut.id) ?? '',
+          teamOutSnapshot: teamSnapshot(teamOut),
+          feeText: text(move.type),
+          fetchedAt,
+        })
+      );
+    }
+  }
+  return { rows, entries: envelope.response.length, dropped, providerErrors };
+};
+
+/**
+ * Decode `/trophies?players=a-b` or `?coachs=a-b` (grouped by id) into one
+ * row per subject holding its full list. An id the provider answered with an
+ * empty list sets `clear_scope` (the provider confirmed no trophies); an id
+ * it left out of the response produces no row. A null `season` is kept as
+ * '' and entries with no competition name are dropped.
+ */
+export const decodeTrophies = (
+  envelope: unknown,
+  options: {
+    readonly subject: 'player' | 'coach';
+    readonly fetchedAtMs: number;
+    /** Display names known from the squad call, by provider id. */
+    readonly names?: ReadonlyMap<string, string>;
+  }
+): DecodedEnrichmentResponse<TrophyRow> => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { rows: [], entries: 0, dropped: 0, providerErrors };
+  }
+  const fetchedAt = timestampFromMs(options.fetchedAtMs);
+  const subjectType = options.subject === 'player' ? SubjectType.PLAYER : SubjectType.COACH;
+  const rows: TrophyRow[] = [];
+  let dropped = 0;
+  for (const entry of envelope.response) {
+    const id = isRecord(entry) ? providerId(entry.id) : undefined;
+    if (!isRecord(entry) || id === undefined || !Array.isArray(entry.trophies)) {
+      dropped += 1;
+      continue;
+    }
+    const trophies: TrophyEntry[] = [];
+    for (const trophy of entry.trophies) {
+      const name = isRecord(trophy) ? text(trophy.league) : '';
+      if (!isRecord(trophy) || name === '') {
+        dropped += 1;
+        continue;
+      }
+      trophies.push(
+        create(TrophyEntrySchema, {
+          competitionName: name,
+          country: text(trophy.country),
+          seasonText: text(trophy.season),
+          place: text(trophy.place),
+        })
+      );
+    }
+    const label = options.names?.get(id) ?? '';
+    rows.push(
+      create(TrophyRowSchema, {
+        subjectType,
+        providerSubjectId: id,
+        subjectSnapshot: label ? create(ProviderEntitySnapshotSchema, { label }) : undefined,
+        trophies,
+        fetchedAt,
+        // Only an explicit empty list clears; a list whose every entry was
+        // dropped is not the provider saying "none".
+        clearScope: entry.trophies.length === 0,
+      })
+    );
+  }
+  return { rows, entries: envelope.response.length, dropped, providerErrors };
+};
+
+export interface DecodedSquad {
+  /** Player ids in squad order, de-duplicated. */
+  readonly playerIds: readonly string[];
+  /** Display names by player id. */
+  readonly names: ReadonlyMap<string, string>;
+  readonly providerErrors?: string;
+}
+
+/** Decode `/players/squads?team=T` into the squad's player ids. */
+export const decodeSquadPlayerIds = (envelope: unknown): DecodedSquad => {
+  const providerErrors = decodeProviderErrors(envelope);
+  const names = new Map<string, string>();
+  const playerIds: string[] = [];
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { playerIds, names, providerErrors };
+  }
+  for (const squad of envelope.response) {
+    const players = isRecord(squad) && Array.isArray(squad.players) ? squad.players : [];
+    for (const player of players) {
+      const id = isRecord(player) ? providerId(player.id) : undefined;
+      if (!isRecord(player) || id === undefined || isPlaceholderName(player.name)) {
+        continue;
+      }
+      if (!names.has(id)) {
+        playerIds.push(id);
+        names.set(id, text(player.name));
+      }
+    }
+  }
+  return { playerIds, names, providerErrors };
 };

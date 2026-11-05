@@ -89,10 +89,22 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'provider-fixture-results': 0,
       // Enrichment pages are never cached (verdict D9).
       'player-season-stats': 0,
+      'injuries-league': 0,
+      'player-sidelined': 0,
+      'team-transfers': 0,
+      trophies: 0,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Enrichment runs only from /workflows/provider-enrichment.
-    expect(INGESTION_TICK_INTERVAL_MS['player-season-stats']).toBe(0);
+    for (const workload of [
+      'player-season-stats',
+      'injuries-league',
+      'player-sidelined',
+      'team-transfers',
+      'trophies',
+    ] as const) {
+      expect(INGESTION_TICK_INTERVAL_MS[workload]).toBe(0);
+    }
     // Match-stats workloads have no standalone cron tick: they ride the live
     // fixture-detail sidecar (gated on in-play / finished status) and the
     // on-demand post-final + backfill workflows. A 0 interval keeps

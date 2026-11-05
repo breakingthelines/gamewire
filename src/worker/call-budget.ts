@@ -12,11 +12,16 @@
  * per peak minute, per line and in total, plus checks against a set of caps.
  *
  * Planned lines (`planned: true`) are the Mega enrichment datasets that are
- * not built yet (GW-6b to GW-8). They are included by default so the caps are
- * checked against the target load, not today's. `player-season-stats` is
- * built (GW-6a) and modelled from its own mechanism: a nightly refresh of the
- * current season for the domestic leagues, plus an optional history backfill
- * run on the same night ({@link CallBudgetAssumptions.enrichmentBackfillCallsPerDay}).
+ * not built yet (the rest of GW-6, GW-7, GW-8). They are included by default
+ * so the caps are checked against the target load, not today's.
+ * `player-season-stats` is built (GW-6a) and modelled from its own mechanism:
+ * a nightly refresh of the current season for the domestic leagues, plus an
+ * optional history backfill run on the same night
+ * ({@link CallBudgetAssumptions.enrichmentBackfillCallsPerDay}). The GW-6b
+ * datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
+ * `trophies`) are built and modelled from their units: one call per covered
+ * league-season, per 20 players, per team, and per squad plus per 20 squad
+ * players.
  *
  * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
  * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
@@ -72,6 +77,20 @@ export interface CallBudgetAssumptions {
    * when the backfill runs.
    */
   readonly enrichmentBackfillCallsPerDay: number;
+  /** Catalogue leagues with `coverage.injuries` (the injuries-league scope). */
+  readonly injuryCoveredLeagues: number;
+  /** injuries-league runs a day (the K-2 schedule: every 3h). */
+  readonly injuryPullsPerDay: number;
+  /**
+   * Players listed by injuries-league in the last 30 days (the weekly
+   * sidelined scope). An estimate: Eredivisie 2026 listed 921 player-fixture
+   * rows over three months, about 80 players in a 30-day window.
+   */
+  readonly sidelinedPlayers: number;
+  /** Teams in the catalogue's domestic leagues (the transfers and trophies scope). */
+  readonly domesticTeams: number;
+  /** Players per current squad (`/players/squads`), for the trophies batches. */
+  readonly squadPlayersPerTeam: number;
 }
 
 export interface CallBudgetLine {
@@ -149,6 +168,15 @@ export const CURRENT_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   domesticLeagues: 12,
   playerSeasonPagesPerLeague: 50,
   enrichmentBackfillCallsPerDay: 0,
+  // 1, 2, 3, 31, 32, 39, 40, 61, 71, 78, 88, 135, 140 (INJURIES_COVERED_LEAGUE_IDS
+  // in the catalogue).
+  injuryCoveredLeagues: 13,
+  injuryPullsPerDay: 8,
+  sidelinedPlayers: 1_000,
+  // PL 20, Championship, L1, L2 24 each, La Liga 20, Bundesliga 18, Serie A 20,
+  // Ligue 1 18, Eredivisie 18, Brasileirao 20, Jupiler 16, Primeira 18.
+  domesticTeams: 240,
+  squadPlayersPerTeam: 30,
 };
 
 /**
@@ -165,6 +193,12 @@ export const MEGA_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   injuryCoveredShare: 15 / 40,
   // Plus the nine new domestic leagues from GW-5.
   domesticLeagues: 21,
+  // Plus Super Lig 203 and MLS 253.
+  injuryCoveredLeagues: 15,
+  sidelinedPlayers: 1_200,
+  // Plus MLS 30, Scottish Premiership 12, Saudi 18, Ligue 2 18, Serie B 20,
+  // 2. Bundesliga 18, Segunda 22, Super Lig 18, Liga MX 18.
+  domesticTeams: 414,
 };
 
 /**
@@ -276,6 +310,7 @@ export function estimateCallBudget(
       planned: false,
     },
     playerSeasonStatsLine(a),
+    ...availabilityTransfersTrophiesLines(a),
     {
       workload: 'kernel weekly sweeps',
       priority: 'background',
@@ -412,6 +447,57 @@ function playerSeasonStatsLine(a: CallBudgetAssumptions): CallBudgetLine {
   };
 }
 
+/** Provider calls a batch of ids costs at the 20-ids-a-call limit. */
+const PROVIDER_IDS_PER_CALL = 20;
+
+/**
+ * GW-6b. Background class, so no peak-minute load; each run is held to the
+ * enrichment minute ceiling. The weekly datasets run Tuesday to Thursday
+ * (K-2), not on the Saturday peak, so their peak-day figure is 0 and their
+ * average is the weekly run spread over seven days.
+ */
+export function availabilityTransfersTrophiesLines(a: CallBudgetAssumptions): CallBudgetLine[] {
+  const weekly = (workload: string, perRun: number, strategy: string): CallBudgetLine => ({
+    workload,
+    priority: 'background',
+    strategy: `${strategy}; ${perRun} calls a week`,
+    avgPerDay: perRun / 7,
+    peakDay: 0,
+    peakMinute: 0,
+    planned: false,
+  });
+  const injuries = a.injuryCoveredLeagues * a.injuryPullsPerDay;
+  const trophyTeams = Math.ceil(a.domesticTeams / 4);
+  const trophiesRun =
+    trophyTeams + trophyTeams * Math.ceil(a.squadPlayersPerTeam / PROVIDER_IDS_PER_CALL);
+  return [
+    {
+      workload: 'injuries-league',
+      priority: 'background',
+      strategy: `${a.injuryCoveredLeagues} covered league-seasons x ${a.injuryPullsPerDay} pulls a day, one call each`,
+      avgPerDay: injuries,
+      peakDay: injuries,
+      peakMinute: 0,
+      planned: false,
+    },
+    weekly(
+      'player-sidelined',
+      Math.ceil(a.sidelinedPlayers / PROVIDER_IDS_PER_CALL),
+      `weekly, ${a.sidelinedPlayers} players listed in 30 days, 20 a call`
+    ),
+    weekly(
+      'team-transfers',
+      a.domesticTeams,
+      `weekly, ${a.domesticTeams} domestic teams, one call each`
+    ),
+    weekly(
+      'trophies',
+      trophiesRun,
+      `weekly quarter partition: ${trophyTeams} squads plus their players 20 a call`
+    ),
+  ];
+}
+
 function discoveryLine(a: CallBudgetAssumptions): CallBudgetLine {
   const tickHours = INGESTION_TICK_INTERVAL_MS['fixtures-next-7d'] / 3_600_000;
   const ttlHours = INGESTION_TTL_SECONDS['fixtures-next-7d'] / 3_600;
@@ -471,13 +557,9 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     fixtureLine('fixture-predictions', 2, 10, 'two shots: T-48h and T-3h'),
     fixtureLine('head-to-head', 1, 10, 'T-48h, pair cached 7d'),
     background('league-coverage', 1, 1, 'daily, one call'),
-    background('injuries-league', 120, 120, 'every 3h for 15 covered leagues'),
-    background('player-sidelined', 86, 0, 'weekly'),
     background('competition-leaders', 70, 40, 'daily for leagues played in 36h; full on Monday'),
     background('team-season-stats', 150, 60, 'teams with a final whistle in 36h; full on Monday'),
     background('team-coaches', 90, 0, 'weekly'),
-    background('team-transfers', 60, 0, 'weekly'),
-    background('trophies', 393, 0, 'weekly, a quarter partition per run'),
     background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
   ];
 }

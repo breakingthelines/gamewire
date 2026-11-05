@@ -1,0 +1,121 @@
+{
+  "get": "transfers",
+  "parameters": {
+    "team": "194"
+  },
+  "errors": [],
+  "results": 3,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "player": {
+        "id": 116223,
+        "name": "Mitchell Piqué"
+      },
+      "update": "2023-09-05T11:16:44+00:00",
+      "transfers": [
+        {
+          "date": "2002-01-01",
+          "type": "Free",
+          "teams": {
+            "in": {
+              "id": null,
+              "name": null,
+              "logo": null
+            },
+            "out": {
+              "id": 194,
+              "name": "Ajax",
+              "logo": "https://media.api-sports.io/football/teams/194.png"
+            }
+          }
+        },
+        {
+          "date": "2000-07-01",
+          "type": "Loan",
+          "teams": {
+            "in": {
+              "id": 415,
+              "name": "Twente",
+              "logo": "https://media.api-sports.io/football/teams/415.png"
+            },
+            "out": {
+              "id": 194,
+              "name": "Ajax",
+              "logo": "https://media.api-sports.io/football/teams/194.png"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 113702,
+        "name": "Ilan Boccara"
+      },
+      "update": "2020-10-03T03:11:03+00:00",
+      "transfers": [
+        {
+          "date": "2013-09-02",
+          "type": "Loan",
+          "teams": {
+            "in": {
+              "id": 3006,
+              "name": "Evian TG",
+              "logo": "https://media.api-sports.io/football/teams/3006.png"
+            },
+            "out": {
+              "id": 194,
+              "name": "Ajax",
+              "logo": "https://media.api-sports.io/football/teams/194.png"
+            }
+          }
+        },
+        {
+          "date": "2012-07-20",
+          "type": "€ 500K",
+          "teams": {
+            "in": {
+              "id": 194,
+              "name": "Ajax",
+              "logo": "https://media.api-sports.io/football/teams/194.png"
+            },
+            "out": {
+              "id": 85,
+              "name": "Paris Saint Germain",
+              "logo": "https://media.api-sports.io/football/teams/85.png"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 294685,
+        "name": "Eskild Munk Dall"
+      },
+      "update": "2023-07-13T15:36:58+00:00",
+      "transfers": [
+        {
+          "date": "2022-06-28",
+          "type": "N/A",
+          "teams": {
+            "in": {
+              "id": 194,
+              "name": "Ajax",
+              "logo": "https://media.api-sports.io/football/teams/194.png"
+            },
+            "out": {
+              "id": 406,
+              "name": "Aarhus",
+              "logo": "https://media.api-sports.io/football/teams/406.png"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

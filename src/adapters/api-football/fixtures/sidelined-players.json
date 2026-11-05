@@ -1,0 +1,54 @@
+{
+  "get": "sidelined",
+  "parameters": {
+    "players": "276-874"
+  },
+  "errors": [],
+  "results": 2,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "id": 276,
+      "sidelined": [
+        {
+          "type": "Thigh Injury",
+          "start": "2025-09-19",
+          "end": null
+        },
+        {
+          "type": "Thigh Injury",
+          "start": "2025-04-18",
+          "end": "2025-05-22"
+        },
+        {
+          "type": "Thigh Injury",
+          "start": "2025-03-27",
+          "end": "2025-04-09"
+        }
+      ]
+    },
+    {
+      "id": 874,
+      "sidelined": [
+        {
+          "type": "Illness",
+          "start": "2022-11-07",
+          "end": "2022-11-23"
+        },
+        {
+          "type": "Calf/Shin Injury",
+          "start": "2022-04-10",
+          "end": "2022-04-15"
+        },
+        {
+          "type": "Illness",
+          "start": "2022-04-02",
+          "end": "2022-04-08"
+        }
+      ]
+    }
+  ]
+}
