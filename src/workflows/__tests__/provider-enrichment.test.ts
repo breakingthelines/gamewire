@@ -47,6 +47,7 @@ import { providerEnrichmentToWire } from '../wire.js';
 const config: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
+  gameServiceJobsUrl: 'http://game-service-profile-jobs:9090',
   identityServiceUrl: 'http://identity:9090',
   providerId: 'api-football',
   providerKind: 'football',
@@ -67,6 +68,7 @@ const config: GamewireWorkerConfig = {
   authContextAudience: 'gamewire-worker',
   authContextRequiredScope: 'gamewire.workflow.invoke',
   assetMirror: { region: 'auto' },
+  providerFixtureResultsEnabled: false,
 };
 
 const REAL_PAGE: { response: unknown[]; paging: { current: number; total: number } } = JSON.parse(

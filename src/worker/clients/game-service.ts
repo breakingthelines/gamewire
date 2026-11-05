@@ -11,6 +11,7 @@ import {
   type IngestGameOccurrencesRequest,
   type IngestGamesRequest,
   type IngestPlayerMatchStatsRequest,
+  type IngestProviderFixtureResultsRequest,
   type IngestProviderPlayerSeasonStatsRequest,
   type IngestTeamMatchStatsRequest,
   type ListProviderConfigsRequest,
@@ -33,6 +34,9 @@ export interface GameServiceIngestClient {
   ingestGameOccurrences(request: IngestGameOccurrencesRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
   listProviderConfigs(request: ListProviderConfigsRequest): Promise<ListProviderConfigsResponse>;
   reportProviderHealth(request: ReportProviderHealthRequest): Promise<ReportProviderHealthResponse>;
 }
@@ -111,6 +115,15 @@ export interface FootballGameIngestClient {
   ingestCurrentSeasons(request: IngestCurrentSeasonsRequest): Promise<IngestBatchResponse>;
   ingestTeamMatchStats(request: IngestTeamMatchStatsRequest): Promise<IngestBatchResponse>;
   ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse>;
+  /**
+   * PF-GW1: upserts finished fixture results for the player-profile league
+   * strength ratings (club Elo + pi-ratings, `profile-spec.md` §2.3). Never
+   * creates a game; game-service writes to `provider_fixture_results`, a
+   * table outside the `games`/occurrences graph.
+   */
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
 }
 
 /**
@@ -128,6 +141,55 @@ export interface ProviderEnrichmentIngestClient {
 export type FootballGameBridgeClient = FootballGameLookupClient &
   FootballGameIngestClient &
   FootballGameMissingPayloadsClient;
+
+/**
+ * Narrow client boundary for `IngestProviderFixtureResults`, the one RPC
+ * PF-GW1 needs. `profile-spec.md` §3.4 serves this RPC ONLY from the
+ * `game-service-profile-jobs` Deployment — the regular serving pods return
+ * `UNIMPLEMENTED` — so this is wired from a transport pointed at that
+ * Deployment (`GAME_SERVICE_JOBS_URL`), separately from
+ * `FootballGameIngestClient`/`gameService`, which other workflows call
+ * against the serving pods.
+ */
+export interface GameServiceProfileJobsClient {
+  ingestProviderFixtureResults(
+    request: IngestProviderFixtureResultsRequest
+  ): Promise<IngestBatchResponse>;
+}
+
+export interface FetchGameServiceProfileJobsClientOptions {
+  /** Base URL of the `game-service-profile-jobs` gRPC server. */
+  readonly baseUrl: string;
+  readonly timeoutMs?: number;
+  /** See {@link FetchFootballGameLookupClientOptions.interceptors}. */
+  readonly interceptors?: readonly Interceptor[];
+}
+
+/**
+ * Build a `GameServiceProfileJobsClient` backed by a real gRPC transport,
+ * pointed at the jobs-only Deployment. Bare, like
+ * {@link createFetchFootballGameLookupClient}: no client-side auth
+ * metadata is attached.
+ */
+export const createFetchGameServiceProfileJobsClient = (
+  options: FetchGameServiceProfileJobsClientOptions
+): GameServiceProfileJobsClient => {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
+  const interceptors = options.interceptors;
+  const transport = createGrpcTransport({
+    baseUrl: stripTrailingSlash(options.baseUrl),
+    ...(interceptors && interceptors.length > 0 ? { interceptors: [...interceptors] } : {}),
+  });
+  const client = createClient(GameService, transport);
+
+  return {
+    ingestProviderFixtureResults(
+      request: IngestProviderFixtureResultsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderFixtureResults(request, { timeoutMs });
+    },
+  };
+};
 
 export interface FetchFootballGameLookupClientOptions {
   /** Base URL of the game-service gRPC server, e.g. `http://game-service:50059`. */
@@ -204,6 +266,11 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestPlayerMatchStats(request: IngestPlayerMatchStatsRequest): Promise<IngestBatchResponse> {
       return client.ingestPlayerMatchStats(request, { timeoutMs });
+    },
+    ingestProviderFixtureResults(
+      request: IngestProviderFixtureResultsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderFixtureResults(request, { timeoutMs });
     },
     ingestProviderPlayerSeasonStats(
       request: IngestProviderPlayerSeasonStatsRequest

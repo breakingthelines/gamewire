@@ -19,6 +19,15 @@ export type GamewireProviderMode = 'replay' | 'live';
 export interface GamewireWorkerConfig {
   port: number;
   gameServiceUrl: string;
+  /**
+   * `GAME_SERVICE_JOBS_URL`: the `game-service-profile-jobs` Deployment
+   * (`profile-spec.md` §3.4), which alone serves `IngestProviderFixtureResults`
+   * — the serving pods behind `gameServiceUrl` return `UNIMPLEMENTED`
+   * (PF-GW1 review finding #4). Defaults to a distinct in-mesh hostname so
+   * an unset env var fails fast against a real cluster rather than quietly
+   * routing to the serving pods.
+   */
+  gameServiceJobsUrl: string;
   identityServiceUrl: string;
   providerId: string;
   providerKind: string;
@@ -76,6 +85,14 @@ export interface GamewireWorkerConfig {
   enrichmentMinuteCap?: number;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
+  /**
+   * `GAMEWIRE_PROVIDER_FIXTURE_RESULTS` (`off` | `on`, default `on`):
+   * emergency off-switch for the PF-GW1 `/workflows/provider-fixture-results`
+   * workflow (player-profile league strength inputs, `profile-spec.md` §1.7,
+   * §2.3). The profile ships with no feature flag (owner, 2026-11-05); `off`
+   * serves `503 feature_disabled` without touching the provider.
+   */
+  providerFixtureResultsEnabled: boolean;
   /** Fixture ids to poll immediately on boot, useful for deterministic staging smoke. */
   bootstrapFixtureIds: readonly string[];
   /** Run one polling tick at boot instead of waiting for the first interval. */
@@ -348,6 +365,7 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
   return {
     port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
     gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
+    gameServiceJobsUrl: env.GAME_SERVICE_JOBS_URL ?? 'http://game-service-profile-jobs:9090',
     identityServiceUrl: env.IDENTITY_SERVICE_URL ?? 'http://identity:9090',
     providerId: env.GAMEWIRE_PROVIDER_ID ?? 'api-football',
     providerKind: env.GAMEWIRE_PROVIDER_KIND ?? 'football',
@@ -378,6 +396,11 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       'gamewire ingestion enabled flag'
     ),
     bootstrapFixtureIds: parseStringList(env.GAMEWIRE_BOOTSTRAP_FIXTURE_IDS),
+    providerFixtureResultsEnabled: parseBoolean(
+      env.GAMEWIRE_PROVIDER_FIXTURE_RESULTS,
+      true,
+      'gamewire provider fixture results flag'
+    ),
     ingestionRunImmediateTick: parseBoolean(
       env.GAMEWIRE_INGESTION_RUN_IMMEDIATE_TICK ?? env.GAMEWIRE_RUN_IMMEDIATE_TICK,
       providerMode === 'live',

@@ -17,6 +17,17 @@
  * built (GW-6a) and modelled from its own mechanism: a nightly refresh of the
  * current season for the domestic leagues, plus an optional history backfill
  * run on the same night ({@link CallBudgetAssumptions.enrichmentBackfillCallsPerDay}).
+ *
+ * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
+ * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
+ * outside the catalogue, ~11/day) as an unconditional (`planned: false`)
+ * line, not a planned one: it is built and on by default
+ * (`GAMEWIRE_PROVIDER_FIXTURE_RESULTS` is only an off-switch), so
+ * `includePlanned: false` must still show this load. Its one-time `history` backfill
+ * (~92 calls, the 20-league reference set plus UEFA 2/3/848 across
+ * 2023-2026) is a single run outside steady state, the same category as
+ * the Mega season-fill history backfill (`mega-spec.md` §1.3) — not part
+ * of this per-day model.
  */
 
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
@@ -271,6 +282,20 @@ export function estimateCallBudget(
       strategy: 'squad, season-fill, lineups, events on Mondays, amortised to 1,000 a day',
       avgPerDay: 1_000,
       peakDay: 0,
+      peakMinute: 0,
+      planned: false,
+    },
+    {
+      // PF-GW1 is built and on by default (GAMEWIRE_PROVIDER_FIXTURE_RESULTS
+      // is only an off-switch), not an unbuilt Mega dataset, so it belongs
+      // here rather than in `plannedLines()`: `includePlanned:false` must
+      // not hide real load.
+      workload: 'provider-fixture-results',
+      priority: 'background',
+      strategy:
+        'PF-GW1 nightly league=L&season=S&from/to for reference-set leagues outside the catalogue',
+      avgPerDay: 11,
+      peakDay: 11,
       peakMinute: 0,
       planned: false,
     },

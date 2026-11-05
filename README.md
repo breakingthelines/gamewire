@@ -139,6 +139,24 @@ the K-2 schedule sends, are accepted as `nightly`. `full` walks the named season
 latest first. Only one run in a process works on a league-season at a time; a
 second run reports it as `in-progress` and fetches nothing for it.
 
+Provider fixture results run through `POST /workflows/provider-fixture-results`
+and feed game-service `IngestProviderFixtureResults` on the profile jobs Service
+(`GAME_SERVICE_JOBS_URL`) for club Elo and pi-ratings. `mode` is required:
+`history` walks `/fixtures?league&season` for the 20 reference leagues plus
+UEFA 2, 3 and 848 across 2023 to 2026 (92 calls); `nightly` fetches a three-day
+`from`/`to` window for reference leagues outside the catalogue (about 11 calls).
+League ids outside that allowlist are dropped, so national teams and friendlies
+are never written. Seasons must be 2010 to the current year + 1. A run spends
+at most 200 calls, at `background` priority, and pages are not cached. A target
+whose rows game-service skips is `failed`. `GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off`
+turns the endpoint off (503); it is on by default.
+
+```jsonc
+{"mode": "history"}
+{"mode": "history", "leagueIds": [88], "seasons": [2024, 2025]}
+{"mode": "nightly"}
+```
+
 Row `values` keys for `player-season-stats` (`PLAYER_SEASON_STAT_KEYS` in
 `src/adapters/api-football/enrichment-decoders.ts`). Keys on `PlayerSeasonStats`
 use its field names; the rest are `extra_stats` keys named after the

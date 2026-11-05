@@ -14,6 +14,7 @@ import type { GamewireWorkerConfig } from './config.js';
 const testConfig: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
+  gameServiceJobsUrl: 'http://game-service-profile-jobs:9090',
   identityServiceUrl: 'http://identity:9090',
   providerId: 'api-football',
   providerKind: 'football',
@@ -25,6 +26,7 @@ const testConfig: GamewireWorkerConfig = {
   providerHardCap: 70_000,
   providerSoftCap: 60_000,
   ingestionEnabled: false,
+  providerFixtureResultsEnabled: false,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: false,
   authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',

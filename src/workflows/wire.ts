@@ -30,6 +30,8 @@ import type {
   HourlyMatchdayWireResult,
   IdentityGapScanOutput,
   IdentityGapScanWireResult,
+  ProviderFixtureResultsOutput,
+  ProviderFixtureResultsWireResult,
   SeasonBackfillOutput,
   SeasonBackfillWireResult,
   SquadSweepOutput,
@@ -99,6 +101,27 @@ export const seasonBackfillToWire = (output: SeasonBackfillOutput): SeasonBackfi
   callsUsed: output.callsUsed,
   fixturesProcessed: output.fixturesProcessed,
   targets: output.targets,
+  degradeFlags: output.degradeFlags,
+  finalQuota: output.finalQuota,
+});
+
+/**
+ * Provider-fixture-results output is already summary-shaped (per-league
+ * counters, no raw provider payloads), so the projection is a structural
+ * copy, same as season-backfill's.
+ */
+export const providerFixtureResultsToWire = (
+  output: ProviderFixtureResultsOutput
+): ProviderFixtureResultsWireResult => ({
+  mode: output.mode,
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  status: output.status,
+  leagues: output.leagues,
+  callsBudgeted: output.callsBudgeted,
+  callsUsed: output.callsUsed,
+  rowsAccepted: output.rowsAccepted,
+  rowsSkipped: output.rowsSkipped,
   degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
 });

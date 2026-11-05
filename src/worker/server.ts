@@ -13,7 +13,9 @@ import {
 import { withIdentityResolveCache } from './clients/identity-resolve-cache.js';
 import {
   createFetchFootballGameLookupClient,
+  createFetchGameServiceProfileJobsClient,
   type FootballGameBridgeClient,
+  type GameServiceProfileJobsClient,
   type ProviderEnrichmentIngestClient,
   type GameServiceRecordRatingClient,
 } from './clients/game-service.js';
@@ -280,6 +282,19 @@ if (!config.gameServiceUrl) {
 }
 
 /**
+ * game-service-profile-jobs client, used only by the provider-fixture-results
+ * workflow's `IngestProviderFixtureResults` call (`profile-spec.md` §3.4:
+ * served ONLY by that Deployment, never the serving pods behind
+ * `gameServiceLookupClient`/`GAME_SERVICE_URL` above — PF-GW1 review
+ * finding #4).
+ */
+const gameServiceJobsClient: GameServiceProfileJobsClient | undefined = config.gameServiceJobsUrl
+  ? createFetchGameServiceProfileJobsClient({ baseUrl: config.gameServiceJobsUrl })
+  : undefined;
+
+console.log(`[gamewire-worker] game-service-profile-jobs target: ${config.gameServiceJobsUrl}`);
+
+/**
  * Bridge callback handed to the ingestion loop. Reads fixture-scoped provider
  * envelopes, resolves canonical entities through identity/game-service, ingests
  * games/events/lineups, and calls `publisher.observe()` for terminal fixture
@@ -472,6 +487,11 @@ const server = createServer(async (request, response) => {
       // GetTeamSquad). gameServiceLookupClient is a FootballGameBridgeClient,
       // which is a superset of FootballGameIngestClient.
       gameService: gameServiceLookupClient,
+      // PF-GW1's provider-fixture-results workflow calls
+      // IngestProviderFixtureResults, which §3.4 serves only from the
+      // game-service-profile-jobs Deployment — a different target from
+      // gameServiceLookupClient/gameService above.
+      gameServiceJobs: gameServiceJobsClient,
       // The statsbomb-backfill workflow resolves a provider fixture id to the
       // canonical BTL game id via LookupGameByFixture before ingesting
       // occurrences. Same FootballGameBridgeClient (superset of the lookup

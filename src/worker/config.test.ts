@@ -16,6 +16,7 @@ describe('gamewire-worker config', () => {
 
     expect(config.port).toBe(8095);
     expect(config.gameServiceUrl).toBe('http://game-service:9090');
+    expect(config.gameServiceJobsUrl).toBe('http://game-service-profile-jobs:9090');
     expect(config.identityServiceUrl).toBe('http://identity:9090');
     expect(config.providerId).toBe('api-football');
     expect(config.providerMode).toBe('replay');
@@ -23,6 +24,20 @@ describe('gamewire-worker config', () => {
     expect(config.webhookPath).toBe('/webhooks/gamewire');
     expect(config.bootstrapFixtureIds).toEqual([]);
     expect(config.ingestionRunImmediateTick).toBe(false);
+    // PF-GW1 off-switch: on unless GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off.
+    expect(config.providerFixtureResultsEnabled).toBe(true);
+  });
+
+  it('reads GAME_SERVICE_JOBS_URL and GAMEWIRE_PROVIDER_FIXTURE_RESULTS from env', () => {
+    const config = loadConfig(
+      authEnv({
+        GAME_SERVICE_JOBS_URL: 'http://game-service-profile-jobs.btl-prod:9090',
+        GAMEWIRE_PROVIDER_FIXTURE_RESULTS: 'on',
+      })
+    );
+
+    expect(config.gameServiceJobsUrl).toBe('http://game-service-profile-jobs.btl-prod:9090');
+    expect(config.providerFixtureResultsEnabled).toBe(true);
   });
 
   it('allows explicit runtime overrides without secrets', () => {

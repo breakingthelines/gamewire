@@ -12,6 +12,7 @@ import type {
   FootballGameIngestClient,
   FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
+  GameServiceProfileJobsClient,
   ProviderEnrichmentIngestClient,
 } from './clients/game-service.js';
 import type { ProviderMinuteLimiter } from './minute-limiter.js';
@@ -31,6 +32,10 @@ import {
   hourlyMatchdayWorkflow,
   identityGapScanToWire,
   identityGapScanWorkflow,
+  MIN_PROVIDER_FIXTURE_RESULTS_SEASON,
+  maxProviderFixtureResultsSeason,
+  providerFixtureResultsToWire,
+  providerFixtureResultsWorkflow,
   PROVIDER_ENRICHMENT_DATASETS,
   PROVIDER_ENRICHMENT_MODES,
   PROVIDER_ENRICHMENT_MODE_ALIASES,
@@ -53,6 +58,7 @@ import {
   type DailyAnchorInput,
   type HourlyMatchdayInput,
   type IdentityGapScanInput,
+  type ProviderFixtureResultsInput,
   type ProviderEnrichmentDataset,
   type ProviderEnrichmentInput,
   type ProviderEnrichmentMode,
@@ -176,6 +182,7 @@ type WorkflowName =
   | 'statsbomb-backfill'
   | 'identity-gap-scan'
   | 'competition-payload-backfill'
+  | 'provider-fixture-results'
   | 'provider-enrichment';
 
 /**
@@ -291,6 +298,13 @@ export interface WorkerHttpHandlerOptions {
    * standing squad rosters via IngestFootballSquadLists.
    */
   readonly gameService?: FootballGameIngestClient;
+  /**
+   * game-service client used by the provider-fixture-results workflow's
+   * `IngestProviderFixtureResults` call. Wired separately from
+   * `gameService`: that RPC is served only by `game-service-profile-jobs`,
+   * never the serving pods `gameService` targets.
+   */
+  readonly gameServiceJobs?: GameServiceProfileJobsClient;
   /**
    * Game-service lookup client used by the statsbomb-backfill workflow to
    * resolve a provider fixture id to the canonical BTL game id via
@@ -451,6 +465,9 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/competition-payload-backfill') {
     return 'competition-payload-backfill';
   }
+  if (pathname === '/workflows/provider-fixture-results') {
+    return 'provider-fixture-results';
+  }
   if (pathname === '/workflows/provider-enrichment') {
     return 'provider-enrichment';
   }
@@ -470,6 +487,7 @@ const buildWorkflowDeps = (
     logger: options.workflowLogger,
     gameServiceMissingPayloads: options.gameServiceMissingPayloads,
     gameService: options.gameService,
+    gameServiceJobs: options.gameServiceJobs,
     gameLookup: options.gameLookup,
     identity: options.identity,
     enrichment: {
@@ -796,6 +814,62 @@ const parseCompetitionPayloadBackfillInput = (
   };
 };
 
+const parseProviderFixtureResultsMode = (
+  value: unknown
+): ProviderFixtureResultsInput['mode'] | undefined => {
+  if (value === 'history' || value === 'nightly') {
+    return value;
+  }
+  return undefined;
+};
+
+/**
+ * A missing or unknown `mode` is a 400, never a fall-through to the ~92-call
+ * `history` run: kernel's schedule posts this body every night, and a mode
+ * string kernel and gamewire disagree on must fail loudly. `seasons`, when
+ * given, must be integers from 2010 to the current UTC year + 1.
+ */
+const parseProviderFixtureResultsInput = (
+  body: unknown,
+  now: Date
+):
+  | { readonly ok: true; readonly input: ProviderFixtureResultsInput }
+  | { readonly ok: false; readonly reason: string } => {
+  if (!isRecord(body)) {
+    return { ok: false, reason: 'missing_or_invalid_mode' };
+  }
+  const mode = parseProviderFixtureResultsMode(body.mode);
+  if (mode === undefined) {
+    return { ok: false, reason: 'missing_or_invalid_mode' };
+  }
+  if (body.seasons !== undefined) {
+    const maxSeason = maxProviderFixtureResultsSeason(now);
+    if (
+      !Array.isArray(body.seasons) ||
+      !body.seasons.every(
+        (season) =>
+          typeof season === 'number' &&
+          Number.isInteger(season) &&
+          season >= MIN_PROVIDER_FIXTURE_RESULTS_SEASON &&
+          season <= maxSeason
+      )
+    ) {
+      return { ok: false, reason: 'invalid_seasons' };
+    }
+  }
+  return {
+    ok: true,
+    input: {
+      mode,
+      leagueIds: asNumberList(body.leagueIds),
+      seasons: asNumberList(body.seasons),
+      nightlyLeagueIds: asNumberList(body.nightlyLeagueIds),
+      maxCallsPerRun: asNumber(body.maxCallsPerRun),
+      nowUtc: asString(body.nowUtc),
+    },
+  };
+};
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -877,6 +951,7 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/statsbomb-backfill' ||
       request.pathname === '/workflows/identity-gap-scan' ||
       request.pathname === '/workflows/competition-payload-backfill' ||
+      request.pathname === '/workflows/provider-fixture-results' ||
       request.pathname === '/workflows/provider-enrichment')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
@@ -912,6 +987,20 @@ export const handleWorkerRequest = async (
       });
     }
     const workflowName = workflowNameFromPath(request.pathname);
+
+    if (
+      request.pathname === '/workflows/provider-fixture-results' &&
+      !cfg.providerFixtureResultsEnabled
+    ) {
+      // Emergency off-switch (PF-GW1): on by default.
+      // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off stops the workflow with an
+      // env flip, not a deploy.
+      return jsonResponse(503, {
+        status: 'unavailable',
+        reason: 'feature_disabled',
+        feature: 'GAMEWIRE_PROVIDER_FIXTURE_RESULTS',
+      });
+    }
 
     if (request.pathname === '/workflows/webhook-completed') {
       const input = parseWebhookCompletedInput(request.body);
@@ -1023,6 +1112,22 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => competitionPayloadBackfillWorkflow(input, { ...baseDeps, logger }),
           toWire: competitionPayloadBackfillToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/provider-fixture-results') {
+      const parsed = parseProviderFixtureResultsInput(request.body, new Date());
+      if (!parsed.ok) {
+        return jsonResponse(400, { status: 'bad_request', reason: parsed.reason });
+      }
+      const { input } = parsed;
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => providerFixtureResultsWorkflow(input, { ...baseDeps, logger }),
+          toWire: providerFixtureResultsToWire,
         })
       );
     }

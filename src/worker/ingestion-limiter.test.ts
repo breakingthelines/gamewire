@@ -20,6 +20,7 @@ import { ProviderQuotaTracker } from './quota.js';
 const config: GamewireWorkerConfig = {
   port: 8095,
   gameServiceUrl: 'http://game-service:9090',
+  gameServiceJobsUrl: 'http://game-service-profile-jobs:9090',
   identityServiceUrl: 'http://identity:9090',
   providerId: 'api-football',
   providerKind: 'football',
@@ -33,6 +34,7 @@ const config: GamewireWorkerConfig = {
   providerHardCap: 100,
   providerSoftCap: 90,
   ingestionEnabled: true,
+  providerFixtureResultsEnabled: false,
   bootstrapFixtureIds: [],
   ingestionRunImmediateTick: false,
   authContextJwksUrl: 'https://auth.test/.well-known/jwks.json',
