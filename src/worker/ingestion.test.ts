@@ -86,7 +86,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'competition-standings': 6 * 60 * 60,
       'competition-current-season': 24 * 60 * 60,
       'team-metadata': 24 * 60 * 60,
-      'provider-fixture-results': 24 * 60 * 60,
+      'provider-fixture-results': 0,
       // Enrichment pages are never cached (verdict D9).
       'player-season-stats': 0,
     });

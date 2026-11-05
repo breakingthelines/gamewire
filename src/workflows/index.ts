@@ -108,9 +108,12 @@ export { statsbombBackfillWorkflow } from './statsbomb-backfill.js';
 export { identityGapScanWorkflow } from './identity-gap-scan.js';
 export {
   DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS,
+  MIN_PROVIDER_FIXTURE_RESULTS_SEASON,
   REFERENCE_LEAGUE_IDS,
   REFERENCE_SEASONS,
   REFERENCE_UEFA_LEAGUE_IDS,
+  clampMaxCallsPerRun,
+  maxProviderFixtureResultsSeason,
   providerFixtureResultsWorkflow,
   resolveNightlyLeagueIds,
 } from './provider-fixture-results.js';

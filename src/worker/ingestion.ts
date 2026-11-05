@@ -116,12 +116,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // repeated fetch within a day to a single provider call per competition.
   'competition-current-season': 24 * 60 * 60,
   'team-metadata': 24 * 60 * 60,
-  // PF-GW1 (`workflows/provider-fixture-results.ts`): a league/season or
-  // league/date-range `/fixtures` list fetched only by that workflow, never
-  // by the steady-state loop (tick interval 0, below). A 24h TTL re-dedupes
-  // a same-day re-run (an operator retry, a kernel schedule firing twice)
-  // to a single provider call; it is never read back by the live tick.
-  'provider-fixture-results': 24 * 60 * 60,
+  // PF-GW1 (`workflows/provider-fixture-results.ts`). Never cached, like
+  // enrichment: the workflow fetches with `cache: 'bypass'` (verdict D9),
+  // and the cache key ignores `path`, so a cached nightly entry would serve
+  // the previous night's date window. TTL 0 so a direct call caches nothing.
+  'provider-fixture-results': 0,
   // Enrichment (GW-6a). Never cached: the provider-enrichment workflow fetches
   // with `cache: 'bypass'` and writes each page straight to game-service
   // (verdict D9, the shared Redis has no maxmemory). The TTL is 0 so a direct

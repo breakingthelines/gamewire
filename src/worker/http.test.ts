@@ -1111,7 +1111,7 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       providerFixtureResultsEnabled: true,
     };
 
-    it('503s with feature_disabled when the kill switch is off (the default)', async () => {
+    it('503s with feature_disabled when the off-switch is set', async () => {
       const { verifier, privateKey } = makeVerifier();
       const token = signToken(privateKey, defaultServicePayload());
       const response = await handleWorkerRequest(
@@ -1210,6 +1210,36 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
         reason: 'missing_or_invalid_mode',
       });
     });
+
+    it.each([
+      [[2009], 'below 2010'],
+      [[new Date().getUTCFullYear() + 2], 'after the current year + 1'],
+      [[2024.5], 'not an integer'],
+      [['2024'], 'not a number'],
+      ['2024', 'not an array'],
+    ])(
+      'returns 400 invalid_seasons for seasons %j (%s)',
+      async (seasons: unknown, _why: string) => {
+        const { verifier, privateKey } = makeVerifier();
+        const token = signToken(privateKey, defaultServicePayload());
+        const body = { mode: 'history', leagueIds: [39], seasons };
+        const ingestion = buildIngestion();
+        const response = await handleWorkerRequest(
+          {
+            method: 'POST',
+            pathname: '/workflows/provider-fixture-results',
+            body,
+            rawBody: JSON.stringify(body),
+            headers: { 'btl-auth-context': token },
+          },
+          enabledConfig,
+          { ingestion, competitions: [COMPETITION], authContextVerifier: verifier }
+        );
+        expect(response.status).toBe(400);
+        expect(response.body).toMatchObject({ status: 'bad_request', reason: 'invalid_seasons' });
+        expect(ingestion.fetchWorkload).not.toHaveBeenCalled();
+      }
+    );
 
     it('runs provider-fixture-results end to end when the kill switch is on and mode is valid', async () => {
       const { verifier, privateKey } = makeVerifier();

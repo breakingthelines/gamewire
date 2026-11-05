@@ -36,10 +36,10 @@
  *     spec's "about 10 calls a day".
  *
  * Every call runs at `background` priority ({@link WORKFLOW_PROVIDER_PRIORITY})
- * through the same cache -> singleflight -> quota -> minute-limiter pipeline
- * every other workflow uses (`deps.ingestion.fetchWorkload`), so the GW-1
- * limiter, the background daily cap, and the degrade postures all apply
- * unchanged.
+ * through `deps.ingestion.fetchWorkload` with `cache: 'bypass'` (verdict D9:
+ * no bulk pages in the shared Redis), so the GW-1 singleflight, quota,
+ * minute limiter, background daily cap and degrade postures all apply, but
+ * nothing is read from or written to the provider cache.
  *
  * The ingest RPC (`deps.gameServiceJobs.ingestProviderFixtureResults`) is
  * served only by the `game-service-profile-jobs` Deployment
@@ -49,8 +49,8 @@
  * Idempotency. Rows are keyed server-side by `(provider_code,
  * provider_fixture_id)` (an upsert, per `IngestProviderFixtureResultsRequest`'s
  * doc comment), so re-running history or nightly for the same league/season
- * is safe and cheap (a cache hit on `fetchWorkload`, an upsert no-op on the
- * ingest side). No persisted cursor is needed: the full default grid is 92
+ * is safe (one provider call per target, an upsert no-op on the ingest
+ * side). No persisted cursor is needed: the full default grid is 92
  * calls, far under the per-run budget, and a partial run simply resumes by
  * re-invoking with the same (or default) input.
  */
@@ -181,14 +181,13 @@ export const providerFixtureResultsWorkflow = async (
   const clock = deps.clock ?? (() => new Date());
   const log = deps.logger ?? (() => undefined);
   const startedAt = input.nowUtc ? new Date(input.nowUtc) : clock();
-  const mode = input.mode ?? 'history';
-  const maxCallsPerRun =
-    input.maxCallsPerRun && input.maxCallsPerRun > 0
-      ? input.maxCallsPerRun
-      : DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS;
+  const { mode } = input;
+  const maxCallsPerRun = clampMaxCallsPerRun(input.maxCallsPerRun);
 
   const targets: readonly Target[] =
-    mode === 'history' ? resolveHistoryTargets(input) : resolveNightlyTargets(input, deps);
+    mode === 'history'
+      ? resolveHistoryTargets(input, startedAt)
+      : resolveNightlyTargets(input, deps);
 
   log({
     event: 'provider_fixture_results.started',
@@ -290,6 +289,21 @@ export const providerFixtureResultsWorkflow = async (
   };
 };
 
+/**
+ * Per-run call ceiling: an operator may lower it, never raise it above
+ * {@link DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS}.
+ */
+export const clampMaxCallsPerRun = (value: number | undefined): number =>
+  value !== undefined && Number.isFinite(value) && value > 0
+    ? Math.min(Math.floor(value), DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS)
+    : DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS;
+
+/** Earliest season `history` mode accepts. */
+export const MIN_PROVIDER_FIXTURE_RESULTS_SEASON = 2010;
+
+/** Latest season `history` mode accepts: the current UTC year + 1. */
+export const maxProviderFixtureResultsSeason = (now: Date): number => now.getUTCFullYear() + 1;
+
 interface Target {
   readonly leagueId: number;
   /** Set in `history` mode only. */
@@ -303,10 +317,14 @@ interface RunBudget {
 /**
  * Expand `history` mode's input into a deduplicated league x season grid.
  * Explicit `leagueIds`/`seasons` win; otherwise the default reference set
- * and season window apply. Every excluded id (`EXCLUDED_LEAGUE_IDS`) is
- * dropped regardless of where it came from.
+ * and season window apply. Any league id outside `ALLOWED_LEAGUE_IDS`, and
+ * any season outside 2010 to the current year + 1, is dropped regardless of
+ * where it came from.
  */
-const resolveHistoryTargets = (input: ProviderFixtureResultsInput): readonly Target[] => {
+const resolveHistoryTargets = (
+  input: ProviderFixtureResultsInput,
+  now: Date
+): readonly Target[] => {
   const leagueIds = dedupeLeagueIds(
     input.leagueIds && input.leagueIds.length > 0
       ? input.leagueIds
@@ -317,7 +335,11 @@ const resolveHistoryTargets = (input: ProviderFixtureResultsInput): readonly Tar
   const targets: Target[] = [];
   for (const leagueId of leagueIds) {
     for (const season of seasons) {
-      if (Number.isInteger(season) && season > 0) {
+      if (
+        Number.isInteger(season) &&
+        season >= MIN_PROVIDER_FIXTURE_RESULTS_SEASON &&
+        season <= maxProviderFixtureResultsSeason(now)
+      ) {
         targets.push({ leagueId, season });
       }
     }
@@ -417,11 +439,18 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
   // the catalogue does not cover — the spec's "never creates a game") and
   // through the asset-mirror bridge. `provider-fixture-results` is its own
   // workload, deliberately excluded from both.
+  //
+  // `cache: 'bypass'` (verdict D9, as GW-6a's enrichment): the cache key is
+  // `provider:workload:resourceId` and ignores `path`, so a cached nightly
+  // entry would serve the previous night's window under a fixed resourceId,
+  // and history pages (~28 MB) must not sit in the shared Redis, which has
+  // no maxmemory.
   const result = await deps.ingestion.fetchWorkload({
     priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: 'provider-fixture-results',
     resourceId,
     path,
+    cache: 'bypass',
   });
   callsBudgeted += 1;
   budget.remaining -= 1;
@@ -553,6 +582,13 @@ const runTarget = async (args: RunTargetArgs): Promise<RunTargetOutcome> => {
       const response = await deps.gameServiceJobs.ingestProviderFixtureResults(request);
       rowsAccepted += response.acceptedCount + response.updatedCount;
       rowsSkipped += response.skippedCount;
+      // Rows with an empty fixture or team id are dropped before sending, so
+      // any server-side skip means rows were not stored (game-service answers
+      // OK with every row skipped while PROFILE_JOBS is off). That is a
+      // failed target, not a green one.
+      if (response.skippedCount > 0) {
+        errors.push(`ingest_skipped:${response.skippedCount}`);
+      }
     } catch (err) {
       errors.push(
         `ingestProviderFixtureResults:${err instanceof Error ? err.message : String(err)}`

@@ -21,9 +21,9 @@
  * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
  * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
  * outside the catalogue, ~11/day) as an unconditional (`planned: false`)
- * line, not a planned one: it is built now, off by default behind
- * `GAMEWIRE_PROVIDER_FIXTURE_RESULTS`, so `includePlanned: false` must
- * still show this load once the flag is on. Its one-time `history` backfill
+ * line, not a planned one: it is built and on by default
+ * (`GAMEWIRE_PROVIDER_FIXTURE_RESULTS` is only an off-switch), so
+ * `includePlanned: false` must still show this load. Its one-time `history` backfill
  * (~92 calls, the 20-league reference set plus UEFA 2/3/848 across
  * 2023-2026) is a single run outside steady state, the same category as
  * the Mega season-fill history backfill (`mega-spec.md` §1.3) — not part
@@ -286,10 +286,10 @@ export function estimateCallBudget(
       planned: false,
     },
     {
-      // PF-GW1 is built now (gated by GAMEWIRE_PROVIDER_FIXTURE_RESULTS,
-      // off by default), not an unbuilt Mega dataset, so it belongs here
-      // rather than in `plannedLines()` — `includePlanned:false` must not
-      // hide real load once the flag flips on (finding #9).
+      // PF-GW1 is built and on by default (GAMEWIRE_PROVIDER_FIXTURE_RESULTS
+      // is only an off-switch), not an unbuilt Mega dataset, so it belongs
+      // here rather than in `plannedLines()`: `includePlanned:false` must
+      // not hide real load.
       workload: 'provider-fixture-results',
       priority: 'background',
       strategy:

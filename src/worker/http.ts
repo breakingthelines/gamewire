@@ -32,6 +32,8 @@ import {
   hourlyMatchdayWorkflow,
   identityGapScanToWire,
   identityGapScanWorkflow,
+  MIN_PROVIDER_FIXTURE_RESULTS_SEASON,
+  maxProviderFixtureResultsSeason,
   providerFixtureResultsToWire,
   providerFixtureResultsWorkflow,
   PROVIDER_ENRICHMENT_DATASETS,
@@ -822,30 +824,49 @@ const parseProviderFixtureResultsMode = (
 };
 
 /**
- * PF-GW1 finding #2: a missing or unknown `mode` must be a `400`, not a
- * silent fall-through to the workflow's own `'history'` default. PF-K1's
- * kernel schedule posts this body every night; if kernel and gamewire ever
- * disagree on the mode string, an unrecognised value must fail loudly here
- * rather than quietly running the ~92-call history backfill (and, through
- * finding #1, minting canonical games) on every scheduled fire.
+ * A missing or unknown `mode` is a 400, never a fall-through to the ~92-call
+ * `history` run: kernel's schedule posts this body every night, and a mode
+ * string kernel and gamewire disagree on must fail loudly. `seasons`, when
+ * given, must be integers from 2010 to the current UTC year + 1.
  */
 const parseProviderFixtureResultsInput = (
-  body: unknown
-): ProviderFixtureResultsInput | undefined => {
+  body: unknown,
+  now: Date
+):
+  | { readonly ok: true; readonly input: ProviderFixtureResultsInput }
+  | { readonly ok: false; readonly reason: string } => {
   if (!isRecord(body)) {
-    return undefined;
+    return { ok: false, reason: 'missing_or_invalid_mode' };
   }
   const mode = parseProviderFixtureResultsMode(body.mode);
   if (mode === undefined) {
-    return undefined;
+    return { ok: false, reason: 'missing_or_invalid_mode' };
+  }
+  if (body.seasons !== undefined) {
+    const maxSeason = maxProviderFixtureResultsSeason(now);
+    if (
+      !Array.isArray(body.seasons) ||
+      !body.seasons.every(
+        (season) =>
+          typeof season === 'number' &&
+          Number.isInteger(season) &&
+          season >= MIN_PROVIDER_FIXTURE_RESULTS_SEASON &&
+          season <= maxSeason
+      )
+    ) {
+      return { ok: false, reason: 'invalid_seasons' };
+    }
   }
   return {
-    mode,
-    leagueIds: asNumberList(body.leagueIds),
-    seasons: asNumberList(body.seasons),
-    nightlyLeagueIds: asNumberList(body.nightlyLeagueIds),
-    maxCallsPerRun: asNumber(body.maxCallsPerRun),
-    nowUtc: asString(body.nowUtc),
+    ok: true,
+    input: {
+      mode,
+      leagueIds: asNumberList(body.leagueIds),
+      seasons: asNumberList(body.seasons),
+      nightlyLeagueIds: asNumberList(body.nightlyLeagueIds),
+      maxCallsPerRun: asNumber(body.maxCallsPerRun),
+      nowUtc: asString(body.nowUtc),
+    },
   };
 };
 
@@ -971,9 +992,9 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/provider-fixture-results' &&
       !cfg.providerFixtureResultsEnabled
     ) {
-      // Kill switch (PF-GW1): off by default. Ships inert until
-      // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=on, and rolling back is an env
-      // flip, not a deploy.
+      // Emergency off-switch (PF-GW1): on by default.
+      // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off stops the workflow with an
+      // env flip, not a deploy.
       return jsonResponse(503, {
         status: 'unavailable',
         reason: 'feature_disabled',
@@ -1096,13 +1117,11 @@ export const handleWorkerRequest = async (
     }
 
     if (request.pathname === '/workflows/provider-fixture-results') {
-      const input = parseProviderFixtureResultsInput(request.body);
-      if (!input) {
-        return jsonResponse(400, {
-          status: 'bad_request',
-          reason: 'missing_or_invalid_mode',
-        });
+      const parsed = parseProviderFixtureResultsInput(request.body, new Date());
+      if (!parsed.ok) {
+        return jsonResponse(400, { status: 'bad_request', reason: parsed.reason });
       }
+      const { input } = parsed;
       return streamingResponse(
         startWorkflowStream({
           workflow: workflowName,

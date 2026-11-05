@@ -15,6 +15,7 @@ import {
   REFERENCE_LEAGUE_IDS,
   REFERENCE_SEASONS,
   REFERENCE_UEFA_LEAGUE_IDS,
+  clampMaxCallsPerRun,
   providerFixtureResultsWorkflow,
   resolveNightlyLeagueIds,
 } from '../provider-fixture-results.js';
@@ -23,6 +24,8 @@ import type { CompetitionEntry, ProviderFixtureResultsInput, WorkflowDeps } from
 import sampleEnvelope from './testdata/provider-fixture-results/88_2024_sample.json' with { type: 'json' };
 
 const { resolveHistoryTargets, dedupeLeagueIds, fixtureResultRowsFromEnvelope } = __test;
+
+const NOW = new Date('2026-11-05T03:30:00Z');
 
 const baseQuota = (overrides: Partial<ProviderQuotaSnapshot> = {}): ProviderQuotaSnapshot => ({
   provider: 'api-football',
@@ -106,6 +109,8 @@ class MockGameService {
   readonly requests: unknown[] = [];
   acceptedPerRow = 1;
   shouldThrow = false;
+  /** Answer OK with every row skipped, as game-service does while PROFILE_JOBS is off. */
+  skipAll = false;
 
   ingestProviderFixtureResults = vi.fn(async (request: { rows: readonly unknown[] }) => {
     this.requests.push(request);
@@ -113,9 +118,9 @@ class MockGameService {
       throw new Error('simulated game-service failure');
     }
     return {
-      acceptedCount: request.rows.length,
+      acceptedCount: this.skipAll ? 0 : request.rows.length,
       updatedCount: 0,
-      skippedCount: 0,
+      skippedCount: this.skipAll ? request.rows.length : 0,
       conflictCount: 0,
       unmappedIdentityCount: 0,
       unmappedIdentityCandidates: [],
@@ -151,7 +156,7 @@ const run = (
 
 describe('provider-fixture-results — target resolution', () => {
   it('defaults history mode to the 20-league reference set plus UEFA 2/3/848, across 2023-2026', () => {
-    const targets = resolveHistoryTargets({});
+    const targets = resolveHistoryTargets({ mode: 'history' }, NOW);
     expect(targets.length).toBe(
       (REFERENCE_LEAGUE_IDS.length + REFERENCE_UEFA_LEAGUE_IDS.length) * 4
     );
@@ -165,7 +170,10 @@ describe('provider-fixture-results — target resolution', () => {
   });
 
   it('never includes UEFA Nations League (5) or International Friendlies (10), even when forced through an override', () => {
-    const targets = resolveHistoryTargets({ leagueIds: [39, 5, 10], seasons: [2026] });
+    const targets = resolveHistoryTargets(
+      { mode: 'history', leagueIds: [39, 5, 10], seasons: [2026] },
+      NOW
+    );
     expect(targets.map((t: { leagueId: number }) => t.leagueId)).toEqual([39]);
     expect(dedupeLeagueIds([39, 5, 10])).toEqual([39]);
   });
@@ -177,8 +185,26 @@ describe('provider-fixture-results — target resolution', () => {
     // named. 39 (Premier League) is the one id here that is actually in
     // the allowlist.
     expect(dedupeLeagueIds([1, 32, 39])).toEqual([39]);
-    const targets = resolveHistoryTargets({ leagueIds: [1, 32, 39], seasons: [2026] });
+    const targets = resolveHistoryTargets(
+      { mode: 'history', leagueIds: [1, 32, 39], seasons: [2026] },
+      NOW
+    );
     expect(targets.map((t: { leagueId: number }) => t.leagueId)).toEqual([39]);
+  });
+
+  it('drops history seasons before 2010 or after the current year + 1', () => {
+    const targets = resolveHistoryTargets(
+      { mode: 'history', leagueIds: [39], seasons: [1, 2009, 2010, 2027, 2028] },
+      NOW
+    );
+    expect(targets.map((t: { season?: number }) => t.season)).toEqual([2010, 2027]);
+  });
+
+  it('clamps maxCallsPerRun to the 200-call default and never raises it', () => {
+    expect(clampMaxCallsPerRun(undefined)).toBe(DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS);
+    expect(clampMaxCallsPerRun(0)).toBe(DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS);
+    expect(clampMaxCallsPerRun(50_000)).toBe(DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS);
+    expect(clampMaxCallsPerRun(12)).toBe(12);
   });
 
   it('dedupes league ids and drops non-positive/non-integer ids', () => {
@@ -290,7 +316,12 @@ describe('provider-fixture-results — history run', () => {
   it('fetches one call per league/season cell and ingests the finished fixtures', async () => {
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
 
-    const result = await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService
+    );
 
     expect(result.mode).toBe('history');
     expect(result.status).toBe('complete');
@@ -312,7 +343,7 @@ describe('provider-fixture-results — history run', () => {
     // rows for leagues/seasons outside the catalogue) and the asset-mirror
     // bridge on every call this workflow makes.
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
-    await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService);
+    await run(ingestion, [], { mode: 'history', leagueIds: [88], seasons: [2024] }, gameService);
     expect(ingestion.calls[0]?.workload).toBe('provider-fixture-results');
   });
 
@@ -320,7 +351,13 @@ describe('provider-fixture-results — history run', () => {
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
     const fixedClock = () => new Date('2026-01-15T00:00:00Z');
 
-    await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService, fixedClock);
+    await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService,
+      fixedClock
+    );
 
     const request = gameService.requests[0] as {
       rows: readonly { fetchedAt?: { seconds: bigint } }[];
@@ -330,16 +367,64 @@ describe('provider-fixture-results — history run', () => {
     }
   });
 
-  it('is a no-op ingest-side when the envelope has no finished fixtures (cache hit on re-run)', async () => {
+  it('is a no-op ingest-side when the envelope has no finished fixtures', async () => {
     ingestion.setPayload('provider-fixture-results-88-2024', { response: [] });
-    const result = await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService
+    );
     expect(result.rowsAccepted).toBe(0);
     expect(gameService.ingestProviderFixtureResults).not.toHaveBeenCalled();
   });
 
+  it('fetches with cache bypass, so no page is read from or written to the shared Redis', async () => {
+    ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
+    await run(ingestion, [], { mode: 'history', leagueIds: [88], seasons: [2024] }, gameService);
+    expect(ingestion.calls[0]?.cache).toBe('bypass');
+  });
+
+  it('fails the target and the run when game-service answers OK but skips every row', async () => {
+    // game-service answers OK with skippedCount = len(rows) while
+    // PROFILE_JOBS is off. Nothing was stored, so this must not be green.
+    ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
+    gameService.skipAll = true;
+
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService
+    );
+
+    expect(result.leagues[0]?.status).toBe('failed');
+    expect(result.leagues[0]?.errors).toContain('ingest_skipped:5');
+    expect(result.leagues[0]?.rowsSkipped).toBe(5);
+    expect(result.status).toBe('incomplete');
+  });
+
+  it('never spends more than 200 calls, whatever maxCallsPerRun asks for', async () => {
+    // 23 allowed leagues x 2010-2027 is 414 cells.
+    const seasons = Array.from({ length: 18 }, (_, i) => 2010 + i);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', seasons, maxCallsPerRun: 1_000_000, nowUtc: NOW.toISOString() },
+      gameService
+    );
+    expect(result.callsBudgeted).toBe(DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS);
+    expect(result.status).toBe('incomplete');
+  });
+
   it('skips league/season cells and reports status skipped when game-service is not wired', async () => {
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
-    const result = await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, undefined);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      undefined
+    );
     expect(result.leagues[0]?.status).toBe('skipped');
     expect(result.leagues[0]?.rowsSkipped).toBe(5);
   });
@@ -349,7 +434,12 @@ describe('provider-fixture-results — history run', () => {
     ingestion.setPayload('provider-fixture-results-39-2024', sampleEnvelope);
     gameService.shouldThrow = true;
 
-    const result = await run(ingestion, [], { leagueIds: [88, 39], seasons: [2024] }, gameService);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88, 39], seasons: [2024] },
+      gameService
+    );
 
     expect(result.leagues).toHaveLength(2);
     expect(result.leagues.every((l) => l.status === 'failed')).toBe(true);
@@ -363,7 +453,7 @@ describe('provider-fixture-results — history run', () => {
     const result = await run(
       ingestion,
       [],
-      { leagueIds: [88, 39], seasons: [2024], maxCallsPerRun: 1 },
+      { mode: 'history', leagueIds: [88, 39], seasons: [2024], maxCallsPerRun: 1 },
       gameService
     );
 
@@ -376,7 +466,12 @@ describe('provider-fixture-results — history run', () => {
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
     ingestion.quotaFor = () => baseQuota({ posture: 'hard_cap_reached', cachedOnlyMode: true });
 
-    const result = await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService
+    );
 
     expect(result.leagues[0]?.status).toBe('failed');
     expect(result.degradeFlags.some((f) => f.trigger === 'hard-cap')).toBe(true);
@@ -390,7 +485,12 @@ describe('provider-fixture-results — history run', () => {
     ingestion.setPayload('provider-fixture-results-88-2024', sampleEnvelope);
     gameService.shouldThrow = true;
 
-    const result = await run(ingestion, [], { leagueIds: [88], seasons: [2024] }, gameService);
+    const result = await run(
+      ingestion,
+      [],
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
+      gameService
+    );
 
     expect(result.leagues[0]?.status).toBe('failed');
     expect(result.status).toBe('incomplete');
@@ -424,10 +524,7 @@ describe('provider-fixture-results — history run', () => {
     const result = await run(
       outageIngestion as unknown as MockIngestion,
       [],
-      {
-        leagueIds: [88],
-        seasons: [2024],
-      },
+      { mode: 'history', leagueIds: [88], seasons: [2024] },
       gameService
     );
 
@@ -440,7 +537,7 @@ describe('provider-fixture-results — history run', () => {
   it('defaults to the full ~92-call reference grid when no input is given', async () => {
     // No payloads configured -> every cell resolves to an empty envelope;
     // this only asserts the call volume, matching the spec's sizing.
-    const result = await run(ingestion, [], {}, gameService);
+    const result = await run(ingestion, [], { mode: 'history' }, gameService);
     expect(result.callsBudgeted).toBe(
       (REFERENCE_LEAGUE_IDS.length + REFERENCE_UEFA_LEAGUE_IDS.length) * REFERENCE_SEASONS.length
     );
@@ -476,6 +573,9 @@ describe('provider-fixture-results — nightly run', () => {
       '/fixtures?league=88&season=2026&from=2026-11-02&to=2026-11-04'
     );
     expect(ingestion.calls[0]?.priority).toBe('background');
+    // The cache key ignores `path`, and the nightly resourceId is the same
+    // every night: a cached entry would serve the previous night's window.
+    expect(ingestion.calls[0]?.cache).toBe('bypass');
     expect(result.rowsAccepted).toBe(5);
   });
 
@@ -497,8 +597,8 @@ describe('provider-fixture-results — nightly run', () => {
 
   it("sizes the default nightly run at about 10 calls against today's real catalogue", async () => {
     const result = await run(ingestion, COMPETITIONS, { mode: 'nightly' }, gameService);
-    // Spec sizing: "nightly date=yesterday refresh for rated leagues outside
-    // the catalogue (about 10 calls a day)". Today's catalogue (pre-GW-5)
+    // Spec sizing: a nightly refresh for rated leagues outside the
+    // catalogue, about 10 calls a day. Today's catalogue (pre-GW-5)
     // leaves 11 of the 20 reference-set leagues uncatalogued.
     expect(result.callsBudgeted).toBe(resolveNightlyLeagueIds(COMPETITIONS).length);
     expect(result.callsBudgeted).toBeGreaterThanOrEqual(8);

@@ -1013,39 +1013,44 @@ export interface CompetitionPayloadBackfillWireResult {
  * `games` does not hold. Never creates a game, never writes national teams
  * or friendlies.
  *
- * Two modes:
- *   - `history` (default): walks an explicit (or the default 20-league
+ * Two modes, chosen by the caller (there is no default):
+ *   - `history`: walks an explicit (or the default 20-league
  *     reference set + UEFA 2/3/848) x season grid with
  *     `/fixtures?league=L&season=S`, one call per cell. The one-time
  *     backfill the spec sizes at ~92 calls.
- *   - `nightly`: `/fixtures?league=L&date=yesterday` for reference-set
- *     leagues NOT in `deps.competitions` (so their current season never
+ *   - `nightly`: `/fixtures?league=L&season=S&from=<D-3>&to=<D-1>` for
+ *     reference-set leagues NOT in `deps.competitions` (so their current season never
  *     lands in `games` at all), computed fresh each run so a later
  *     catalogue addition (e.g. GW-5) drops a league out of this list
- *     without a code change here. Sized at ~10 calls/day.
+ *     without a code change here. Sized at ~11 calls/day.
  */
 export type ProviderFixtureResultsMode = 'history' | 'nightly';
 
 export interface ProviderFixtureResultsInput {
-  /** Defaults to `'history'`. */
-  readonly mode?: ProviderFixtureResultsMode;
+  /** Required. The HTTP layer returns 400 for a missing or unknown mode. */
+  readonly mode: ProviderFixtureResultsMode;
   /**
    * `history` only: explicit league ids to walk. Defaults to the 20-league
-   * reference set plus UEFA 2/3/848. Any national-team or friendlies id is
-   * dropped (defence in depth: a caller must not be able to smuggle one
-   * through an override).
+   * reference set plus UEFA 2/3/848. Any id outside that allowlist (national
+   * teams and friendlies included) is dropped, even when passed explicitly.
    */
   readonly leagueIds?: readonly number[];
-  /** `history` only: seasons to walk. Defaults to 2023-2026. */
+  /**
+   * `history` only: seasons to walk. Defaults to 2023-2026. The HTTP layer
+   * returns 400 for a season outside 2010 to the current year + 1.
+   */
   readonly seasons?: readonly number[];
   /**
    * `nightly` only: explicit league ids to refresh. Defaults to the
    * reference set minus `deps.competitions`, computed at run time.
    */
   readonly nightlyLeagueIds?: readonly number[];
-  /** Hard ceiling on provider calls this run may spend. Defaults to `DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS`. */
+  /**
+   * Ceiling on provider calls this run may spend. Defaults to, and is
+   * clamped to, `DEFAULT_PROVIDER_FIXTURE_RESULTS_MAX_CALLS`.
+   */
   readonly maxCallsPerRun?: number;
-  /** ISO-8601 instant used as "now" for `date=yesterday` and fetch metadata. Defaults to clock. */
+  /** ISO-8601 instant used as "now" for the nightly `from`/`to` window and fetch metadata. Defaults to clock. */
   readonly nowUtc?: string;
 }
 
@@ -1067,7 +1072,11 @@ export interface ProviderFixtureResultsOutput {
   readonly mode: ProviderFixtureResultsMode;
   readonly startedAt: string;
   readonly finishedAt: string;
-  /** `complete` when every target ran; `incomplete` when the per-run call budget was spent first. */
+  /**
+   * `complete` when every target is `ok`. `incomplete` when any target is
+   * `failed` or `skipped`: the call budget ran out, the provider returned no
+   * envelope, or game-service rejected or skipped rows.
+   */
   readonly status: 'complete' | 'incomplete';
   readonly leagues: readonly ProviderFixtureResultsLeagueResult[];
   readonly callsBudgeted: number;

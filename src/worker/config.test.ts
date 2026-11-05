@@ -24,8 +24,8 @@ describe('gamewire-worker config', () => {
     expect(config.webhookPath).toBe('/webhooks/gamewire');
     expect(config.bootstrapFixtureIds).toEqual([]);
     expect(config.ingestionRunImmediateTick).toBe(false);
-    // PF-GW1 kill switch (finding #7): off unless GAMEWIRE_PROVIDER_FIXTURE_RESULTS=on.
-    expect(config.providerFixtureResultsEnabled).toBe(false);
+    // PF-GW1 off-switch: on unless GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off.
+    expect(config.providerFixtureResultsEnabled).toBe(true);
   });
 
   it('reads GAME_SERVICE_JOBS_URL and GAMEWIRE_PROVIDER_FIXTURE_RESULTS from env', () => {
