@@ -32,6 +32,7 @@ import {
   apiFootballStandingPath,
   providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
+import { apiFootballPlayerSeasonStatsPath } from '../adapters/api-football/enrichment-decoders.js';
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import type { ProviderCache } from './cache.js';
 import { InMemoryProviderCache } from './cache.js';
@@ -67,7 +68,8 @@ export type IngestionWorkload =
   | 'competition-standings'
   | 'competition-current-season'
   | 'team-metadata'
-  | 'provider-fixture-results';
+  | 'provider-fixture-results'
+  | 'player-season-stats';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -120,6 +122,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // a same-day re-run (an operator retry, a kernel schedule firing twice)
   // to a single provider call; it is never read back by the live tick.
   'provider-fixture-results': 24 * 60 * 60,
+  // Enrichment (GW-6a). Never cached: the provider-enrichment workflow fetches
+  // with `cache: 'bypass'` and writes each page straight to game-service
+  // (verdict D9, the shared Redis has no maxmemory). The TTL is 0 so a direct
+  // call without the bypass caches nothing either.
+  'player-season-stats': 0,
 } as const;
 
 /**
@@ -183,6 +190,8 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   // loop; the workload identifier stays available for direct
   // `fetchWorkload` calls only.
   'provider-fixture-results': 0,
+  // Driven only by POST /workflows/provider-enrichment.
+  'player-season-stats': 0,
 } as const;
 
 /**
@@ -222,6 +231,12 @@ export interface IngestionFetchOptions {
   readonly replayId?: string;
   /** Optional override for tests. */
   readonly path?: string;
+  /**
+   * `bypass` skips the cache read and write for this call: the payload goes
+   * back to the caller only. Used for bulk enrichment pages, which must not
+   * be held in the shared cache (verdict D9). Default `use`.
+   */
+  readonly cache?: 'use' | 'bypass';
 }
 
 export interface IngestionFetchResult<TResponse = unknown> {
@@ -401,10 +416,11 @@ export class ApiFootballIngestionLoop {
     const path = options.path ?? apiFootballPathFor(workload, options.resourceId);
     const cacheKey = this.cacheKeyFor(workload, options.resourceId);
     const ttlSeconds = INGESTION_TTL_SECONDS[workload];
+    const useCache = options.cache !== 'bypass';
 
     // Cache lookup is outside the singleflight so concurrent hits return
     // instantly without contention.
-    const cached = await this.#cache.get<unknown>(cacheKey);
+    const cached = useCache ? await this.#cache.get<unknown>(cacheKey) : undefined;
     if (cached !== undefined) {
       this.#metrics.recordCacheHit();
       this.#metrics.recordOutcome('cached');
@@ -442,7 +458,7 @@ export class ApiFootballIngestionLoop {
       // Re-check cache inside singleflight in case the leader populated it
       // while we waited for the lock; this prevents double provider calls
       // immediately after a slow first request settles.
-      const racedHit = await this.#cache.get<unknown>(cacheKey);
+      const racedHit = useCache ? await this.#cache.get<unknown>(cacheKey) : undefined;
       if (racedHit !== undefined) {
         this.#metrics.recordOutcome('cached');
         const snapshot = await this.#quota.snapshot();
@@ -592,7 +608,7 @@ export class ApiFootballIngestionLoop {
       this.#metrics.recordProviderCall(this.#provider, workload, path);
       this.#metrics.recordOutcome('fetched');
       const json = fetchResult.json;
-      if (json !== undefined) {
+      if (json !== undefined && useCache && ttlSeconds > 0) {
         // An empty pre-kickoff lineups response means "not published yet" — a
         // transient state that flips within the pre-match window. Cache it briefly
         // (not the full 1h) so the next poll re-hits the provider and catches
@@ -1447,6 +1463,12 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       // never reached in practice; it exists only so the switch stays
       // exhaustive over `IngestionWorkload`.
       return '/fixtures';
+    case 'player-season-stats': {
+      const match = /^players-(\d+)-(\d+)-(\d+)$/.exec(resourceId.trim());
+      return match
+        ? apiFootballPlayerSeasonStatsPath(Number(match[1]), Number(match[2]), Number(match[3]))
+        : '/players';
+    }
   }
 }
 

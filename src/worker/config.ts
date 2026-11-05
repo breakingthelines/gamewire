@@ -1,4 +1,5 @@
 import {
+  DEFAULT_ENRICHMENT_MINUTE_CAP,
   DEFAULT_PROVIDER_MINUTE_CAPS,
   validateMinuteCaps,
   type ProviderMinuteCaps,
@@ -70,6 +71,18 @@ export interface GamewireWorkerConfig {
    * body included. Default 10,000.
    */
   providerRequestTimeoutMs?: number;
+  /**
+   * `GAMEWIRE_ENRICHMENT_DATASETS`: comma list of provider enrichment datasets
+   * allowed to run (e.g. `player-season-stats`). Empty by default, which is
+   * the kill switch: `/workflows/provider-enrichment` then makes no calls.
+   */
+  enrichmentDatasets?: readonly string[];
+  /**
+   * `GAMEWIRE_ENRICHMENT_MINUTE_CAP`: provider calls per minute across all
+   * enrichment runs. Default 120, lowered to the background minute cap when
+   * that is smaller.
+   */
+  enrichmentMinuteCap?: number;
   /** Enable the polling ingestion loop. Default true in live mode, false in replay. */
   ingestionEnabled: boolean;
   /**
@@ -338,6 +351,16 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     ),
   };
   validateMinuteCaps(minuteCaps);
+  // Never above the background ceiling: staging runs background at 30 a
+  // minute, and a boot failure there would take the worker down.
+  const enrichmentMinuteCap = Math.min(
+    parsePositiveInt(
+      env.GAMEWIRE_ENRICHMENT_MINUTE_CAP,
+      DEFAULT_ENRICHMENT_MINUTE_CAP,
+      'gamewire enrichment minute cap'
+    ),
+    minuteCaps.background
+  );
   return {
     port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
     gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
@@ -364,6 +387,8 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
       DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS,
       'gamewire provider request timeout'
     ),
+    enrichmentDatasets: parseStringList(env.GAMEWIRE_ENRICHMENT_DATASETS),
+    enrichmentMinuteCap,
     ingestionEnabled: parseBoolean(
       env.GAMEWIRE_INGESTION_ENABLED,
       providerMode === 'live',

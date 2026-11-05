@@ -12,6 +12,7 @@ import {
   type IngestGamesRequest,
   type IngestPlayerMatchStatsRequest,
   type IngestProviderFixtureResultsRequest,
+  type IngestProviderPlayerSeasonStatsRequest,
   type IngestTeamMatchStatsRequest,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
@@ -125,6 +126,18 @@ export interface FootballGameIngestClient {
   ): Promise<IngestBatchResponse>;
 }
 
+/**
+ * Ingest boundary for provider enrichment datasets (Mega plan, GS-2 RPCs).
+ * Separate from {@link FootballGameIngestClient} so workflows that only push
+ * enrichment rows can depend on the narrow surface. Each call carries at most
+ * 500 rows.
+ */
+export interface ProviderEnrichmentIngestClient {
+  ingestProviderPlayerSeasonStats(
+    request: IngestProviderPlayerSeasonStatsRequest
+  ): Promise<IngestBatchResponse>;
+}
+
 export type FootballGameBridgeClient = FootballGameLookupClient &
   FootballGameIngestClient &
   FootballGameMissingPayloadsClient;
@@ -218,7 +231,7 @@ const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 30_000;
  */
 export const createFetchFootballGameLookupClient = (
   options: FetchFootballGameLookupClientOptions
-): FootballGameBridgeClient => {
+): FootballGameBridgeClient & ProviderEnrichmentIngestClient => {
   const timeoutMs = options.timeoutMs ?? DEFAULT_GAME_SERVICE_TIMEOUT_MS;
   const interceptors = options.interceptors;
   const transport = createGrpcTransport({
@@ -258,6 +271,11 @@ export const createFetchFootballGameLookupClient = (
       request: IngestProviderFixtureResultsRequest
     ): Promise<IngestBatchResponse> {
       return client.ingestProviderFixtureResults(request, { timeoutMs });
+    },
+    ingestProviderPlayerSeasonStats(
+      request: IngestProviderPlayerSeasonStatsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderPlayerSeasonStats(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

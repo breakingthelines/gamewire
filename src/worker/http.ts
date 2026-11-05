@@ -13,7 +13,9 @@ import type {
   FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
   GameServiceProfileJobsClient,
+  ProviderEnrichmentIngestClient,
 } from './clients/game-service.js';
+import type { ProviderMinuteLimiter } from './minute-limiter.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   fetchApiFootballJson,
@@ -32,6 +34,11 @@ import {
   identityGapScanWorkflow,
   providerFixtureResultsToWire,
   providerFixtureResultsWorkflow,
+  PROVIDER_ENRICHMENT_DATASETS,
+  PROVIDER_ENRICHMENT_MODES,
+  PROVIDER_ENRICHMENT_MODE_ALIASES,
+  providerEnrichmentToWire,
+  providerEnrichmentWorkflow,
   STEADY_STATE_COMPETITIONS,
   seasonBackfillToWire,
   seasonBackfillWorkflow,
@@ -50,6 +57,9 @@ import {
   type HourlyMatchdayInput,
   type IdentityGapScanInput,
   type ProviderFixtureResultsInput,
+  type ProviderEnrichmentDataset,
+  type ProviderEnrichmentInput,
+  type ProviderEnrichmentMode,
   type SeasonBackfillInput,
   type SeasonBackfillTarget,
   type SquadSweepInput,
@@ -170,7 +180,8 @@ type WorkflowName =
   | 'statsbomb-backfill'
   | 'identity-gap-scan'
   | 'competition-payload-backfill'
-  | 'provider-fixture-results';
+  | 'provider-fixture-results'
+  | 'provider-enrichment';
 
 /**
  * Run a workflow in the background and expose its progress as an NDJSON
@@ -303,6 +314,19 @@ export interface WorkerHttpHandlerOptions {
    * provider team ids to canonical btl_football_team_* ids.
    */
   readonly identity?: FootballIdentityLookupClient;
+  /**
+   * GS-2 ingest client for the provider-enrichment workflow. Without it the
+   * workflow returns `skipped` before any provider call.
+   */
+  readonly providerEnrichmentIngest?: ProviderEnrichmentIngestClient;
+  /**
+   * Process-wide enrichment minute limiter (`GAMEWIRE_ENRICHMENT_MINUTE_CAP`),
+   * shared by every provider-enrichment run so two runs cannot each take the
+   * full ceiling.
+   */
+  readonly enrichmentLimiter?: ProviderMinuteLimiter;
+  /** Sleep used by the provider-enrichment workflow. Tests inject a fake. */
+  readonly enrichmentSleep?: (ms: number) => Promise<void>;
   /**
    * btl-auth-context verifier built at boot via
    * {@link createAuthContextVerifier}. Required for `/workflows/*`
@@ -442,10 +466,16 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   if (pathname === '/workflows/provider-fixture-results') {
     return 'provider-fixture-results';
   }
+  if (pathname === '/workflows/provider-enrichment') {
+    return 'provider-enrichment';
+  }
   return 'daily-anchor';
 };
 
-const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | undefined => {
+const buildWorkflowDeps = (
+  options: WorkerHttpHandlerOptions,
+  cfg: GamewireWorkerConfig
+): WorkflowDeps | undefined => {
   if (!options.ingestion) {
     return undefined;
   }
@@ -458,6 +488,13 @@ const buildWorkflowDeps = (options: WorkerHttpHandlerOptions): WorkflowDeps | un
     gameServiceJobs: options.gameServiceJobs,
     gameLookup: options.gameLookup,
     identity: options.identity,
+    enrichment: {
+      enabledDatasets: cfg.enrichmentDatasets ?? [],
+      ingest: options.providerEnrichmentIngest,
+      limiter: options.enrichmentLimiter,
+      minuteCap: cfg.enrichmentMinuteCap,
+      sleep: options.enrichmentSleep,
+    },
   };
 };
 
@@ -654,6 +691,90 @@ const parseIdentityGapScanInput = (body: unknown): IdentityGapScanInput => {
   };
 };
 
+/** Integers from a JSON list; numeric strings are accepted (kernel inputs pass through Go maps). */
+const asIntList = (value: unknown): readonly number[] | undefined => {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const out: number[] = [];
+  for (const item of value) {
+    const parsed =
+      typeof item === 'number' ? item : typeof item === 'string' ? Number(item.trim()) : NaN;
+    if (!Number.isInteger(parsed)) {
+      return undefined;
+    }
+    out.push(parsed);
+  }
+  return out;
+};
+
+const MIN_ENRICHMENT_SEASON = 2000;
+const MAX_ENRICHMENT_SEASON = 2100;
+
+type ProviderEnrichmentParse =
+  | { readonly ok: true; readonly input: ProviderEnrichmentInput }
+  | { readonly ok: false; readonly reason: string };
+
+/**
+ * Parse `/workflows/provider-enrichment`. `dataset` is required; `mode`
+ * defaults to `nightly`. The spec's `auto` and `dirty` (the K-2 schedule body)
+ * are accepted as `nightly`. `full` requires non-empty `leagueIds` and `seasons`.
+ */
+export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentParse => {
+  if (!isRecord(body)) {
+    return { ok: false, reason: 'missing_body' };
+  }
+  const dataset = PROVIDER_ENRICHMENT_DATASETS.find((name) => name === body.dataset);
+  if (dataset === undefined) {
+    return { ok: false, reason: 'unknown_dataset' };
+  }
+  const mode: ProviderEnrichmentMode | undefined =
+    body.mode === undefined
+      ? 'nightly'
+      : (PROVIDER_ENRICHMENT_MODES.find((name) => name === body.mode) ??
+        (typeof body.mode === 'string' ? PROVIDER_ENRICHMENT_MODE_ALIASES[body.mode] : undefined));
+  if (mode === undefined) {
+    return { ok: false, reason: 'invalid_mode' };
+  }
+  const leagueIds = body.leagueIds === undefined ? undefined : asIntList(body.leagueIds);
+  if (
+    body.leagueIds !== undefined &&
+    (leagueIds === undefined || leagueIds.some((id) => id <= 0))
+  ) {
+    return { ok: false, reason: 'invalid_league_ids' };
+  }
+  const seasons = body.seasons === undefined ? undefined : asIntList(body.seasons);
+  if (
+    body.seasons !== undefined &&
+    (seasons === undefined ||
+      seasons.some((s) => s < MIN_ENRICHMENT_SEASON || s > MAX_ENRICHMENT_SEASON))
+  ) {
+    return { ok: false, reason: 'invalid_seasons' };
+  }
+  if (mode === 'full' && (!leagueIds?.length || !seasons?.length)) {
+    return { ok: false, reason: 'full_mode_needs_league_ids_and_seasons' };
+  }
+  if (
+    body.limit !== undefined &&
+    (asNumber(body.limit) === undefined || (body.limit as number) <= 0)
+  ) {
+    return { ok: false, reason: 'invalid_limit' };
+  }
+  return {
+    ok: true,
+    input: {
+      dataset: dataset satisfies ProviderEnrichmentDataset,
+      mode,
+      leagueIds,
+      seasons,
+      limit: asNumber(body.limit),
+      reset: asBoolean(body.reset),
+      dryRun: asBoolean(body.dryRun),
+      nowUtc: asString(body.nowUtc),
+    },
+  };
+};
+
 const COMPETITION_BACKFILL_KINDS: readonly CompetitionBackfillKind[] = ['events', 'lineups'];
 
 const parseCompetitionBackfillKind = (value: unknown): CompetitionBackfillKind | undefined => {
@@ -809,7 +930,8 @@ export const handleWorkerRequest = async (
       request.pathname === '/workflows/statsbomb-backfill' ||
       request.pathname === '/workflows/identity-gap-scan' ||
       request.pathname === '/workflows/competition-payload-backfill' ||
-      request.pathname === '/workflows/provider-fixture-results')
+      request.pathname === '/workflows/provider-fixture-results' ||
+      request.pathname === '/workflows/provider-enrichment')
   ) {
     const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
     if (!auth.authorised) {
@@ -836,7 +958,7 @@ export const handleWorkerRequest = async (
         message: `gamewire-worker workflow auth accepted via ${auth.reasonForLog}`,
       });
     }
-    const baseDeps = buildWorkflowDeps(options);
+    const baseDeps = buildWorkflowDeps(options, cfg);
     if (!baseDeps) {
       return jsonResponse(503, {
         status: 'unavailable',
@@ -987,6 +1109,21 @@ export const handleWorkerRequest = async (
           baseLogger: options.workflowLogger,
           run: (logger) => providerFixtureResultsWorkflow(input, { ...baseDeps, logger }),
           toWire: providerFixtureResultsToWire,
+        })
+      );
+    }
+
+    if (request.pathname === '/workflows/provider-enrichment') {
+      const parsed = parseProviderEnrichmentInput(request.body);
+      if (!parsed.ok) {
+        return jsonResponse(400, { status: 'bad_request', reason: parsed.reason });
+      }
+      return streamingResponse(
+        startWorkflowStream({
+          workflow: workflowName,
+          baseLogger: options.workflowLogger,
+          run: (logger) => providerEnrichmentWorkflow(parsed.input, { ...baseDeps, logger }),
+          toWire: providerEnrichmentToWire,
         })
       );
     }

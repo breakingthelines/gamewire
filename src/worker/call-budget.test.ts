@@ -5,16 +5,23 @@ import {
   CURRENT_LOAD_ASSUMPTIONS,
   MEGA_BUDGET_CAPS,
   MEGA_LOAD_ASSUMPTIONS,
+  PLAYER_SEASON_STATS_HISTORY_CALLS,
   checkCallBudget,
   estimateCallBudget,
+  planEnrichmentRuns,
   refreshIntervalSeconds,
   type CallBudgetCaps,
 } from './call-budget.js';
 import { INGESTION_TICK_INTERVAL_MS, INGESTION_TTL_SECONDS } from './ingestion.js';
 import {
+  DEFAULT_ENRICHMENT_MINUTE_CAP,
   DEFAULT_PROVIDER_MINUTE_CAPS,
   DEFAULT_PROVIDER_MINUTE_CAP_LIVE,
 } from './minute-limiter.js';
+import {
+  DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN,
+  MAX_ENRICHMENT_CALLS_PER_RUN,
+} from '../workflows/provider-enrichment.js';
 import {
   DEFAULT_PROVIDER_HARD_CAP,
   DEFAULT_PROVIDER_PLAN_CEILING,
@@ -215,5 +222,82 @@ describe('peak assertions', () => {
     const warnings = checkCallBudget(estimate, tight);
     expect(warnings.some((w) => w.startsWith('Peak minute'))).toBe(true);
     expect(warnings.some((w) => w.startsWith('Overnight worst minute'))).toBe(true);
+  });
+});
+
+describe('player-season-stats (GW-6a)', () => {
+  const mega = () => estimateCallBudget('api-football', { ...MEGA_LOAD_ASSUMPTIONS, ...GW2_TICK });
+  const line = (estimate: ReturnType<typeof mega>) =>
+    estimate.lines.find((l) => l.workload === 'player-season-stats');
+
+  it('is a built background line: a nightly refresh of every domestic league page', () => {
+    const pss = line(mega());
+    expect(pss).toMatchObject({ priority: 'background', planned: false, peakMinute: 0 });
+    expect(pss?.peakDay).toBe(21 * 50);
+    expect(pss?.avgPerDay).toBe(21 * 50);
+    // Exactly one line: the planned GW-6 placeholder is gone.
+    expect(mega().lines.filter((l) => l.workload === 'player-season-stats')).toHaveLength(1);
+  });
+
+  it('a nightly refresh fits one run under the default per-run limit', () => {
+    for (const a of [CURRENT_LOAD_ASSUMPTIONS, MEGA_LOAD_ASSUMPTIONS]) {
+      expect(a.domesticLeagues * a.playerSeasonPagesPerLeague).toBeLessThanOrEqual(
+        DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN
+      );
+    }
+  });
+
+  it('peak: a Saturday with a maximum history run on top stays under every daily cap', () => {
+    const estimate = estimateCallBudget('api-football', {
+      ...MEGA_LOAD_ASSUMPTIONS,
+      ...GW2_TICK,
+      enrichmentBackfillCallsPerDay: MAX_ENRICHMENT_CALLS_PER_RUN,
+    });
+    expect(estimate.warnings).toEqual([]);
+    expect(estimate.totals.peakDay).toBeLessThanOrEqual(MEGA_BUDGET_CAPS.softCap);
+    const background = estimate.lines
+      .filter((l) => l.priority === 'background')
+      .reduce((total, l) => total + l.peakDay, 0);
+    expect(background).toBeLessThanOrEqual(MEGA_BUDGET_CAPS.backgroundDailyCap);
+    expect(line(estimate)?.peakDay).toBe(21 * 50 + MAX_ENRICHMENT_CALLS_PER_RUN);
+  });
+
+  it('peak: today caps also absorb a history run (the backfill can run before INF-1)', () => {
+    const estimate = estimateCallBudget(
+      'api-football',
+      { ...CURRENT_LOAD_ASSUMPTIONS, enrichmentBackfillCallsPerDay: MAX_ENRICHMENT_CALLS_PER_RUN },
+      CURRENT_CAPS
+    );
+    expect(estimate.warnings).toEqual([]);
+    expect(estimate.totals.peakDay).toBeLessThanOrEqual(CURRENT_CAPS.softCap);
+  });
+
+  it('peak minute: the job ceiling sits under the background ceiling, so live keeps its headroom', () => {
+    expect(DEFAULT_ENRICHMENT_MINUTE_CAP).toBe(120);
+    expect(DEFAULT_ENRICHMENT_MINUTE_CAP).toBeLessThanOrEqual(
+      MEGA_BUDGET_CAPS.minuteCaps.background
+    );
+    const estimate = mega();
+    // Worst minute with the job running at its ceiling beside the busiest live minute.
+    expect(estimate.totals.peakMinute + DEFAULT_ENRICHMENT_MINUTE_CAP).toBeLessThanOrEqual(
+      MEGA_BUDGET_CAPS.minuteCaps.live
+    );
+    expect(estimate.totals.overnightWorstMinute).toBeLessThanOrEqual(
+      MEGA_BUDGET_CAPS.minuteCaps.live
+    );
+  });
+
+  it('history backfill: about 3,500 calls take three default runs of at least 13 minutes', () => {
+    expect(
+      planEnrichmentRuns(PLAYER_SEASON_STATS_HISTORY_CALLS, DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN)
+    ).toEqual({ runs: 3, minutesPerFullRun: 13, totalMinutes: 30 });
+    expect(
+      planEnrichmentRuns(PLAYER_SEASON_STATS_HISTORY_CALLS, MAX_ENRICHMENT_CALLS_PER_RUN)
+    ).toEqual({
+      runs: 1,
+      minutesPerFullRun: 30,
+      totalMinutes: 30,
+    });
+    expect(() => planEnrichmentRuns(10, 0)).toThrow(/positive/);
   });
 });

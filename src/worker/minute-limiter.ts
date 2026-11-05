@@ -36,6 +36,11 @@ export const PROVIDER_PRIORITIES: readonly ProviderPriority[] = ['live', 'near-l
 export const DEFAULT_PROVIDER_MINUTE_CAP_LIVE = 800;
 export const DEFAULT_PROVIDER_MINUTE_CAP_NEARLIVE = 650;
 export const DEFAULT_PROVIDER_MINUTE_CAP_BACKGROUND = 450;
+/**
+ * Per-minute ceiling for provider enrichment jobs (`/workflows/provider-enrichment`),
+ * applied by a second limiter in front of the background ceiling.
+ */
+export const DEFAULT_ENRICHMENT_MINUTE_CAP = 120;
 /** Remaining-per-minute value at or below which background is refused. */
 export const DEFAULT_PROVIDER_MINUTE_HEADER_RESERVE = 50;
 
