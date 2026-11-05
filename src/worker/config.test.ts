@@ -232,6 +232,40 @@ describe('gamewire-worker config', () => {
       ).toThrow(/ordered/);
     });
 
+    it('keeps provider enrichment off by default at 120 a minute', () => {
+      const cfg = loadConfig(authEnv());
+      expect(cfg.enrichmentDatasets).toEqual([]);
+      expect(cfg.enrichmentMinuteCap).toBe(120);
+    });
+
+    it('reads the enrichment allowlist and minute cap', () => {
+      const cfg = loadConfig(
+        authEnv({
+          GAMEWIRE_ENRICHMENT_DATASETS: ' player-season-stats , ,player-season-stats',
+          GAMEWIRE_ENRICHMENT_MINUTE_CAP: '60',
+        })
+      );
+      expect(cfg.enrichmentDatasets).toEqual(['player-season-stats']);
+      expect(cfg.enrichmentMinuteCap).toBe(60);
+    });
+
+    it('lowers the enrichment cap to the background minute cap (staging 30)', () => {
+      const cfg = loadConfig(
+        authEnv({
+          GAMEWIRE_PROVIDER_MINUTE_CAP_LIVE: '60',
+          GAMEWIRE_PROVIDER_MINUTE_CAP_NEARLIVE: '60',
+          GAMEWIRE_PROVIDER_MINUTE_CAP_BACKGROUND: '30',
+        })
+      );
+      expect(cfg.enrichmentMinuteCap).toBe(30);
+    });
+
+    it('rejects an invalid enrichment minute cap', () => {
+      expect(() => loadConfig(authEnv({ GAMEWIRE_ENRICHMENT_MINUTE_CAP: '0' }))).toThrow(
+        /enrichment minute cap/
+      );
+    });
+
     it('rejects an unknown quota source', () => {
       expect(() => loadConfig(authEnv({ GAMEWIRE_PROVIDER_QUOTA_SOURCE: 'remote' }))).toThrow(
         /quota source/

@@ -35,6 +35,13 @@ export type {
   IdentityGapScanWireResult,
   MatchdayCalendar,
   MatchdayWindow,
+  ProviderEnrichmentDataset,
+  ProviderEnrichmentDeps,
+  ProviderEnrichmentInput,
+  ProviderEnrichmentMode,
+  ProviderEnrichmentOutput,
+  ProviderEnrichmentTargetResult,
+  ProviderEnrichmentWireResult,
   SeasonBackfillInput,
   SeasonBackfillOutput,
   SeasonBackfillTarget,
@@ -65,6 +72,7 @@ export {
   dailyAnchorToWire,
   hourlyMatchdayToWire,
   identityGapScanToWire,
+  providerEnrichmentToWire,
   seasonBackfillToWire,
   squadSweepToWire,
   statsbombBackfillToWire,
@@ -92,3 +100,17 @@ export { DEFAULT_MAX_CALLS_PER_RUN, seasonBackfillWorkflow } from './season-back
 export { squadSweepWorkflow } from './squad-sweep.js';
 export { statsbombBackfillWorkflow } from './statsbomb-backfill.js';
 export { identityGapScanWorkflow } from './identity-gap-scan.js';
+export {
+  DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN,
+  DEFAULT_ENRICHMENT_MINUTE_CAP,
+  ENRICHMENT_CURSOR_WINDOW_SECONDS,
+  ENRICHMENT_INGEST_BATCH_SIZE,
+  MAX_ENRICHMENT_CALLS_PER_RUN,
+  PROVIDER_ENRICHMENT_DATASETS,
+  PROVIDER_ENRICHMENT_MODES,
+  PROVIDER_ENRICHMENT_MODE_ALIASES,
+  clampEnrichmentLimit,
+  enrichmentCursorKey,
+  providerEnrichmentWorkflow,
+  resolveEnrichmentTargets,
+} from './provider-enrichment.js';

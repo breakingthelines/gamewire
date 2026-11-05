@@ -18,6 +18,8 @@
  * workflow lands, the author writes its `toWire` next to the others.
  */
 import type {
+  ProviderEnrichmentOutput,
+  ProviderEnrichmentWireResult,
   CompetitionPayloadBackfillOutput,
   CompetitionPayloadBackfillWireResult,
   CompetitionRunResult,
@@ -219,6 +221,30 @@ export const competitionPayloadBackfillToWire = (
   fixturesFailed: output.fixturesFailed,
   callsUsed: output.callsUsed,
   status: output.status,
+  degradeFlags: output.degradeFlags,
+  finalQuota: output.finalQuota,
+  dryRun: output.dryRun,
+  reason: output.reason,
+});
+
+/**
+ * Provider-enrichment output drops each target's `errors` list at the wire
+ * boundary; every error is already streamed as its own log line.
+ */
+export const providerEnrichmentToWire = (
+  output: ProviderEnrichmentOutput
+): ProviderEnrichmentWireResult => ({
+  startedAt: output.startedAt,
+  finishedAt: output.finishedAt,
+  dataset: output.dataset,
+  mode: output.mode,
+  status: output.status,
+  callsBudgeted: output.callsBudgeted,
+  callsUsed: output.callsUsed,
+  pagesFetched: output.pagesFetched,
+  rowsIngested: output.rowsIngested,
+  rowsDropped: output.rowsDropped,
+  targets: output.targets.map(({ errors: _errors, ...target }) => target),
   degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
   dryRun: output.dryRun,

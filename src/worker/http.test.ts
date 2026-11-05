@@ -1102,4 +1102,145 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(entry.workflow).toBe('daily-anchor');
     expect(String(entry.reason)).toMatch(/^auth_context:/);
   });
+
+  describe('/workflows/provider-enrichment', () => {
+    const post = async (
+      body: unknown,
+      options: {
+        readonly cfg?: GamewireWorkerConfig;
+        readonly headers?: Record<string, string>;
+        readonly ingestProviderPlayerSeasonStats?: ReturnType<typeof vi.fn>;
+        readonly ingestion?: ApiFootballIngestionLoop;
+      } = {}
+    ) => {
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const rawBody = JSON.stringify(body);
+      return handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/workflows/provider-enrichment',
+          body,
+          rawBody,
+          headers: options.headers ?? { 'btl-auth-context': token },
+        },
+        options.cfg ?? config,
+        {
+          ingestion: options.ingestion ?? buildIngestion(),
+          competitions: [COMPETITION],
+          authContextVerifier: verifier,
+          providerEnrichmentIngest: options.ingestProviderPlayerSeasonStats
+            ? {
+                ingestProviderPlayerSeasonStats:
+                  options.ingestProviderPlayerSeasonStats as unknown as never,
+              }
+            : undefined,
+          enrichmentSleep: async () => undefined,
+        }
+      );
+    };
+
+    it('rejects a call with no credential', async () => {
+      const response = await post({ dataset: 'player-season-stats' }, { headers: {} });
+      expect(response.status).toBe(401);
+    });
+
+    it.each([
+      [{}, 'unknown_dataset'],
+      [{ dataset: 'odds' }, 'unknown_dataset'],
+      [{ dataset: 'player-season-stats', mode: 'weekly' }, 'invalid_mode'],
+      [{ dataset: 'player-season-stats', mode: 7 }, 'invalid_mode'],
+      [{ dataset: 'player-season-stats', mode: 'full' }, 'full_mode_needs_league_ids_and_seasons'],
+      [
+        { dataset: 'player-season-stats', mode: 'full', leagueIds: [39] },
+        'full_mode_needs_league_ids_and_seasons',
+      ],
+      [
+        { dataset: 'player-season-stats', mode: 'full', leagueIds: [], seasons: [2025] },
+        'full_mode_needs_league_ids_and_seasons',
+      ],
+      [{ dataset: 'player-season-stats', leagueIds: ['x'] }, 'invalid_league_ids'],
+      [{ dataset: 'player-season-stats', leagueIds: [0] }, 'invalid_league_ids'],
+      [{ dataset: 'player-season-stats', seasons: [25] }, 'invalid_seasons'],
+      [{ dataset: 'player-season-stats', seasons: [2025.5] }, 'invalid_seasons'],
+      [{ dataset: 'player-season-stats', limit: 0 }, 'invalid_limit'],
+      [{ dataset: 'player-season-stats', limit: 'all' }, 'invalid_limit'],
+    ])('returns 400 for %j', async (body, reason) => {
+      const response = await post(body);
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ status: 'bad_request', reason });
+    });
+
+    it('is disabled by default: no GAMEWIRE_ENRICHMENT_DATASETS, no provider call', async () => {
+      const ingestion = buildIngestion();
+      const response = await post(
+        {
+          dataset: 'player-season-stats',
+          mode: 'full',
+          leagueIds: [39],
+          seasons: [2025],
+        },
+        { ingestion }
+      );
+      expect(response.status).toBe(200);
+      expect(await finalCompleted(response)).toMatchObject({
+        workflow: 'provider-enrichment',
+        status: 'ok',
+        result: { status: 'disabled', callsUsed: 0 },
+      });
+      expect(ingestion.fetchWorkload).not.toHaveBeenCalled();
+    });
+
+    it('runs the dataset named in the allowlist, at background priority with no caching', async () => {
+      const ingestion = buildIngestion();
+      const ingest = vi.fn(async () => ({ acceptedCount: 0 }));
+      const response = await post(
+        {
+          dataset: 'player-season-stats',
+          mode: 'full',
+          leagueIds: ['39'],
+          seasons: [2025],
+          limit: 10,
+        },
+        {
+          cfg: { ...config, enrichmentDatasets: ['player-season-stats'], enrichmentMinuteCap: 120 },
+          ingestion,
+          ingestProviderPlayerSeasonStats: ingest,
+        }
+      );
+      expect(await finalCompleted(response)).toMatchObject({
+        workflow: 'provider-enrichment',
+        status: 'ok',
+        result: { status: 'completed', callsBudgeted: 10, dataset: 'player-season-stats' },
+      });
+      expect(ingestion.fetchWorkload).toHaveBeenCalledTimes(1);
+      expect(ingestion.fetchWorkload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workload: 'player-season-stats',
+          priority: 'background',
+          cache: 'bypass',
+          path: '/players?league=39&season=2025&page=1',
+        })
+      );
+    });
+
+    it.each(['auto', 'dirty'])(
+      'accepts the K-2 schedule body with mode %s as nightly',
+      async (mode) => {
+        const response = await post({ dataset: 'player-season-stats', mode });
+        expect(response.status).toBe(200);
+        expect(await finalCompleted(response)).toMatchObject({
+          result: { mode: 'nightly', status: 'disabled' },
+        });
+      }
+    );
+
+    it('accepts a nightly body with only the dataset', async () => {
+      const response = await post({ dataset: 'player-season-stats' });
+      expect(response.status).toBe(200);
+      expect(await finalCompleted(response)).toMatchObject({
+        result: { mode: 'nightly', status: 'disabled' },
+      });
+    });
+  });
 });

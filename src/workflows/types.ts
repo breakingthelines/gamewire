@@ -12,11 +12,12 @@
  * action rather than implementing their own posture switching.
  */
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
-import type { ProviderPriority } from '../worker/minute-limiter.js';
+import type { ProviderMinuteLimiter, ProviderPriority } from '../worker/minute-limiter.js';
 import type {
   FootballGameIngestClient,
   FootballGameLookupClient,
   FootballGameMissingPayloadsClient,
+  ProviderEnrichmentIngestClient,
 } from '../worker/clients/game-service.js';
 import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
@@ -201,6 +202,42 @@ export interface WorkflowDeps {
    * unset; injected in tests to avoid a live network call.
    */
   readonly statsbombFetch?: StatsBombFetch;
+  /**
+   * Provider enrichment wiring for {@link providerEnrichmentWorkflow}. When
+   * unset, every dataset counts as disabled (the kill switch default).
+   */
+  readonly enrichment?: ProviderEnrichmentDeps;
+}
+
+/**
+ * Runtime wiring for the provider-enrichment workflow, built in
+ * `worker/http.ts` from the worker config.
+ */
+export interface ProviderEnrichmentDeps {
+  /**
+   * Datasets allowed to run, from `GAMEWIRE_ENRICHMENT_DATASETS` (comma list).
+   * Empty means every dataset is off. Removing a name stops the next run
+   * without an image build.
+   */
+  readonly enabledDatasets: readonly string[];
+  /** GS-2 ingest client. Without it the workflow makes no provider calls. */
+  readonly ingest?: ProviderEnrichmentIngestClient;
+  /**
+   * Per-minute ceiling shared by every enrichment run in this process
+   * (`GAMEWIRE_ENRICHMENT_MINUTE_CAP`, default 120). Sits in front of the
+   * provider-wide background ceiling. A per-run limiter is built when unset.
+   */
+  readonly limiter?: ProviderMinuteLimiter;
+  /** Ceiling used when {@link limiter} is unset. Default 120. */
+  readonly minuteCap?: number;
+  /** Sleep used while waiting for the enrichment minute limiter. Tests inject a fake. */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * League-seasons held by a running enrichment run. Defaults to one set per
+   * process, so overlapping runs never fetch the same league-season. Tests
+   * inject their own.
+   */
+  readonly inFlight?: Set<string>;
 }
 
 export interface WorkflowLogEntry {
@@ -214,7 +251,8 @@ export interface WorkflowLogEntry {
     | 'squad-sweep'
     | 'statsbomb-backfill'
     | 'identity-gap-scan'
-    | 'competition-payload-backfill';
+    | 'competition-payload-backfill'
+    | 'provider-enrichment';
   readonly competition?: string;
   readonly season?: number;
   readonly fixtureId?: string;
@@ -223,6 +261,8 @@ export interface WorkflowLogEntry {
   readonly callsBudgeted?: number;
   readonly callsUsed?: number;
   readonly fixturesIngested?: number;
+  /** provider-enrichment: rows written by the logged step. */
+  readonly rowsIngested?: number;
   /**
    * sweep-missing-payloads: fixtures whose provider call succeeded but whose
    * envelope decoded to zero usable rows for the swept kind. See
@@ -949,6 +989,127 @@ export interface CompetitionPayloadBackfillWireResult {
   readonly fixturesFailed: number;
   readonly callsUsed: number;
   readonly status: CompetitionPayloadBackfillOutput['status'];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
+  readonly reason?: string;
+}
+
+// ── Provider Enrichment ────────────────────────────────────────────────────
+
+/**
+ * Enrichment datasets this build can run. GW-6a ships player season stats
+ * only; injuries, leaders, team season stats and the GW-7/GW-8 datasets land
+ * later under the same endpoint.
+ */
+export type ProviderEnrichmentDataset = 'player-season-stats';
+
+/**
+ * Modes after parsing. The wire also accepts the spec's `auto` and `dirty`,
+ * both as `nightly` (see `PROVIDER_ENRICHMENT_MODE_ALIASES`).
+ *
+ * - `nightly`: refresh the current season. Leagues default to the catalogue's
+ *   domestic leagues and each league's catalogue season, unless the request
+ *   names `leagueIds` or `seasons`.
+ * - `full`: a history backfill. `leagueIds` and `seasons` are required and are
+ *   used exactly as given. There is no season-end gate in either mode
+ *   (verdict D15): a season is fetched because the request names it.
+ */
+export type ProviderEnrichmentMode = 'nightly' | 'full';
+
+export interface ProviderEnrichmentInput {
+  readonly dataset: ProviderEnrichmentDataset;
+  readonly mode: ProviderEnrichmentMode;
+  /** API-Football league ids. Required for `full`. */
+  readonly leagueIds?: readonly number[];
+  /** Season years. Required for `full`. */
+  readonly seasons?: readonly number[];
+  /**
+   * Maximum provider calls this run may make. Default
+   * {@link DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN}, clamped to
+   * {@link MAX_ENRICHMENT_CALLS_PER_RUN}. A run that reaches it stops with
+   * status `incomplete`; the next run with the same body resumes from the
+   * stored page cursor.
+   */
+  readonly limit?: number;
+  /** Ignore stored cursors and start every league-season from page 1. */
+  readonly reset?: boolean;
+  /** Plan only: resolve targets and cursors, make no provider calls and no writes. */
+  readonly dryRun?: boolean;
+  /** ISO-8601 instant used as "now". Defaults to clock. */
+  readonly nowUtc?: string;
+}
+
+export interface ProviderEnrichmentTargetResult {
+  readonly leagueId: number;
+  readonly season: number;
+  /**
+   * - `complete`: every page fetched and ingested.
+   * - `partial`: stopped part way (call limit, quota, a failed page); the
+   *   cursor holds the next page.
+   * - `fresh`: completed recently, nothing fetched.
+   * - `not-started`: the run stopped before reaching this target.
+   * - `failed`: a page failed; the cursor still points at it.
+   * - `planned`: dry run.
+   * - `in-progress`: another run in this process is working on it; nothing fetched.
+   */
+  readonly status:
+    | 'complete'
+    | 'partial'
+    | 'fresh'
+    | 'not-started'
+    | 'failed'
+    | 'planned'
+    | 'in-progress';
+  /** Pages the provider reports for this league-season (0 until page 1 is read). */
+  readonly pagesTotal: number;
+  /** Next page to fetch. */
+  readonly nextPage: number;
+  readonly pagesFetched: number;
+  readonly rowsIngested: number;
+  readonly rowsDropped: number;
+  readonly errors: readonly string[];
+}
+
+export interface ProviderEnrichmentOutput {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly dataset: ProviderEnrichmentDataset;
+  readonly mode: ProviderEnrichmentMode;
+  /**
+   * - `completed`: every target is complete or fresh.
+   * - `incomplete`: the call limit, a quota posture, the minute limiter or a
+   *   failed page stopped part of the work; re-run to resume.
+   * - `aborted`: the provider hard cap was reached, or three pages failed in a row.
+   * - `disabled`: the dataset is not in `GAMEWIRE_ENRICHMENT_DATASETS`.
+   * - `skipped`: nothing to do (no targets, or the ingest client is not wired).
+   */
+  readonly status: 'completed' | 'incomplete' | 'aborted' | 'disabled' | 'skipped';
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly pagesFetched: number;
+  readonly rowsIngested: number;
+  readonly rowsDropped: number;
+  readonly targets: readonly ProviderEnrichmentTargetResult[];
+  readonly degradeFlags: readonly DegradeFlag[];
+  readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  readonly dryRun: boolean;
+  readonly reason?: string;
+}
+
+/** Wire projection: per-target `errors` are dropped (they are streamed as log lines). */
+export interface ProviderEnrichmentWireResult {
+  readonly startedAt: string;
+  readonly finishedAt: string;
+  readonly dataset: ProviderEnrichmentDataset;
+  readonly mode: ProviderEnrichmentMode;
+  readonly status: ProviderEnrichmentOutput['status'];
+  readonly callsBudgeted: number;
+  readonly callsUsed: number;
+  readonly pagesFetched: number;
+  readonly rowsIngested: number;
+  readonly rowsDropped: number;
+  readonly targets: readonly Omit<ProviderEnrichmentTargetResult, 'errors'>[];
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
   readonly dryRun: boolean;

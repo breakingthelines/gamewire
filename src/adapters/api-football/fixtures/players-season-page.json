@@ -1,0 +1,945 @@
+{
+  "get": "players",
+  "parameters": {
+    "league": "88",
+    "season": "2024",
+    "page": "1"
+  },
+  "errors": [],
+  "results": 9,
+  "paging": {
+    "current": 1,
+    "total": 43
+  },
+  "response": [
+    {
+      "player": {
+        "id": 232,
+        "name": "N. Viergever",
+        "firstname": "Nick",
+        "lastname": "Viergever",
+        "age": 36,
+        "birth": {
+          "date": "1989-08-03",
+          "place": "Capelle aan den IJssel",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "183",
+        "weight": "78",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/232.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 207,
+            "name": "Utrecht",
+            "logo": "https://media.api-sports.io/football/teams/207.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 33,
+            "lineups": 33,
+            "minutes": 2951,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.027272",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 0,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": 13,
+            "on": 7
+          },
+          "goals": {
+            "total": 3,
+            "conceded": 0,
+            "assists": 1,
+            "saves": null
+          },
+          "passes": {
+            "total": 1818,
+            "key": 7,
+            "accuracy": 47
+          },
+          "tackles": {
+            "total": 54,
+            "blocks": 29,
+            "interceptions": 27
+          },
+          "duels": {
+            "total": 191,
+            "won": 121
+          },
+          "dribbles": {
+            "attempts": 5,
+            "success": 4,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 11,
+            "committed": 19
+          },
+          "cards": {
+            "yellow": 2,
+            "yellowred": null,
+            "red": 1
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 124,
+        "name": "J. Cillessen",
+        "firstname": "Jasper",
+        "lastname": "Cillessen",
+        "age": 36,
+        "birth": {
+          "date": "1989-04-22",
+          "place": "Groesbeek",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "185",
+        "weight": "83",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/124.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 413,
+            "name": "NEC Nijmegen",
+            "logo": "https://media.api-sports.io/football/teams/413.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": null,
+            "lineups": null,
+            "minutes": null,
+            "number": null,
+            "position": "Goalkeeper",
+            "rating": null,
+            "captain": false
+          },
+          "substitutes": {
+            "in": null,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": null,
+            "conceded": null,
+            "assists": null,
+            "saves": null
+          },
+          "passes": {
+            "total": null,
+            "key": null,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": null,
+            "blocks": null,
+            "interceptions": null
+          },
+          "duels": {
+            "total": null,
+            "won": null
+          },
+          "dribbles": {
+            "attempts": null,
+            "success": null,
+            "past": null
+          },
+          "fouls": {
+            "drawn": null,
+            "committed": null
+          },
+          "cards": {
+            "yellow": null,
+            "yellowred": null,
+            "red": null
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": null,
+            "missed": null,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 525,
+        "name": "K. Lamprou",
+        "firstname": "Konstantinos",
+        "lastname": "Lamprou",
+        "age": 34,
+        "birth": {
+          "date": "1991-09-18",
+          "place": "Athena",
+          "country": "Greece"
+        },
+        "nationality": "Greece",
+        "height": "178",
+        "weight": "84",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/525.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 209,
+            "name": "Feyenoord",
+            "logo": "https://media.api-sports.io/football/teams/209.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": null,
+            "lineups": null,
+            "minutes": null,
+            "number": null,
+            "position": "Goalkeeper",
+            "rating": null,
+            "captain": false
+          },
+          "substitutes": {
+            "in": null,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": null,
+            "conceded": null,
+            "assists": null,
+            "saves": null
+          },
+          "passes": {
+            "total": null,
+            "key": null,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": null,
+            "blocks": null,
+            "interceptions": null
+          },
+          "duels": {
+            "total": null,
+            "won": null
+          },
+          "dribbles": {
+            "attempts": null,
+            "success": null,
+            "past": null
+          },
+          "fouls": {
+            "drawn": null,
+            "committed": null
+          },
+          "cards": {
+            "yellow": null,
+            "yellowred": null,
+            "red": null
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": null,
+            "missed": null,
+            "saved": null
+          }
+        },
+        {
+          "team": {
+            "id": 203,
+            "name": "NAC Breda",
+            "logo": "https://media.api-sports.io/football/teams/203.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 16,
+            "lineups": 8,
+            "minutes": 90,
+            "number": null,
+            "position": "Goalkeeper",
+            "rating": "6.200000",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 8,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": null,
+            "conceded": 3,
+            "assists": 0,
+            "saves": 2
+          },
+          "passes": {
+            "total": 52,
+            "key": null,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": null,
+            "blocks": null,
+            "interceptions": null
+          },
+          "duels": {
+            "total": null,
+            "won": null
+          },
+          "dribbles": {
+            "attempts": null,
+            "success": null,
+            "past": null
+          },
+          "fouls": {
+            "drawn": null,
+            "committed": null
+          },
+          "cards": {
+            "yellow": 0,
+            "yellowred": null,
+            "red": 0
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": 0
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 770,
+        "name": "R. Karsdorp",
+        "firstname": "Rick",
+        "lastname": "Karsdorp",
+        "age": 30,
+        "birth": {
+          "date": "1995-02-11",
+          "place": "Schoonhoven",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "184 cm",
+        "weight": "80 kg",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/770.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 197,
+            "name": "PSV Eindhoven",
+            "logo": "https://media.api-sports.io/football/teams/197.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 12,
+            "lineups": 7,
+            "minutes": 677,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.041666",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 5,
+            "out": 3,
+            "bench": 11
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": 0,
+            "conceded": 0,
+            "assists": 2,
+            "saves": null
+          },
+          "passes": {
+            "total": 525,
+            "key": 14,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": 17,
+            "blocks": 2,
+            "interceptions": 4
+          },
+          "duels": {
+            "total": 47,
+            "won": 22
+          },
+          "dribbles": {
+            "attempts": 2,
+            "success": 1,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 1,
+            "committed": 9
+          },
+          "cards": {
+            "yellow": 1,
+            "yellowred": 0,
+            "red": 0
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 999001,
+        "name": "Data not available",
+        "firstname": "Rick",
+        "lastname": "Karsdorp",
+        "age": 30,
+        "birth": {
+          "date": "1995-02-11",
+          "place": "Schoonhoven",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "184 cm",
+        "weight": "80 kg",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/770.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 197,
+            "name": "PSV Eindhoven",
+            "logo": "https://media.api-sports.io/football/teams/197.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 12,
+            "lineups": 7,
+            "minutes": 677,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.041666",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 5,
+            "out": 3,
+            "bench": 11
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": 0,
+            "conceded": 0,
+            "assists": 2,
+            "saves": null
+          },
+          "passes": {
+            "total": 525,
+            "key": 14,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": 17,
+            "blocks": 2,
+            "interceptions": 4
+          },
+          "duels": {
+            "total": 47,
+            "won": 22
+          },
+          "dribbles": {
+            "attempts": 2,
+            "success": 1,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 1,
+            "committed": 9
+          },
+          "cards": {
+            "yellow": 1,
+            "yellowred": 0,
+            "red": 0
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": null,
+        "name": "No Id",
+        "firstname": "Rick",
+        "lastname": "Karsdorp",
+        "age": 30,
+        "birth": {
+          "date": "1995-02-11",
+          "place": "Schoonhoven",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "184 cm",
+        "weight": "80 kg",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/770.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 197,
+            "name": "PSV Eindhoven",
+            "logo": "https://media.api-sports.io/football/teams/197.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 12,
+            "lineups": 7,
+            "minutes": 677,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.041666",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 5,
+            "out": 3,
+            "bench": 11
+          },
+          "shots": {
+            "total": null,
+            "on": null
+          },
+          "goals": {
+            "total": 0,
+            "conceded": 0,
+            "assists": 2,
+            "saves": null
+          },
+          "passes": {
+            "total": 525,
+            "key": 14,
+            "accuracy": null
+          },
+          "tackles": {
+            "total": 17,
+            "blocks": 2,
+            "interceptions": 4
+          },
+          "duels": {
+            "total": 47,
+            "won": 22
+          },
+          "dribbles": {
+            "attempts": 2,
+            "success": 1,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 1,
+            "committed": 9
+          },
+          "cards": {
+            "yellow": 1,
+            "yellowred": 0,
+            "red": 0
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 999002,
+        "name": "Other League",
+        "firstname": "Nick",
+        "lastname": "Viergever",
+        "age": 36,
+        "birth": {
+          "date": "1989-08-03",
+          "place": "Capelle aan den IJssel",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "183",
+        "weight": "78",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/232.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 207,
+            "name": "Utrecht",
+            "logo": "https://media.api-sports.io/football/teams/207.png"
+          },
+          "league": {
+            "id": 89,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 33,
+            "lineups": 33,
+            "minutes": 2951,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.027272",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 0,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": 13,
+            "on": 7
+          },
+          "goals": {
+            "total": 3,
+            "conceded": 0,
+            "assists": 1,
+            "saves": null
+          },
+          "passes": {
+            "total": 1818,
+            "key": 7,
+            "accuracy": 47
+          },
+          "tackles": {
+            "total": 54,
+            "blocks": 29,
+            "interceptions": 27
+          },
+          "duels": {
+            "total": 191,
+            "won": 121
+          },
+          "dribbles": {
+            "attempts": 5,
+            "success": 4,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 11,
+            "committed": 19
+          },
+          "cards": {
+            "yellow": 2,
+            "yellowred": null,
+            "red": 1
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 999003,
+        "name": "No Team",
+        "firstname": "Nick",
+        "lastname": "Viergever",
+        "age": 36,
+        "birth": {
+          "date": "1989-08-03",
+          "place": "Capelle aan den IJssel",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "183",
+        "weight": "78",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/232.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": null,
+            "name": "Utrecht",
+            "logo": "https://media.api-sports.io/football/teams/207.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 33,
+            "lineups": 33,
+            "minutes": 2951,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.027272",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 0,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": 13,
+            "on": 7
+          },
+          "goals": {
+            "total": 3,
+            "conceded": 0,
+            "assists": 1,
+            "saves": null
+          },
+          "passes": {
+            "total": 1818,
+            "key": 7,
+            "accuracy": 47
+          },
+          "tackles": {
+            "total": 54,
+            "blocks": 29,
+            "interceptions": 27
+          },
+          "duels": {
+            "total": 191,
+            "won": 121
+          },
+          "dribbles": {
+            "attempts": 5,
+            "success": 4,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 11,
+            "committed": 19
+          },
+          "cards": {
+            "yellow": 2,
+            "yellowred": null,
+            "red": 1
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    },
+    {
+      "player": {
+        "id": 999004,
+        "name": "String Percent",
+        "firstname": "Nick",
+        "lastname": "Viergever",
+        "age": 36,
+        "birth": {
+          "date": "1989-08-03",
+          "place": "Capelle aan den IJssel",
+          "country": "Netherlands"
+        },
+        "nationality": "Netherlands",
+        "height": "183",
+        "weight": "78",
+        "injured": false,
+        "photo": "https://media.api-sports.io/football/players/232.png"
+      },
+      "statistics": [
+        {
+          "team": {
+            "id": 207,
+            "name": "Utrecht",
+            "logo": "https://media.api-sports.io/football/teams/207.png"
+          },
+          "league": {
+            "id": 88,
+            "name": "Eredivisie",
+            "country": "Netherlands",
+            "logo": "https://media.api-sports.io/football/leagues/88.png",
+            "flag": "https://media.api-sports.io/flags/nl.svg",
+            "season": 2024
+          },
+          "games": {
+            "appearences": 33,
+            "lineups": 33,
+            "minutes": 2951,
+            "number": null,
+            "position": "Defender",
+            "rating": "7.027272",
+            "captain": false
+          },
+          "substitutes": {
+            "in": 0,
+            "out": null,
+            "bench": null
+          },
+          "shots": {
+            "total": 13,
+            "on": 7
+          },
+          "goals": {
+            "total": 0,
+            "conceded": 0,
+            "assists": 1,
+            "saves": null
+          },
+          "passes": {
+            "total": 1818,
+            "key": 7,
+            "accuracy": "33.33%"
+          },
+          "tackles": {
+            "total": 54,
+            "blocks": 29,
+            "interceptions": 27
+          },
+          "duels": {
+            "total": 191,
+            "won": 121
+          },
+          "dribbles": {
+            "attempts": 5,
+            "success": 4,
+            "past": null
+          },
+          "fouls": {
+            "drawn": 11,
+            "committed": 19
+          },
+          "cards": {
+            "yellow": 2,
+            "yellowred": null,
+            "red": 1
+          },
+          "penalty": {
+            "won": null,
+            "commited": null,
+            "scored": 0,
+            "missed": 0,
+            "saved": null
+          }
+        }
+      ]
+    }
+  ]
+}

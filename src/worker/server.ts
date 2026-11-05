@@ -14,12 +14,14 @@ import { withIdentityResolveCache } from './clients/identity-resolve-cache.js';
 import {
   createFetchFootballGameLookupClient,
   type FootballGameBridgeClient,
+  type ProviderEnrichmentIngestClient,
   type GameServiceRecordRatingClient,
 } from './clients/game-service.js';
 import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
+import { DEFAULT_ENRICHMENT_MINUTE_CAP, ProviderMinuteLimiter } from './minute-limiter.js';
 import { createProviderBudget } from './provider-budget.js';
 import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
@@ -265,7 +267,9 @@ const bridgeIdentityClient: FootballIdentityLookupClient | undefined = identityC
  * the bridge itself is a no-op when either the publisher or the
  * game-service client is unavailable.
  */
-const gameServiceLookupClient: FootballGameBridgeClient | undefined = config.gameServiceUrl
+const gameServiceLookupClient:
+  | (FootballGameBridgeClient & ProviderEnrichmentIngestClient)
+  | undefined = config.gameServiceUrl
   ? createFetchFootballGameLookupClient({ baseUrl: config.gameServiceUrl })
   : undefined;
 
@@ -371,6 +375,27 @@ for (const warning of budgetWarnings) {
 
 const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched, quota, minuteLimiter });
 
+// Provider enrichment (GW-6a). One limiter for the process so concurrent
+// enrichment runs share the per-minute ceiling. Every call still passes the
+// provider-wide limiter at background priority as well.
+const enrichmentMinuteCap = config.enrichmentMinuteCap ?? DEFAULT_ENRICHMENT_MINUTE_CAP;
+const enrichmentLimiter = new ProviderMinuteLimiter({
+  providerId: `${config.providerId}:enrichment`,
+  namespace: config.redisNamespace,
+  caps: {
+    live: enrichmentMinuteCap,
+    'near-live': enrichmentMinuteCap,
+    background: enrichmentMinuteCap,
+  },
+});
+console.log(
+  `[gamewire-worker] provider enrichment datasets=${
+    config.enrichmentDatasets && config.enrichmentDatasets.length > 0
+      ? config.enrichmentDatasets.join(',')
+      : 'none (off)'
+  } minuteCap=${enrichmentMinuteCap}`
+);
+
 // Verified-rotation seed: merge operator-supplied env IDs with the
 // catalogue's `verifiedFixtureIds` so staging smoke always covers the
 // known-good launch-competition fixtures even when
@@ -453,6 +478,8 @@ const server = createServer(async (request, response) => {
       // client) the match-concluded bridge uses.
       gameLookup: gameServiceLookupClient,
       identity: identityClient,
+      providerEnrichmentIngest: gameServiceLookupClient,
+      enrichmentLimiter,
       workflowLogger: (entry) => {
         console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
       },
