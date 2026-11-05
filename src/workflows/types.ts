@@ -1104,11 +1104,21 @@ export interface ProviderFixtureResultsWireResult {
 // ── Provider Enrichment ────────────────────────────────────────────────────
 
 /**
- * Enrichment datasets this build can run. GW-6a ships player season stats
- * only; injuries, leaders, team season stats and the GW-7/GW-8 datasets land
- * later under the same endpoint.
+ * Enrichment datasets this build can run:
+ * - `player-season-stats` (GW-6a): `/players?league&season&page`.
+ * - `injuries-league` (GW-6b): `/injuries?league&season`, one call per league-season.
+ * - `player-sidelined` (GW-6b): `/sidelined?players=`, 20 players a call.
+ * - `team-transfers` (GW-6b): `/transfers?team=`, one call per team.
+ * - `trophies` (GW-6b): `/trophies?players=` and `?coachs=`, 20 ids a call.
+ * Leaders, team season stats and the GW-7/GW-8 datasets land later under the
+ * same endpoint.
  */
-export type ProviderEnrichmentDataset = 'player-season-stats';
+export type ProviderEnrichmentDataset =
+  | 'player-season-stats'
+  | 'injuries-league'
+  | 'player-sidelined'
+  | 'team-transfers'
+  | 'trophies';
 
 /**
  * Modes after parsing. The wire also accepts the spec's `auto` and `dirty`,
@@ -1138,6 +1148,31 @@ export interface ProviderEnrichmentInput {
    * stored page cursor.
    */
   readonly limit?: number;
+  /**
+   * `player-sidelined` and `trophies`: API-Football player ids. Replaces the
+   * default player scope.
+   */
+  readonly playerIds?: readonly string[];
+  /** `trophies`: API-Football coach ids. Coaches are fetched only when named. */
+  readonly coachIds?: readonly string[];
+  /**
+   * `team-transfers` and `trophies`: API-Football team ids. Replaces the
+   * default team scope (the domestic catalogue teams).
+   */
+  readonly teamIds?: readonly string[];
+  /**
+   * `trophies` without `playerIds`, `coachIds` or `teamIds`: which quarter of
+   * the default team scope to cover (0 to 3): teams whose id mod 4 equals it.
+   * Defaults to a continuous week counter mod 4 (`trophiesWeek`), so every
+   * team comes round once every four weeks. Named `teamIds` are all covered.
+   */
+  readonly partition?: number;
+  /**
+   * `injuries-league`: accept `leagueIds` outside the catalogue. Off by
+   * default, because rows for a league identity does not know yet bind under
+   * a sentinel season.
+   */
+  readonly allowUncatalogued?: boolean;
   /** Ignore stored cursors and start every league-season from page 1. */
   readonly reset?: boolean;
   /** Plan only: resolve targets and cursors, make no provider calls and no writes. */
@@ -1147,6 +1182,13 @@ export interface ProviderEnrichmentInput {
 }
 
 export interface ProviderEnrichmentTargetResult {
+  /**
+   * GW-6b datasets: the unit of work, e.g. `league-39-season-2026`,
+   * `team-194`, `players-276-874` or `squad-194`. Absent for
+   * `player-season-stats`, whose unit is the league-season.
+   */
+  readonly unit?: string;
+  /** League and season for league-season units; 0 for team and player units. */
   readonly leagueId: number;
   readonly season: number;
   /**

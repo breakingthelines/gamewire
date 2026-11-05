@@ -23,6 +23,10 @@ import {
   MAX_ENRICHMENT_CALLS_PER_RUN,
 } from '../workflows/provider-enrichment.js';
 import {
+  DEFAULT_UNIT_MAX_CALLS_PER_RUN,
+  INJURIES_COVERED_LEAGUE_IDS,
+} from '../workflows/provider-enrichment-units.js';
+import {
   DEFAULT_PROVIDER_HARD_CAP,
   DEFAULT_PROVIDER_PLAN_CEILING,
   DEFAULT_PROVIDER_SOFT_CAP,
@@ -299,5 +303,72 @@ describe('player-season-stats (GW-6a)', () => {
       totalMinutes: 30,
     });
     expect(() => planEnrichmentRuns(10, 0)).toThrow(/positive/);
+  });
+});
+
+describe('GW-6b datasets: injuries, sidelined, transfers, trophies', () => {
+  const mega = () => estimateCallBudget('api-football', MEGA_LOAD_ASSUMPTIONS);
+  const line = (workload: string) => {
+    const found = mega().lines.filter((l) => l.workload === workload);
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  it('models each as built background load, not planned', () => {
+    for (const workload of ['injuries-league', 'player-sidelined', 'team-transfers', 'trophies']) {
+      expect(line(workload)).toMatchObject({
+        priority: 'background',
+        peakMinute: 0,
+        planned: false,
+      });
+    }
+  });
+
+  it('counts injuries as covered leagues x 8 pulls a day', () => {
+    expect(INJURIES_COVERED_LEAGUE_IDS.size).toBe(MEGA_LOAD_ASSUMPTIONS.injuryCoveredLeagues);
+    expect(line('injuries-league')).toMatchObject({ avgPerDay: 120, peakDay: 120 });
+    const current = estimateCallBudget('api-football', CURRENT_LOAD_ASSUMPTIONS);
+    const covered = LIVE_INGESTION_COMPETITIONS.filter((c) =>
+      INJURIES_COVERED_LEAGUE_IDS.has(c.apiFootballLeagueId)
+    ).length;
+    expect(covered).toBe(CURRENT_LOAD_ASSUMPTIONS.injuryCoveredLeagues);
+    expect(current.lines.find((l) => l.workload === 'injuries-league')?.avgPerDay).toBe(
+      covered * 8
+    );
+  });
+
+  it('spreads the weekly runs over the week and keeps them off the Saturday peak', () => {
+    // 1,200 players / 20; 414 teams; 104 squads + 104 x 2 trophy batches.
+    expect(line('player-sidelined').avgPerDay * 7).toBeCloseTo(60);
+    expect(line('team-transfers').avgPerDay * 7).toBeCloseTo(414);
+    expect(line('trophies').avgPerDay * 7).toBeCloseTo(312);
+    for (const workload of ['player-sidelined', 'team-transfers', 'trophies']) {
+      expect(line(workload).peakDay).toBe(0);
+    }
+  });
+
+  it('sizes each default per-run limit to one scheduled run at the Mega catalogue', () => {
+    const a = MEGA_LOAD_ASSUMPTIONS;
+    const perRun = {
+      'injuries-league': a.injuryCoveredLeagues,
+      'player-sidelined': Math.ceil(a.sidelinedPlayers / 20),
+      'team-transfers': a.domesticTeams,
+      trophies: Math.round(line('trophies').avgPerDay * 7),
+    } as const;
+    for (const [dataset, calls] of Object.entries(perRun)) {
+      const limit = DEFAULT_UNIT_MAX_CALLS_PER_RUN[dataset as keyof typeof perRun];
+      expect(limit).toBeGreaterThanOrEqual(calls);
+      expect(limit).toBeLessThanOrEqual(MAX_ENRICHMENT_CALLS_PER_RUN);
+      // A full run fits in under ten minutes at the enrichment minute ceiling.
+      expect(planEnrichmentRuns(calls, limit).minutesPerFullRun).toBeLessThanOrEqual(10);
+    }
+  });
+
+  it('keeps the Mega peak day under the soft cap with the GW-6b lines included', () => {
+    const estimate = mega();
+    expect(estimate.totals.peakDay).toBeLessThan(MEGA_BUDGET_CAPS.softCap);
+    expect(checkCallBudget(estimate, MEGA_BUDGET_CAPS).filter((w) => /exceed/i.test(w))).toEqual(
+      []
+    );
   });
 });

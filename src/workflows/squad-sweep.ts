@@ -114,7 +114,7 @@ const DEFAULT_MAX_TEAMS_PER_RUN = 500;
  * Mirrors `teamIdsFromFixtureDetail` in ingestion.ts but operates on the
  * list envelope shape.
  */
-const teamIdsFromFixtureListEnvelope = (data: unknown): readonly string[] => {
+export const teamIdsFromFixtureListEnvelope = (data: unknown): readonly string[] => {
   if (!isRecord(data) || !Array.isArray(data.response)) {
     return [];
   }

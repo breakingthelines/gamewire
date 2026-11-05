@@ -710,6 +710,25 @@ const asIntList = (value: unknown): readonly number[] | undefined => {
   return out;
 };
 
+/** Most ids one enrichment request may name. */
+const MAX_ENRICHMENT_IDS = 2_000;
+
+/**
+ * Parse a provider id list (`playerIds`, `coachIds`, `teamIds`): numbers or
+ * numeric strings, each a positive integer. undefined when absent, null when
+ * malformed.
+ */
+const parseEnrichmentIdList = (value: unknown): string[] | undefined | null => {
+  if (value === undefined) {
+    return undefined;
+  }
+  const ids = asIntList(value);
+  if (ids === undefined || ids.length > MAX_ENRICHMENT_IDS || ids.some((id) => id <= 0)) {
+    return null;
+  }
+  return ids.map(String);
+};
+
 const MIN_ENRICHMENT_SEASON = 2000;
 const MAX_ENRICHMENT_SEASON = 2100;
 
@@ -720,7 +739,10 @@ type ProviderEnrichmentParse =
 /**
  * Parse `/workflows/provider-enrichment`. `dataset` is required; `mode`
  * defaults to `nightly`. The spec's `auto` and `dirty` (the K-2 schedule body)
- * are accepted as `nightly`. `full` requires non-empty `leagueIds` and `seasons`.
+ * are accepted as `nightly`. `full` requires non-empty `leagueIds` and
+ * `seasons` for the league-season datasets, and `playerIds`, `coachIds` or
+ * `teamIds` for the others. Id lists are accepted only by the datasets that
+ * use them.
  */
 export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentParse => {
   if (!isRecord(body)) {
@@ -753,8 +775,40 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   ) {
     return { ok: false, reason: 'invalid_seasons' };
   }
-  if (mode === 'full' && (!leagueIds?.length || !seasons?.length)) {
-    return { ok: false, reason: 'full_mode_needs_league_ids_and_seasons' };
+  const playerIds = parseEnrichmentIdList(body.playerIds);
+  const coachIds = parseEnrichmentIdList(body.coachIds);
+  const teamIds = parseEnrichmentIdList(body.teamIds);
+  if (playerIds === null || coachIds === null || teamIds === null) {
+    return { ok: false, reason: 'invalid_ids' };
+  }
+  if (
+    (playerIds && dataset !== 'player-sidelined' && dataset !== 'trophies') ||
+    (coachIds && dataset !== 'trophies') ||
+    (teamIds && dataset !== 'team-transfers' && dataset !== 'trophies')
+  ) {
+    return { ok: false, reason: 'ids_not_used_by_dataset' };
+  }
+  // K-2 sends `partition: "auto"`, which is the default (week counter mod 4).
+  const partition =
+    body.partition === undefined || body.partition === 'auto'
+      ? undefined
+      : asNumber(body.partition);
+  if (
+    body.partition !== undefined &&
+    body.partition !== 'auto' &&
+    (partition === undefined || !Number.isInteger(partition) || partition < 0 || partition > 3)
+  ) {
+    return { ok: false, reason: 'invalid_partition' };
+  }
+  if (mode === 'full') {
+    // `full` never falls back to a default scope: the request names it.
+    if (dataset === 'player-season-stats' || dataset === 'injuries-league') {
+      if (!leagueIds?.length || !seasons?.length) {
+        return { ok: false, reason: 'full_mode_needs_league_ids_and_seasons' };
+      }
+    } else if (!playerIds?.length && !coachIds?.length && !teamIds?.length) {
+      return { ok: false, reason: 'full_mode_needs_ids' };
+    }
   }
   if (
     body.limit !== undefined &&
@@ -770,6 +824,11 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       leagueIds,
       seasons,
       limit: asNumber(body.limit),
+      playerIds,
+      coachIds,
+      teamIds,
+      partition,
+      allowUncatalogued: asBoolean(body.allowUncatalogued),
       reset: asBoolean(body.reset),
       dryRun: asBoolean(body.dryRun),
       nowUtc: asString(body.nowUtc),

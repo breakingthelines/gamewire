@@ -1,0 +1,183 @@
+{
+  "get": "injuries",
+  "parameters": {
+    "league": "88",
+    "season": "2026"
+  },
+  "errors": [],
+  "results": 6,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "player": {
+        "id": 37712,
+        "name": "J. Schuurman",
+        "photo": "https://media.api-sports.io/football/players/37712.png",
+        "type": "Missing Fixture",
+        "reason": "Knock"
+      },
+      "team": {
+        "id": 195,
+        "name": "Willem II",
+        "logo": "https://media.api-sports.io/football/teams/195.png"
+      },
+      "fixture": {
+        "id": 1552119,
+        "timezone": "UTC",
+        "date": "2026-08-08T16:45:00+00:00",
+        "timestamp": 1786207500
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    },
+    {
+      "player": {
+        "id": 272543,
+        "name": "C. Driouech",
+        "photo": "https://media.api-sports.io/football/players/272543.png",
+        "type": "Missing Fixture",
+        "reason": "Knock"
+      },
+      "team": {
+        "id": 197,
+        "name": "PSV Eindhoven",
+        "logo": "https://media.api-sports.io/football/teams/197.png"
+      },
+      "fixture": {
+        "id": 1552120,
+        "timezone": "UTC",
+        "date": "2026-08-08T18:00:00+00:00",
+        "timestamp": 1786212000
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    },
+    {
+      "player": {
+        "id": 37749,
+        "name": "J. Veerman",
+        "photo": "https://media.api-sports.io/football/players/37749.png",
+        "type": "Missing Fixture",
+        "reason": "Red Card"
+      },
+      "team": {
+        "id": 197,
+        "name": "PSV Eindhoven",
+        "logo": "https://media.api-sports.io/football/teams/197.png"
+      },
+      "fixture": {
+        "id": 1552120,
+        "timezone": "UTC",
+        "date": "2026-08-08T18:00:00+00:00",
+        "timestamp": 1786212000
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    },
+    {
+      "player": {
+        "id": 528298,
+        "name": "Y. Moslih",
+        "photo": "https://media.api-sports.io/football/players/528298.png",
+        "type": "Missing Fixture",
+        "reason": "Injury"
+      },
+      "team": {
+        "id": 413,
+        "name": "NEC Nijmegen",
+        "logo": "https://media.api-sports.io/football/teams/413.png"
+      },
+      "fixture": {
+        "id": 1552118,
+        "timezone": "UTC",
+        "date": "2026-08-08T14:30:00+00:00",
+        "timestamp": 1786199400
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    },
+    {
+      "player": {
+        "id": 33289,
+        "name": "K. Ogawa",
+        "photo": "https://media.api-sports.io/football/players/33289.png",
+        "type": "Missing Fixture",
+        "reason": "Head Injury"
+      },
+      "team": {
+        "id": 413,
+        "name": "NEC Nijmegen",
+        "logo": "https://media.api-sports.io/football/teams/413.png"
+      },
+      "fixture": {
+        "id": 1552118,
+        "timezone": "UTC",
+        "date": "2026-08-08T14:30:00+00:00",
+        "timestamp": 1786199400
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    },
+    {
+      "player": {
+        "id": 535,
+        "name": "P. Schuurs",
+        "photo": "https://media.api-sports.io/football/players/535.png",
+        "type": "Missing Fixture",
+        "reason": "Knee Injury"
+      },
+      "team": {
+        "id": 413,
+        "name": "NEC Nijmegen",
+        "logo": "https://media.api-sports.io/football/teams/413.png"
+      },
+      "fixture": {
+        "id": 1552118,
+        "timezone": "UTC",
+        "date": "2026-08-08T14:30:00+00:00",
+        "timestamp": 1786199400
+      },
+      "league": {
+        "id": 88,
+        "season": 2026,
+        "name": "Eredivisie",
+        "country": "Netherlands",
+        "logo": "https://media.api-sports.io/football/leagues/88.png",
+        "flag": "https://media.api-sports.io/flags/nl.svg"
+      }
+    }
+  ]
+}

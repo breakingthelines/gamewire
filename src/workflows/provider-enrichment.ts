@@ -2,10 +2,12 @@
  * Provider enrichment workflow (spec GW-6, built as GW-6a).
  *
  * `POST /workflows/provider-enrichment` pulls an API-Football enrichment
- * dataset and writes it straight to the GS-2 ingest RPC. This build carries
- * one dataset, `player-season-stats` (`/players?league&season&page`), pulled
- * forward for the player profile. Injuries, leaders, team season stats and
- * the rest arrive in GW-6b under the same endpoint.
+ * dataset and writes it straight to the GS-2 ingest RPC. This file runs
+ * `player-season-stats` (`/players?league&season&page`, GW-6a) and hands the
+ * GW-6b datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
+ * `trophies`) to the unit runner below, whose units and decoders live in
+ * `provider-enrichment-units.ts`. Leaders, team season stats and the GW-7/8
+ * datasets arrive later under the same endpoint.
  *
  * Rules (mega-verdict and profile-spec PF-GW2):
  * - Kill switch: a dataset runs only when it is named in
@@ -46,7 +48,10 @@ import {
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 import type { ProviderPlayerSeasonStatsRow } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
 
-import { API_FOOTBALL_PROVIDER_ID } from '../adapters/api-football/index.js';
+import {
+  API_FOOTBALL_PROVIDER_ID,
+  apiFootballFixtureSyncPaths,
+} from '../adapters/api-football/index.js';
 import {
   apiFootballPlayerSeasonStatsPath,
   decodePlayerSeasonStatsPage,
@@ -56,6 +61,22 @@ import type { IngestionFetchResult } from '../worker/ingestion.js';
 import { DEFAULT_ENRICHMENT_MINUTE_CAP, ProviderMinuteLimiter } from '../worker/minute-limiter.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { handleQuotaPosture } from './degrade.js';
+import {
+  DEFAULT_UNIT_MAX_CALLS_PER_RUN,
+  UNIT_DATASET_NEEDS,
+  UNIT_ENRICHMENT_DATASETS,
+  UNIT_MARKER_WINDOW_SECONDS,
+  fixtureListResourceId,
+  isUnitEnrichmentDataset,
+  planUnitDataset,
+  unitMarkerKey,
+  type EnrichmentUnit,
+  type ScopeGap,
+  type UnitContext,
+  type UnitEnrichmentDataset,
+  type UnitMarker,
+  type UnitOutcome,
+} from './provider-enrichment-units.js';
 import type {
   CompetitionEntry,
   DegradeFlag,
@@ -71,6 +92,7 @@ import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 export const PROVIDER_ENRICHMENT_DATASETS: readonly ProviderEnrichmentDataset[] = [
   'player-season-stats',
+  ...UNIT_ENRICHMENT_DATASETS,
 ];
 
 export const PROVIDER_ENRICHMENT_MODES: readonly ProviderEnrichmentMode[] = ['nightly', 'full'];
@@ -150,9 +172,20 @@ export const enrichmentCursorKey = (
   season: number
 ): string => `enrich:${dataset}:cursor:${leagueId}:${season}`;
 
-export const clampEnrichmentLimit = (limit: number | undefined): number => {
+/**
+ * The run's call limit: the request's `limit`, else the dataset's default
+ * ({@link DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN} for player season stats,
+ * `DEFAULT_UNIT_MAX_CALLS_PER_RUN` for the GW-6b datasets), never above
+ * {@link MAX_ENRICHMENT_CALLS_PER_RUN}.
+ */
+export const clampEnrichmentLimit = (
+  limit: number | undefined,
+  dataset: ProviderEnrichmentDataset = 'player-season-stats'
+): number => {
   if (limit === undefined || !Number.isFinite(limit) || limit <= 0) {
-    return DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN;
+    return isUnitEnrichmentDataset(dataset)
+      ? DEFAULT_UNIT_MAX_CALLS_PER_RUN[dataset]
+      : DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN;
   }
   return Math.min(Math.floor(limit), MAX_ENRICHMENT_CALLS_PER_RUN);
 };
@@ -223,7 +256,7 @@ export const providerEnrichmentWorkflow = async (
   const nowMs = Number.isFinite(parsedNow) ? parsedNow : startedAt.getTime();
   const log = (entry: Omit<WorkflowLogEntry, 'workflow'>) =>
     deps.logger?.({ workflow: 'provider-enrichment', ...entry });
-  const limit = clampEnrichmentLimit(input.limit);
+  const limit = clampEnrichmentLimit(input.limit, input.dataset);
   const dryRun = input.dryRun === true;
   const degradeFlags: DegradeFlag[] = [];
 
@@ -267,6 +300,18 @@ export const providerEnrichmentWorkflow = async (
   const enabled = deps.enrichment?.enabledDatasets ?? [];
   if (!enabled.includes(input.dataset)) {
     return finish('disabled', { reason: `dataset ${input.dataset} is not enabled` });
+  }
+
+  if (isUnitEnrichmentDataset(input.dataset)) {
+    return runUnitDataset(input, input.dataset, deps, {
+      clock,
+      nowMs,
+      limit,
+      dryRun,
+      degradeFlags,
+      log,
+      finish,
+    });
   }
 
   const { targets, unresolved } = resolveEnrichmentTargets(input, deps.competitions);
@@ -328,31 +373,8 @@ export const providerEnrichmentWorkflow = async (
     return finish('skipped', { reason: 'game-service enrichment ingest client is not wired' });
   }
 
-  const minuteCap = deps.enrichment?.minuteCap ?? DEFAULT_ENRICHMENT_MINUTE_CAP;
-  const limiter =
-    deps.enrichment?.limiter ??
-    new ProviderMinuteLimiter({
-      providerId: `${API_FOOTBALL_PROVIDER_ID}:enrichment`,
-      caps: { live: minuteCap, 'near-live': minuteCap, background: minuteCap },
-      clock: () => clock().getTime(),
-    });
   const sleep = deps.enrichment?.sleep ?? defaultSleep;
-
-  /** Wait for a token from the enrichment limiter. False when the run should stop. */
-  const acquireJobToken = async (): Promise<boolean> => {
-    for (let attempt = 0; attempt <= MAX_LIMITER_WAITS; attempt += 1) {
-      const token = await limiter.tryAcquire(WORKFLOW_PROVIDER_PRIORITY);
-      if (token.allowed) {
-        return true;
-      }
-      if (attempt === MAX_LIMITER_WAITS) {
-        break;
-      }
-      const waitMs = Math.max(250, Math.min(60_000, token.retryAfterMs ?? token.msUntilNextMinute));
-      await sleep(waitMs);
-    }
-    return false;
-  };
+  const acquireJobToken = jobTokenAcquirer(deps, clock, sleep);
 
   const results: ProviderEnrichmentTargetResult[] = [];
   let callsUsed = 0;
@@ -664,6 +686,393 @@ export const providerEnrichmentWorkflow = async (
     callsUsed,
     finalQuota: lastQuota,
     reason: allDone ? undefined : 'some league-seasons did not finish',
+  });
+};
+
+/**
+ * The enrichment minute limiter's acquire loop: waits for a token, and gives
+ * up (false) after {@link MAX_LIMITER_WAITS} waits.
+ */
+const jobTokenAcquirer = (
+  deps: WorkflowDeps,
+  clock: () => Date,
+  sleep: (ms: number) => Promise<void>
+): (() => Promise<boolean>) => {
+  const minuteCap = deps.enrichment?.minuteCap ?? DEFAULT_ENRICHMENT_MINUTE_CAP;
+  const limiter =
+    deps.enrichment?.limiter ??
+    new ProviderMinuteLimiter({
+      providerId: `${API_FOOTBALL_PROVIDER_ID}:enrichment`,
+      caps: { live: minuteCap, 'near-live': minuteCap, background: minuteCap },
+      clock: () => clock().getTime(),
+    });
+  return async () => {
+    for (let attempt = 0; attempt <= MAX_LIMITER_WAITS; attempt += 1) {
+      const token = await limiter.tryAcquire(WORKFLOW_PROVIDER_PRIORITY);
+      if (token.allowed) {
+        return true;
+      }
+      if (attempt === MAX_LIMITER_WAITS) {
+        break;
+      }
+      const waitMs = Math.max(250, Math.min(60_000, token.retryAfterMs ?? token.msUntilNextMinute));
+      await sleep(waitMs);
+    }
+    return false;
+  };
+};
+
+interface UnitRunEnv {
+  readonly clock: () => Date;
+  readonly nowMs: number;
+  readonly limit: number;
+  readonly dryRun: boolean;
+  readonly degradeFlags: DegradeFlag[];
+  readonly log: (entry: Omit<WorkflowLogEntry, 'workflow'>) => void;
+  readonly finish: (
+    status: ProviderEnrichmentOutput['status'],
+    fields?: {
+      readonly targets?: readonly ProviderEnrichmentTargetResult[];
+      readonly callsUsed?: number;
+      readonly finalQuota?: ProviderQuotaSnapshot;
+      readonly reason?: string;
+    }
+  ) => ProviderEnrichmentOutput;
+}
+
+/**
+ * Run a GW-6b dataset (`provider-enrichment-units.ts`). Same guards as the
+ * player-season-stats loop above: the enrichment minute limiter, background
+ * priority with the cache bypassed, the per-run call limit, quota posture,
+ * three failed units in a row abort, one run per unit per process, and a
+ * marker per completed unit so a stopped run resumes.
+ *
+ * In each unit result `pagesFetched` is the provider calls the unit made and
+ * `pagesTotal` the calls it needed as far as it got; `nextPage` is 0. A
+ * league the team scope could not cover (no fixture list) and a named league
+ * outside the catalogue are listed as `failed` targets, so the run ends
+ * `incomplete` instead of `completed`.
+ */
+const runUnitDataset = async (
+  input: ProviderEnrichmentInput,
+  dataset: UnitEnrichmentDataset,
+  deps: WorkflowDeps,
+  env: UnitRunEnv
+): Promise<ProviderEnrichmentOutput> => {
+  const { clock, nowMs, limit, dryRun, degradeFlags, log, finish } = env;
+  const needs = UNIT_DATASET_NEEDS[dataset];
+  const ingest = deps.enrichment?.ingest;
+  if (!dryRun && (!ingest || typeof ingest[needs] !== 'function')) {
+    return finish('skipped', {
+      reason: `game-service ${needs} ingest client is not wired`,
+    });
+  }
+
+  const cache = deps.ingestion.cache;
+  const windowSeconds = UNIT_MARKER_WINDOW_SECONDS[dataset][input.mode];
+  const readMarker = async (unit: EnrichmentUnit): Promise<UnitMarker | undefined> => {
+    if (input.reset) {
+      return undefined;
+    }
+    const marker = await cache.get<UnitMarker>(unitMarkerKey(dataset, unit.key));
+    if (!marker || nowMs - marker.completedAtMs > windowSeconds * 1_000) {
+      return undefined;
+    }
+    return marker;
+  };
+  const inFlight = deps.enrichment?.inFlight ?? PROCESS_IN_FLIGHT_TARGETS;
+  const holdKey = (unit: EnrichmentUnit) => `${dataset}:${unit.key}`;
+  const result = (
+    unit: EnrichmentUnit,
+    status: ProviderEnrichmentTargetResult['status'],
+    outcome?: UnitOutcome
+  ): ProviderEnrichmentTargetResult => ({
+    unit: unit.key,
+    leagueId: unit.leagueId,
+    season: unit.season,
+    status,
+    pagesTotal: outcome?.callsPlanned ?? 0,
+    nextPage: 0,
+    pagesFetched: outcome?.calls ?? 0,
+    rowsIngested: outcome?.rowsIngested ?? 0,
+    rowsDropped: outcome?.rowsDropped ?? 0,
+    errors: outcome?.errors ?? [],
+  });
+  const gapResult = (gap: ScopeGap): ProviderEnrichmentTargetResult => ({
+    unit:
+      gap.season > 0
+        ? `fixtures-league-${gap.leagueId}-season-${gap.season}`
+        : `league-${gap.leagueId}`,
+    leagueId: gap.leagueId,
+    season: gap.season,
+    status: 'failed',
+    pagesTotal: 0,
+    nextPage: 0,
+    pagesFetched: 0,
+    rowsIngested: 0,
+    rowsDropped: 0,
+    errors: [gap.reason],
+  });
+
+  const sleep = deps.enrichment?.sleep ?? defaultSleep;
+  const acquireJobToken = jobTokenAcquirer(deps, clock, sleep);
+  let callsUsed = 0;
+  let consecutiveFailures = 0;
+  let lastQuota: ProviderQuotaSnapshot | undefined;
+  let stop: { status: 'incomplete' | 'aborted'; reason: string } | undefined;
+  /** A posture seen on a successful call: the unit keeps its data, the run stops after it. */
+  let stopAfterUnit: { status: 'incomplete' | 'aborted'; reason: string } | undefined;
+
+  /**
+   * One provider call under the run's guards. Unit calls bypass the cache
+   * (D9); the team scope's fixture-list fallback uses it, under the key the
+   * live loop's discovery writes, so a cached list costs nothing.
+   */
+  const guardedFetch = async ({
+    workload,
+    resourceId,
+    path,
+    cacheMode,
+  }: {
+    readonly workload: Parameters<UnitContext['fetch']>[0]['workload'];
+    readonly resourceId: string;
+    readonly path: string;
+    readonly cacheMode: 'use' | 'bypass';
+  }): ReturnType<UnitContext['fetch']> => {
+    if (stop || stopAfterUnit) {
+      return { ok: false, stopped: true };
+    }
+    let last: IngestionFetchResult | undefined;
+    for (let attempt = 1; attempt <= RATE_LIMITED_ATTEMPTS; attempt += 1) {
+      if (callsUsed >= limit) {
+        stop = { status: 'incomplete', reason: `call limit ${limit} reached` };
+        return { ok: false, stopped: true };
+      }
+      if (!(await acquireJobToken())) {
+        stop = { status: 'incomplete', reason: 'enrichment minute limiter stayed full' };
+        return { ok: false, stopped: true };
+      }
+      last = await deps.ingestion.fetchWorkload({
+        workload,
+        resourceId,
+        path,
+        priority: WORKFLOW_PROVIDER_PRIORITY,
+        cache: cacheMode,
+      });
+      if (last.fetch !== undefined && last.status !== 'skipped') {
+        callsUsed += 1;
+      }
+      lastQuota = last.quota;
+      if (last.status !== 'rate_limited') {
+        break;
+      }
+      log({
+        event: 'provider_enrichment.rate_limited',
+        status: `${resourceId} attempt ${attempt}`,
+        message: last.error?.message,
+      });
+      if (attempt < RATE_LIMITED_ATTEMPTS && last.fetch !== undefined) {
+        const nowMsLocal = clock().getTime();
+        await sleep(60_000 - (nowMsLocal % 60_000) + PROVIDER_RATE_LIMIT_MARGIN_MS);
+      }
+    }
+    if (!last) {
+      return { ok: false, stopped: true };
+    }
+    if (last.status === 'rate_limited') {
+      degradeFlags.push({
+        trigger: 'provider-rate-limited',
+        action: 'cached-only',
+        detail: last.error?.message,
+      });
+      stop = { status: 'incomplete', reason: 'provider minute limit' };
+      return { ok: false, stopped: true };
+    }
+    if (last.status === 'denied') {
+      const posture = handleQuotaPosture(last.quota);
+      degradeFlags.push(
+        posture.flag ?? {
+          trigger: 'background-cap',
+          action: 'cached-only',
+          detail: last.error?.message,
+        }
+      );
+      stop =
+        posture.action === 'abort'
+          ? { status: 'aborted', reason: 'provider hard cap reached' }
+          : { status: 'incomplete', reason: last.error?.message ?? 'quota denied the call' };
+      return { ok: false, stopped: true };
+    }
+    if (last.status === 'cached' && cacheMode === 'use' && last.data !== undefined) {
+      return { ok: true, data: last.data };
+    }
+    if (last.status !== 'fetched' || last.data === undefined) {
+      return {
+        ok: false,
+        stopped: false,
+        message: `${resourceId}: ${last.status}${last.error ? ` ${last.error.message}` : ''}`,
+      };
+    }
+    const posture = handleQuotaPosture(last.quota);
+    if (posture.action !== 'continue') {
+      if (posture.flag) {
+        degradeFlags.push(posture.flag);
+      }
+      stopAfterUnit =
+        posture.action === 'abort'
+          ? { status: 'aborted', reason: 'provider hard cap reached' }
+          : { status: 'incomplete', reason: posture.flag?.detail ?? posture.action };
+    }
+    return { ok: true, data: last.data };
+  };
+  const fetch: UnitContext['fetch'] = (args) => guardedFetch({ ...args, cacheMode: 'bypass' });
+
+  const plan = await planUnitDataset(dataset, input, deps, nowMs, {
+    loadFixtureList: dryRun
+      ? undefined
+      : (entry: CompetitionEntry) =>
+          guardedFetch({
+            workload: 'fixtures-next-7d',
+            resourceId: fixtureListResourceId(entry),
+            path: apiFootballFixtureSyncPaths([entry])[0] ?? '/fixtures',
+            cacheMode: 'use',
+          }),
+  });
+  const gapResults = (plan.gaps ?? []).map(gapResult);
+  for (const gap of plan.gaps ?? []) {
+    log({
+      event: 'provider_enrichment.scope_gap',
+      leagueId: gap.leagueId,
+      season: gap.season || undefined,
+      reason: gap.reason,
+    });
+  }
+  if (plan.units.length === 0) {
+    if (gapResults.length > 0) {
+      const finalStop = stop ?? stopAfterUnit;
+      return finish(finalStop?.status ?? 'incomplete', {
+        targets: gapResults,
+        callsUsed,
+        finalQuota: lastQuota,
+        reason:
+          finalStop?.reason ??
+          `${plan.emptyReason ?? 'nothing to fetch'}; ${gapResults.length} leagues missing`,
+      });
+    }
+    if ((plan.freshMembers ?? 0) > 0) {
+      return finish('completed', { callsUsed, finalQuota: lastQuota, reason: plan.emptyReason });
+    }
+    return finish('skipped', {
+      callsUsed,
+      finalQuota: lastQuota,
+      reason: plan.emptyReason ?? 'nothing to fetch',
+    });
+  }
+
+  if (dryRun) {
+    const planned: ProviderEnrichmentTargetResult[] = [...gapResults];
+    for (const unit of plan.units) {
+      const held = inFlight.has(holdKey(unit));
+      const marker = held ? undefined : await readMarker(unit);
+      planned.push(result(unit, held ? 'in-progress' : marker ? 'fresh' : 'planned'));
+    }
+    return finish('completed', { targets: planned, reason: 'dry run' });
+  }
+
+  const ctx: UnitContext = {
+    fetch,
+    ingest: ingest!,
+    cache,
+    clockMs: () => clock().getTime(),
+    nowMs,
+    log,
+  };
+
+  const results: ProviderEnrichmentTargetResult[] = [...gapResults];
+  for (const unit of plan.units) {
+    if (stop || stopAfterUnit) {
+      results.push(result(unit, 'not-started'));
+      continue;
+    }
+    const key = holdKey(unit);
+    if (inFlight.has(key)) {
+      log({
+        event: 'provider_enrichment.target_in_progress',
+        status: unit.key,
+        reason: 'another run in this process holds this unit',
+      });
+      results.push(result(unit, 'in-progress'));
+      continue;
+    }
+    inFlight.add(key);
+    try {
+      if (await readMarker(unit)) {
+        results.push(result(unit, 'fresh'));
+        continue;
+      }
+      const outcome = await unit.run(ctx);
+      if (outcome.status === 'complete') {
+        consecutiveFailures = 0;
+        const marker: UnitMarker = { completedAtMs: clock().getTime() };
+        await Promise.all(
+          (unit.memberKeys ?? [unit.key]).map((member) =>
+            cache.set<UnitMarker>(unitMarkerKey(dataset, member), marker, windowSeconds)
+          )
+        );
+        results.push(result(unit, 'complete', outcome));
+        log({
+          event: 'provider_enrichment.unit',
+          leagueId: unit.leagueId || undefined,
+          season: unit.season || undefined,
+          status: unit.key,
+          callsUsed,
+          rowsIngested: outcome.rowsIngested,
+        });
+        continue;
+      }
+      if (outcome.status === 'partial') {
+        results.push(result(unit, outcome.calls === 0 ? 'not-started' : 'partial', outcome));
+        continue;
+      }
+      for (const message of outcome.errors) {
+        log({
+          event: 'provider_enrichment.unit_failed',
+          leagueId: unit.leagueId || undefined,
+          season: unit.season || undefined,
+          status: unit.key,
+          message,
+        });
+      }
+      results.push(result(unit, 'failed', outcome));
+      consecutiveFailures += 1;
+      if (consecutiveFailures >= FAILURE_CIRCUIT_THRESHOLD) {
+        degradeFlags.push({
+          trigger: 'provider-5xx',
+          action: 'circuit-open',
+          detail: `${consecutiveFailures} units failed in a row`,
+        });
+        stop = { status: 'aborted', reason: `${consecutiveFailures} units failed in a row` };
+      }
+    } finally {
+      inFlight.delete(key);
+    }
+  }
+
+  const finalStop = stop ?? stopAfterUnit;
+  if (finalStop) {
+    return finish(finalStop.status, {
+      targets: results,
+      callsUsed,
+      finalQuota: lastQuota,
+      reason: finalStop.reason,
+    });
+  }
+  const allDone = results.every((r) => r.status === 'complete' || r.status === 'fresh');
+  return finish(allDone ? 'completed' : 'incomplete', {
+    targets: results,
+    callsUsed,
+    finalQuota: lastQuota,
+    reason: allDone ? undefined : 'some units did not finish',
   });
 };
 

@@ -3,6 +3,7 @@ import { createGrpcTransport } from '@connectrpc/connect-node';
 
 import {
   GameService,
+  type IngestAvailabilityRequest,
   type IngestBatchResponse,
   type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
@@ -14,6 +15,8 @@ import {
   type IngestProviderFixtureResultsRequest,
   type IngestProviderPlayerSeasonStatsRequest,
   type IngestTeamMatchStatsRequest,
+  type IngestTransfersRequest,
+  type IngestTrophiesRequest,
   type ListProviderConfigsRequest,
   type ListProviderConfigsResponse,
   type ListGamesMissingPayloadsRequest,
@@ -131,11 +134,21 @@ export interface FootballGameIngestClient {
  * Separate from {@link FootballGameIngestClient} so workflows that only push
  * enrichment rows can depend on the narrow surface. Each call carries at most
  * 500 rows.
+ *
+ * The GW-6b methods are optional so a narrow client (or a test) can carry only
+ * the dataset it serves; a dataset whose method is missing makes no provider
+ * call and reports `skipped`. The real client implements all of them.
  */
 export interface ProviderEnrichmentIngestClient {
   ingestProviderPlayerSeasonStats(
     request: IngestProviderPlayerSeasonStatsRequest
   ): Promise<IngestBatchResponse>;
+  /** `injuries-league` and `player-sidelined`. */
+  ingestAvailability?(request: IngestAvailabilityRequest): Promise<IngestBatchResponse>;
+  /** `team-transfers`. */
+  ingestTransfers?(request: IngestTransfersRequest): Promise<IngestBatchResponse>;
+  /** `trophies`. */
+  ingestTrophies?(request: IngestTrophiesRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient &
@@ -276,6 +289,15 @@ export const createFetchFootballGameLookupClient = (
       request: IngestProviderPlayerSeasonStatsRequest
     ): Promise<IngestBatchResponse> {
       return client.ingestProviderPlayerSeasonStats(request, { timeoutMs });
+    },
+    ingestAvailability(request: IngestAvailabilityRequest): Promise<IngestBatchResponse> {
+      return client.ingestAvailability(request, { timeoutMs });
+    },
+    ingestTransfers(request: IngestTransfersRequest): Promise<IngestBatchResponse> {
+      return client.ingestTransfers(request, { timeoutMs });
+    },
+    ingestTrophies(request: IngestTrophiesRequest): Promise<IngestBatchResponse> {
+      return client.ingestTrophies(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

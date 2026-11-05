@@ -1367,6 +1367,20 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       [{ dataset: 'player-season-stats', seasons: [2025.5] }, 'invalid_seasons'],
       [{ dataset: 'player-season-stats', limit: 0 }, 'invalid_limit'],
       [{ dataset: 'player-season-stats', limit: 'all' }, 'invalid_limit'],
+      [{ dataset: 'injuries-league', mode: 'full' }, 'full_mode_needs_league_ids_and_seasons'],
+      [{ dataset: 'team-transfers', mode: 'full' }, 'full_mode_needs_ids'],
+      [
+        { dataset: 'trophies', mode: 'full', leagueIds: [39], seasons: [2025] },
+        'full_mode_needs_ids',
+      ],
+      [{ dataset: 'player-sidelined', playerIds: ['x'] }, 'invalid_ids'],
+      [{ dataset: 'player-sidelined', playerIds: [0] }, 'invalid_ids'],
+      [{ dataset: 'trophies', coachIds: 'all' }, 'invalid_ids'],
+      [{ dataset: 'team-transfers', playerIds: [1] }, 'ids_not_used_by_dataset'],
+      [{ dataset: 'player-sidelined', teamIds: [1] }, 'ids_not_used_by_dataset'],
+      [{ dataset: 'injuries-league', coachIds: [1] }, 'ids_not_used_by_dataset'],
+      [{ dataset: 'trophies', partition: 4 }, 'invalid_partition'],
+      [{ dataset: 'trophies', partition: 'weekly' }, 'invalid_partition'],
     ])('returns 400 for %j', async (body, reason) => {
       const response = await post(body);
       expect(response.status).toBe(400);
@@ -1436,6 +1450,32 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
         });
       }
     );
+
+    it.each([
+      [{ dataset: 'injuries-league' }],
+      [{ dataset: 'player-sidelined', mode: 'auto' }],
+      [{ dataset: 'team-transfers' }],
+      [{ dataset: 'trophies', partition: 'auto' }],
+      [{ dataset: 'trophies', mode: 'full', playerIds: ['276', 874], coachIds: [1] }],
+      [{ dataset: 'team-transfers', mode: 'full', teamIds: [194] }],
+      [
+        {
+          dataset: 'injuries-league',
+          mode: 'full',
+          leagueIds: [999],
+          seasons: [2025],
+          allowUncatalogued: true,
+        },
+      ],
+    ])('accepts the GW-6b body %j (disabled by default)', async (body) => {
+      const ingestion = buildIngestion();
+      const response = await post(body, { ingestion });
+      expect(response.status).toBe(200);
+      expect(await finalCompleted(response)).toMatchObject({
+        result: { dataset: body.dataset, status: 'disabled', callsUsed: 0 },
+      });
+      expect(ingestion.fetchWorkload).not.toHaveBeenCalled();
+    });
 
     it('accepts a nightly body with only the dataset', async () => {
       const response = await post({ dataset: 'player-season-stats' });
