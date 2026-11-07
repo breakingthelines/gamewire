@@ -1634,7 +1634,8 @@ function playerMatchStatsFromEntry(
   setStat('passes', integerStat(stat.passes?.total));
   setStat('passCompletionPct', percentStat(stat.passes?.accuracy));
   setStat('interceptions', integerStat(stat.tackles?.interceptions));
-  setStat('clearances', integerStat(stat.tackles?.blocks));
+  // API-Football has no per-match clearances stat; tackles.blocks is blocks.
+  setStat('blocks', integerStat(stat.tackles?.blocks));
   setStat('dribbles', integerStat(stat.dribbles?.attempts));
   setStat('dribblesCompleted', integerStat(stat.dribbles?.success));
   setStat('duels', integerStat(stat.duels?.total));
@@ -1648,6 +1649,13 @@ function playerMatchStatsFromEntry(
   setStat('goalsConceded', integerStat(stat.goals?.conceded));
   setStat('rating', doubleStat(stat.games?.rating));
   setStat('shirtNumber', integerStat(stat.games?.number));
+  // Penalties scored are included in goals.total, so non-penalty goals are
+  // goals - penaltiesScored. The provider spells committed "commited".
+  setStat('penaltiesScored', integerStat(stat.penalty?.scored));
+  setStat('penaltiesWon', integerStat(stat.penalty?.won));
+  setStat('penaltiesMissed', integerStat(stat.penalty?.missed));
+  setStat('penaltiesCommitted', integerStat(stat.penalty?.commited ?? stat.penalty?.committed));
+  setStat('penaltiesSaved', integerStat(stat.penalty?.saved));
 
   const isStarter = stat.games?.substitute === false;
 
@@ -1669,7 +1677,6 @@ function playerMatchStatsFromEntry(
     passCompletionPct: fields.passCompletionPct ?? 0,
     passesCompleted: fields.passesCompleted ?? 0,
     interceptions: fields.interceptions ?? 0,
-    clearances: fields.clearances ?? 0,
     dribbles: fields.dribbles ?? 0,
     dribblesCompleted: fields.dribblesCompleted ?? 0,
     duels: fields.duels ?? 0,
@@ -1684,6 +1691,12 @@ function playerMatchStatsFromEntry(
     rating: fields.rating ?? 0,
     isStarter,
     shirtNumber: fields.shirtNumber ?? 0,
+    blocks: fields.blocks ?? 0,
+    penaltiesScored: fields.penaltiesScored ?? 0,
+    penaltiesWon: fields.penaltiesWon ?? 0,
+    penaltiesMissed: fields.penaltiesMissed ?? 0,
+    penaltiesCommitted: fields.penaltiesCommitted ?? 0,
+    penaltiesSaved: fields.penaltiesSaved ?? 0,
     extraStats: {},
     source: providerAttribution(options.providerId),
     provenance,
