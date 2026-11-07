@@ -271,6 +271,8 @@ export interface ApiFootballPlayerStatistics {
   } | null;
   readonly penalty?: {
     readonly won?: number | null;
+    /** The provider's spelling. */
+    readonly commited?: number | null;
     readonly committed?: number | null;
     readonly scored?: number | null;
     readonly missed?: number | null;

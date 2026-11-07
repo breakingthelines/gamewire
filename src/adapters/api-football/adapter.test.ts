@@ -964,11 +964,86 @@ describe('API-Football match-stats mapping', () => {
     expect(fields).toContain('yellowCards');
     // saves is null for an outfielder → no field, no provenance.
     expect(fields).not.toContain('saves');
+    // tackles.blocks maps to blocks; clearances is no longer emitted.
+    expect(saka?.blocks).toBe(0);
+    expect(fields).toContain('blocks');
+    expect(fields).not.toContain('clearances');
+    // An all-null penalty object reports nothing.
+    expect(fields.filter((f) => f.startsWith('penalties'))).toEqual([]);
 
     const sub = request.playerStats[1];
     expect(sub?.role).toBe('UNUSED');
     expect(sub?.isStarter).toBe(false);
     expect(sub?.minutes).toBe(0);
+  });
+
+  // Trimmed from a live /fixtures?ids=1213441 response (Groningen 4-1 NAC
+  // Breda, Eredivisie 2024): one penalty scored per side, the provider's
+  // `commited` spelling, and a goalkeeper's `saved: 0`.
+  const realPlayersEnvelope = (): unknown =>
+    JSON.parse(
+      readFileSync(new URL('./fixtures/fixture-players-1213441.json', import.meta.url), 'utf8')
+    );
+
+  it('maps per-match blocks and penalties from a real /fixtures/players payload', () => {
+    const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+      replayId: 'live:player-match-stats:1213441',
+      resourceId: '1213441',
+      gameId: 'btl_football_game_g1213441',
+      fetchedAtMs: Date.parse('2026-11-07T00:00:00Z'),
+      envelope: realPlayersEnvelope(),
+    });
+    const byProviderId = new Map(
+      request.playerStats.map((line) => [line.playerResolution?.providerRef?.providerId, line])
+    );
+    const fieldsOf = (id: string) => byProviderId.get(id)?.provenance.map((p) => p.fieldName) ?? [];
+
+    // Bacuna scored a penalty: it is in goals, so non-penalty goals are 0.
+    const bacuna = byProviderId.get('18997');
+    expect(bacuna?.goals).toBe(1);
+    expect(bacuna?.penaltiesScored).toBe(1);
+    expect(bacuna?.penaltiesMissed).toBe(0);
+    expect((bacuna?.goals ?? 0) - (bacuna?.penaltiesScored ?? 0)).toBe(0);
+    // won and commited are null for him: not reported.
+    expect(fieldsOf('18997')).toContain('penaltiesScored');
+    expect(fieldsOf('18997')).not.toContain('penaltiesWon');
+    expect(fieldsOf('18997')).not.toContain('penaltiesCommitted');
+
+    // Schreuders won one and scored from open play.
+    const schreuders = byProviderId.get('394608');
+    expect(schreuders?.penaltiesWon).toBe(1);
+    expect(schreuders?.goals).toBe(1);
+    expect(schreuders?.penaltiesScored).toBe(0);
+
+    // The provider spells it `commited`.
+    expect(byProviderId.get('454545')?.penaltiesCommitted).toBe(1);
+    expect(fieldsOf('454545')).toContain('penaltiesCommitted');
+    expect(byProviderId.get('55882')?.penaltiesCommitted).toBe(1);
+
+    // A goalkeeper reports saved: 0 as a real 0.
+    expect(byProviderId.get('40220')?.penaltiesSaved).toBe(0);
+    expect(fieldsOf('40220')).toContain('penaltiesSaved');
+    expect(fieldsOf('18997')).not.toContain('penaltiesSaved');
+
+    // tackles.blocks is blocks; null blocks are not reported.
+    expect(byProviderId.get('8900')?.blocks).toBe(1);
+    expect(fieldsOf('8900')).toContain('blocks');
+    expect(fieldsOf('18997')).not.toContain('blocks');
+
+    // Nothing is written to the deprecated clearances field.
+    for (const line of request.playerStats) {
+      expect(line.clearances).toBe(0);
+      expect(line.provenance.map((p) => p.fieldName)).not.toContain('clearances');
+    }
+
+    // Penalties scored per side match the two penalty goals in the match.
+    const scoredByTeam = new Map<string, number>();
+    for (const line of request.playerStats) {
+      const team = line.teamResolution?.providerRef?.providerId ?? '';
+      scoredByTeam.set(team, (scoredByTeam.get(team) ?? 0) + line.penaltiesScored);
+    }
+    expect(scoredByTeam.get('202')).toBe(1);
+    expect(scoredByTeam.get('203')).toBe(1);
   });
 
   it('skips player entries with no statistics block', () => {
