@@ -224,6 +224,24 @@ line up by key. xG and xA are never sent.
 | `substitute_out`   | `substitutes.out`                                         |     | `goals_conceded`      | `goals.conceded`        |
 | `substitute_bench` | `substitutes.bench`                                       |     | `saves`               | `goals.saves`           |
 
+Match stats (`/fixtures/statistics` and `/fixtures/players`):
+
+- Team statistics are requested with `half=true`, which adds `statistics_1h`
+  and `statistics_2h` to the same response at no extra call. The cache key is
+  the workload and fixture id, so the path change shares the existing key.
+- "Shots insidebox", "Shots outsidebox" and "goals_prevented" are typed
+  (`shots_inside_box`, `shots_outside_box`, `goals_prevented`). When "Passes %"
+  is missing, `pass_completion_pct` is 100 x "Passes accurate" / "Total passes".
+- Other team metrics go to `extra_stats` under `teamStatKey(type)`: the type
+  slugged, with `%` spelled `pct` ("Free Kicks" is `free-kicks`). Half splits
+  use the same key for every type, typed or not, prefixed `first-half:` or
+  `second-half:` (`first-half:shots-on-goal`, `second-half:ball-possession`).
+  A response without the half arrays adds no half keys.
+- A player's `passes.accuracy` is the count of accurate passes. It is stored
+  as `passes_completed`, and `pass_completion_pct` is derived from it and
+  `passes.total`. `dribbles.past` is `dribbled_past` and `games.captain` is
+  `is_captain`, each with provenance only when the provider sent a value.
+
 The call budget model works from the real per-fixture mechanism:
 
 ```typescript

@@ -266,7 +266,7 @@ describe('sweepMissingPayloadsWorkflow', () => {
       {
         kind: 'team-match-stats',
         workload: 'team-match-stats',
-        path: '/fixtures/statistics?fixture=42',
+        path: '/fixtures/statistics?fixture=42&half=true',
         protoKind: GameMissingPayloadKind.TEAM_MATCH_STATS,
       },
       {

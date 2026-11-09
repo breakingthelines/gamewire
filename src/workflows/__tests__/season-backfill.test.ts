@@ -269,7 +269,7 @@ describe('seasonBackfillWorkflow — full season walk', () => {
         (c) => c.resourceId === id && c.workload === 'team-match-stats'
       );
       expect(teamStats).toHaveLength(1);
-      expect(teamStats[0]?.path).toBe(`/fixtures/statistics?fixture=${id}`);
+      expect(teamStats[0]?.path).toBe(`/fixtures/statistics?fixture=${id}&half=true`);
       const playerStats = ingestion.calls.filter(
         (c) => c.resourceId === id && c.workload === 'player-match-stats'
       );
