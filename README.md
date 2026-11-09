@@ -125,13 +125,14 @@ ceiling) and to a per-run `limit` (default per dataset, at most 4,000). Provider
 responses are not cached: each one goes straight to its game-service ingest RPC.
 A provider null is left out of the row's `values`; it is never written as 0.
 
-| dataset               | provider call                                                     | scope when the request names none                                        | default limit | ingest RPC                        |
-| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------ | ------------- | --------------------------------- |
-| `player-season-stats` | `/players?league&season&page`                                     | catalogue domestic leagues at their catalogue season                     | 1,500         | `IngestProviderPlayerSeasonStats` |
-| `injuries-league`     | `/injuries?league&season`                                         | catalogue leagues with injuries coverage (`INJURIES_COVERED_LEAGUE_IDS`) | 60            | `IngestAvailability` (INJURIES)   |
-| `player-sidelined`    | `/sidelined?players=a-b`, 20 a call                               | players `injuries-league` listed for a fixture in the last 30 days       | 300           | `IngestAvailability` (SIDELINED)  |
-| `team-transfers`      | `/transfers?team=T`                                               | teams in the fixture lists of the catalogue domestic leagues             | 500           | `IngestTransfers`                 |
-| `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | teams whose id mod 4 is the week counter mod 4 (or `partition` 0 to 3)   | 600           | `IngestTrophies`                  |
+| dataset               | provider call                                                     | scope when the request names none                                         | default limit | ingest RPC                        |
+| --------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------- | ------------- | --------------------------------- |
+| `player-season-stats` | `/players?league&season&page`                                     | catalogue domestic leagues at their catalogue season                      | 1,500         | `IngestProviderPlayerSeasonStats` |
+| `injuries-league`     | `/injuries?league&season`                                         | catalogue leagues with injuries coverage (`INJURIES_COVERED_LEAGUE_IDS`)  | 60            | `IngestAvailability` (INJURIES)   |
+| `player-sidelined`    | `/sidelined?players=a-b`, 20 a call                               | players `injuries-league` listed for a fixture in the last 30 days        | 300           | `IngestAvailability` (SIDELINED)  |
+| `team-transfers`      | `/transfers?team=T`                                               | teams in the fixture lists of the catalogue domestic leagues              | 500           | `IngestTransfers`                 |
+| `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | teams whose id mod 4 is the week counter mod 4 (or `partition` 0 to 3)    | 600           | `IngestTrophies`                  |
+| `team-season-stats`   | `/teams/statistics?league&season&team`                            | domestic teams with a final whistle in 36h; every domestic team on Monday | 500           | `IngestProviderTeamSeasonStats`   |
 
 The GW-6b datasets keep only a small marker per finished unit (a league-season,
 a team, or a batch of ids) so a stopped run resumes, and `injuries-league` keeps
@@ -157,6 +158,16 @@ trophies run only for `coachIds` named in the request.
 - `injuries-league` accepts only catalogue leagues in `leagueIds`; a league
   outside it is reported as `failed` unless the request sets
   `allowUncatalogued: true`.
+- `team-season-stats` takes each team's league from the catalogue fixture list
+  it appears in, at the catalogue season. A nightly run reads final whistles
+  from the cached lists (finished, or kicked off over two hours ago and not
+  postponed, cancelled, abandoned or suspended), so scoping costs no call.
+  `nightly` on a Monday (UTC) and `full` cover every domestic team. `teamIds`
+  and `leagueIds` narrow the scope; `seasons` is refused. Values are keyed by
+  `TeamSeasonStats` names (`matches_played`, `wins`, `draws`, `losses`,
+  `goals_for`, `goals_against`) plus `clean_sheets`, `failed_to_score`,
+  `penalties_scored` and `penalties_missed`; `form` is copied as sent. A
+  completed team keeps a 20h marker.
 
 ```jsonc
 // history backfill: leagues and seasons are explicit, nothing is gated on a season's end
@@ -171,13 +182,16 @@ trophies run only for `coachIds` named in the request.
 {"dataset": "injuries-league", "mode": "full", "leagueIds": [88], "seasons": [2025]}
 {"dataset": "trophies", "playerIds": [276, 874], "coachIds": [1]}
 {"dataset": "team-transfers", "teamIds": [194]}
+// GW-6c: the K-2 body (Monday covers every team), and a full run
+{"dataset": "team-season-stats"}
+{"dataset": "team-season-stats", "mode": "full", "leagueIds": [39]}
 ```
 
 `mode` is `nightly` (the default) or `full`. The spec's `auto` and `dirty`, which
 the K-2 schedule sends, are accepted as `nightly`. `full` never uses a default
 scope: `player-season-stats` and `injuries-league` need `leagueIds` and
-`seasons` (walked latest first), the others need `playerIds`, `coachIds` or
-`teamIds`. Only one run in a process works on a unit at a time; a second run
+`seasons` (walked latest first), `team-season-stats` needs nothing (every
+domestic team), the others need `playerIds`, `coachIds` or `teamIds`. Only one run in a process works on a unit at a time; a second run
 reports it as `in-progress` and fetches nothing for it.
 
 Provider fixture results run through `POST /workflows/provider-fixture-results`

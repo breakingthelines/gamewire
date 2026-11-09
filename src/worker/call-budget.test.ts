@@ -372,3 +372,41 @@ describe('GW-6b datasets: injuries, sidelined, transfers, trophies', () => {
     );
   });
 });
+
+describe('team-season-stats (GW-6c)', () => {
+  const line = (a = MEGA_LOAD_ASSUMPTIONS) => {
+    const found = estimateCallBudget('api-football', a).lines.filter(
+      (l) => l.workload === 'team-season-stats'
+    );
+    // Exactly one line: the planned placeholder is gone.
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  it('is a built background line: every team on Monday, recent final whistles otherwise', () => {
+    const tss = line();
+    expect(tss).toMatchObject({ priority: 'background', planned: false, peakMinute: 0 });
+    // 414 teams x 1.15 matches a week / 7 x 1.5 runs per match, about 102 a night.
+    const nightly = ((414 * 1.15) / 7) * 1.5;
+    expect(tss.peakDay).toBeCloseTo(nightly);
+    expect(tss.avgPerDay).toBeCloseTo((414 + 6 * nightly) / 7);
+    expect(Math.round(tss.avgPerDay)).toBe(147);
+  });
+
+  it('fits a Monday run of every domestic team in one default run of under five minutes', () => {
+    const calls = MEGA_LOAD_ASSUMPTIONS.domesticTeams;
+    const limit = DEFAULT_UNIT_MAX_CALLS_PER_RUN['team-season-stats'];
+    expect(limit).toBeGreaterThanOrEqual(calls);
+    expect(planEnrichmentRuns(calls, limit)).toEqual({
+      runs: 1,
+      minutesPerFullRun: 4,
+      totalMinutes: 4,
+    });
+  });
+
+  it('keeps the Mega peak day under the soft cap with the line included', () => {
+    const estimate = estimateCallBudget('api-football', MEGA_LOAD_ASSUMPTIONS);
+    expect(estimate.totals.peakDay).toBeLessThan(MEGA_BUDGET_CAPS.softCap);
+    expect(estimate.warnings).toEqual([]);
+  });
+});

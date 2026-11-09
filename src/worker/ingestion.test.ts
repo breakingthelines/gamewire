@@ -93,6 +93,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'player-sidelined': 0,
       'team-transfers': 0,
       trophies: 0,
+      'team-season-stats': 0,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Enrichment runs only from /workflows/provider-enrichment.
@@ -102,6 +103,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'player-sidelined',
       'team-transfers',
       'trophies',
+      'team-season-stats',
     ] as const) {
       expect(INGESTION_TICK_INTERVAL_MS[workload]).toBe(0);
     }

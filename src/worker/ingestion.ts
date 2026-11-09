@@ -36,6 +36,7 @@ import {
   apiFootballInjuriesLeaguePath,
   apiFootballPlayerSeasonStatsPath,
   apiFootballSidelinedPath,
+  apiFootballTeamStatisticsPath,
   apiFootballTransfersPath,
   apiFootballTrophiesPath,
 } from '../adapters/api-football/enrichment-decoders.js';
@@ -79,7 +80,8 @@ export type IngestionWorkload =
   | 'injuries-league'
   | 'player-sidelined'
   | 'team-transfers'
-  | 'trophies';
+  | 'trophies'
+  | 'team-season-stats';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -141,6 +143,8 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   'player-sidelined': 0,
   'team-transfers': 0,
   trophies: 0,
+  // GW-6c: never cached either (D9).
+  'team-season-stats': 0,
 } as const;
 
 /**
@@ -211,6 +215,7 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'player-sidelined': 0,
   'team-transfers': 0,
   trophies: 0,
+  'team-season-stats': 0,
 } as const;
 
 /**
@@ -1502,6 +1507,12 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
       return apiFootballTransfersPath(resourceId.trim());
     case 'trophies':
       return apiFootballTrophiesPath('player', resourceId.trim().split('-').filter(Boolean));
+    case 'team-season-stats': {
+      const match = /^team-stats-(\d+)-(\d+)-(\d+)$/.exec(resourceId.trim());
+      return match
+        ? apiFootballTeamStatisticsPath(Number(match[1]), Number(match[2]), match[3] ?? '')
+        : '/teams/statistics';
+    }
   }
 }
 

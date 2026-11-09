@@ -1,6 +1,6 @@
 /**
  * GW-6b provider enrichment datasets: player availability (injuries and
- * sidelined spells), transfers and trophies.
+ * sidelined spells), transfers and trophies. GW-6c: team season stats.
  *
  * They run on the GW-6a endpoint (`POST /workflows/provider-enrichment`) and
  * under the same rules as `player-season-stats`:
@@ -15,8 +15,9 @@
  *   enrichment minute limiter in front of it, and a per-run call limit.
  *
  * Work is split into units. A unit is one league-season (injuries), one team
- * (transfers, or a squad plus its players' trophies) or a batch of up to 20
- * player or coach ids (sidelined, trophies). A completed unit writes its
+ * (transfers, or a squad plus its players' trophies), one team in one league
+ * (team season stats) or a batch of up to 20 player or coach ids (sidelined,
+ * trophies). A completed unit writes its
  * marker; a re-run inside the marker window reports it `fresh` and fetches
  * nothing, so a run stopped by the call limit resumes where it stopped.
  * Sidelined batches are cut from a scope that changes between runs, so their
@@ -28,6 +29,7 @@ import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 import {
   IngestAvailabilityRequestSchema,
   IngestMetadataSchema,
+  IngestProviderTeamSeasonStatsRequestSchema,
   IngestTransfersRequestSchema,
   IngestTrophiesRequestSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
@@ -45,11 +47,13 @@ import {
   apiFootballInjuriesLeaguePath,
   apiFootballSidelinedPath,
   apiFootballSquadPath,
+  apiFootballTeamStatisticsPath,
   apiFootballTransfersPath,
   apiFootballTrophiesPath,
   decodeInjuries,
   decodeSidelined,
   decodeSquadPlayerIds,
+  decodeTeamSeasonStats,
   decodeTransfers,
   decodeTrophies,
   parseProviderId,
@@ -75,6 +79,7 @@ export const UNIT_ENRICHMENT_DATASETS: readonly UnitEnrichmentDataset[] = [
   'player-sidelined',
   'team-transfers',
   'trophies',
+  'team-season-stats',
 ];
 
 export const isUnitEnrichmentDataset = (
@@ -103,20 +108,23 @@ const TEAM_SCOPE_TIERS: ReadonlySet<CompetitionEntry['tier']> = new Set([
  * Default provider calls per run, sized to one scheduled run of each dataset
  * at the Mega catalogue (see `call-budget.ts`): injuries 15 league-seasons,
  * sidelined about 60 batches, transfers about 415 teams, trophies a quarter
- * of the teams (about 104 squads plus about 160 trophy batches).
+ * of the teams (about 104 squads plus about 160 trophy batches), team season
+ * stats every team on a Monday (about 415).
  */
 export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDataset, number>> = {
   'injuries-league': 60,
   'player-sidelined': 300,
   'team-transfers': 500,
   trophies: 600,
+  'team-season-stats': 500,
 };
 
 /**
  * How long a completed unit counts as fresh. Injuries are pulled every 3h by
  * the K-2 schedule, so 2.5h keeps a retry from repeating a pull without
  * blocking the next scheduled one. The weekly datasets use 6 days. A `full`
- * injuries run (history) keeps its league-seasons for 30 days.
+ * injuries run (history) keeps its league-seasons for 30 days. Team season
+ * stats run nightly, so 20h, like the player-season-stats cursor.
  */
 export const UNIT_MARKER_WINDOW_SECONDS: Readonly<
   Record<UnitEnrichmentDataset, { readonly nightly: number; readonly full: number }>
@@ -125,6 +133,7 @@ export const UNIT_MARKER_WINDOW_SECONDS: Readonly<
   'player-sidelined': { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
   'team-transfers': { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
   trophies: { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
+  'team-season-stats': { nightly: 20 * 60 * 60, full: 20 * 60 * 60 },
 };
 
 /** Players listed in an injuries pull this recently are in the sidelined scope. */
@@ -167,6 +176,7 @@ export const UNIT_DATASET_NEEDS: Readonly<Record<UnitEnrichmentDataset, UnitPlan
   'player-sidelined': 'ingestAvailability',
   'team-transfers': 'ingestTransfers',
   trophies: 'ingestTrophies',
+  'team-season-stats': 'ingestProviderTeamSeasonStats',
 };
 
 /** What a provider call gave back to a unit. */
@@ -231,7 +241,11 @@ export interface UnitPlan {
   /** Why there is nothing to do, when `units` is empty. */
   readonly emptyReason?: string;
   /** Ingest method the dataset needs. */
-  readonly needs: 'ingestAvailability' | 'ingestTransfers' | 'ingestTrophies';
+  readonly needs:
+    | 'ingestAvailability'
+    | 'ingestTransfers'
+    | 'ingestTrophies'
+    | 'ingestProviderTeamSeasonStats';
   /** Team scope: leagues whose fixture list could not be read or fetched. */
   readonly gaps?: readonly ScopeGap[];
   /** Sidelined: players left out because their marker is still fresh. */
@@ -271,6 +285,8 @@ export const planUnitDataset = async (
       return planTransfers(input, deps, options);
     case 'trophies':
       return planTrophies(input, deps, nowMs, options);
+    case 'team-season-stats':
+      return planTeamSeasonStats(input, deps, nowMs, options);
   }
 };
 
@@ -345,13 +361,43 @@ export const resolveTeamScope = async (
   if (input.teamIds && input.teamIds.length > 0) {
     return { teamIds: sortIds(input.teamIds), gaps: [] };
   }
+  const { lists, gaps } = await readLeagueFixtureLists(input, deps, loadFixtureList);
+  const seen = new Set<string>();
+  for (const { teams } of lists) {
+    for (const id of teams) {
+      seen.add(id);
+    }
+  }
+  return { teamIds: sortIds([...seen]), gaps };
+};
+
+/** One catalogue league's fixture list and the teams in it. */
+export interface LeagueFixtureList {
+  readonly entry: CompetitionEntry;
+  readonly list: unknown;
+  readonly teams: readonly string[];
+}
+
+/**
+ * The fixture lists of the catalogue's domestic leagues (or of `leagueIds`,
+ * catalogue leagues only), read as {@link resolveTeamScope} describes. A
+ * league with no list, or a list with no teams, is returned as a gap.
+ */
+export const readLeagueFixtureLists = async (
+  input: Pick<ProviderEnrichmentInput, 'leagueIds'>,
+  deps: WorkflowDeps,
+  loadFixtureList?: FixtureListLoader
+): Promise<{
+  readonly lists: readonly LeagueFixtureList[];
+  readonly gaps: readonly ScopeGap[];
+}> => {
   const leagueFilter = new Set(uniquePositiveInts(input.leagueIds ?? []));
   const entries = deps.competitions.filter((entry) =>
     leagueFilter.size > 0
       ? leagueFilter.has(entry.apiFootballLeagueId)
       : TEAM_SCOPE_TIERS.has(entry.tier)
   );
-  const seen = new Set<string>();
+  const lists: LeagueFixtureList[] = [];
   const gaps: ScopeGap[] = [];
   for (const entry of entries) {
     const gap = (reason: string) =>
@@ -375,11 +421,9 @@ export const resolveTeamScope = async (
       gap('fixture list has no teams');
       continue;
     }
-    for (const id of teams) {
-      seen.add(id);
-    }
+    lists.push({ entry, list, teams });
   }
-  return { teamIds: sortIds([...seen]), gaps };
+  return { lists, gaps };
 };
 
 /** The resource id the live loop's discovery caches a league's fixture list under. */
@@ -448,6 +492,90 @@ export const mergeInjuryDigest = (
   }
   return { players };
 };
+
+/** A team's final whistle counts for the nightly team season stats scope this long. */
+export const TEAM_SEASON_STATS_RECENT_MS = 36 * 60 * 60 * 1_000;
+/**
+ * A fixture whose kickoff is this far back is treated as played even when the
+ * cached list (up to 6h old) still shows it not started or in play.
+ */
+const ASSUME_PLAYED_AFTER_KICKOFF_MS = 2 * 60 * 60 * 1_000;
+/** Provider statuses of a finished fixture. */
+const FINISHED_STATUSES: ReadonlySet<string> = new Set(['FT', 'AET', 'PEN', 'AWD', 'WO']);
+/** Provider statuses of a fixture that was not played (or not finished) at its kickoff. */
+const NOT_PLAYED_STATUSES: ReadonlySet<string> = new Set([
+  'TBD',
+  'PST',
+  'CANC',
+  'ABD',
+  'SUSP',
+  'INT',
+]);
+
+/**
+ * Teams with a final whistle in the last 36 hours, read from a cached
+ * `/fixtures?league&season` list (no provider call): a fixture whose kickoff
+ * is in the window and whose status is finished, or which kicked off more
+ * than two hours ago and is not postponed, cancelled, abandoned or suspended
+ * (the list can be six hours old). Sorted numerically.
+ */
+export const teamsWithRecentFinalWhistle = (
+  list: unknown,
+  nowMs: number,
+  windowMs: number = TEAM_SEASON_STATS_RECENT_MS
+): readonly string[] => {
+  if (!isPlainRecord(list) || !Array.isArray(list.response)) {
+    return [];
+  }
+  const teams = new Set<string>();
+  for (const item of list.response) {
+    if (!isPlainRecord(item) || !isPlainRecord(item.fixture)) {
+      continue;
+    }
+    const fixture = item.fixture;
+    const kickoffMs = fixtureKickoffMsOf(fixture);
+    if (kickoffMs === undefined || kickoffMs > nowMs || kickoffMs < nowMs - windowMs) {
+      continue;
+    }
+    const status = isPlainRecord(fixture.status)
+      ? String(fixture.status.short ?? '')
+          .trim()
+          .toUpperCase()
+      : '';
+    const played =
+      FINISHED_STATUSES.has(status) ||
+      (!NOT_PLAYED_STATUSES.has(status) && kickoffMs <= nowMs - ASSUME_PLAYED_AFTER_KICKOFF_MS);
+    if (!played) {
+      continue;
+    }
+    for (const id of teamIdsFromFixtureListEnvelope({ response: [item] })) {
+      teams.add(id);
+    }
+  }
+  return sortIds([...teams]);
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const fixtureKickoffMsOf = (fixture: Record<string, unknown>): number | undefined => {
+  const seconds = typeof fixture.timestamp === 'number' ? fixture.timestamp : Number.NaN;
+  if (Number.isFinite(seconds) && seconds > 0) {
+    return seconds * 1_000;
+  }
+  const parsed = typeof fixture.date === 'string' ? Date.parse(fixture.date) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+/**
+ * Whether a team season stats run covers every team in scope: `full`, or a
+ * `nightly` run on a Monday (UTC), the spec's "full on Monday" for the K-2
+ * `auto` body. Other nights cover the teams with a final whistle in 36h.
+ */
+export const teamSeasonStatsCoversAll = (
+  mode: ProviderEnrichmentInput['mode'],
+  nowMs: number
+): boolean => mode === 'full' || new Date(nowMs).getUTCDay() === 1;
 
 // ── plans ─────────────────────────────────────────────────────────────────
 
@@ -561,6 +689,43 @@ const planTrophies = async (
     units: selected.map((teamId) => squadTrophiesUnit(teamId)),
     gaps: scope.gaps,
     emptyReason: `no teams in partition ${partition} of the catalogue fixture lists; pass teamIds or playerIds`,
+  };
+};
+
+const planTeamSeasonStats = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  nowMs: number,
+  options: PlanOptions
+): Promise<UnitPlan> => {
+  const catalogued = new Set(deps.competitions.map((entry) => entry.apiFootballLeagueId));
+  const refused = uniquePositiveInts(input.leagueIds ?? []).filter((id) => !catalogued.has(id));
+  const { lists, gaps } = await readLeagueFixtureLists(input, deps, options.loadFixtureList);
+  const named = new Set(sortIds(input.teamIds ?? []));
+  const all = named.size > 0 || teamSeasonStatsCoversAll(input.mode, nowMs);
+  const units: EnrichmentUnit[] = [];
+  for (const { entry, list, teams } of lists) {
+    const selected = all ? sortIds(teams) : teamsWithRecentFinalWhistle(list, nowMs);
+    for (const teamId of selected) {
+      if (named.size === 0 || named.has(teamId)) {
+        units.push(teamSeasonStatsUnit(entry.apiFootballLeagueId, entry.season, teamId));
+      }
+    }
+  }
+  return {
+    needs: 'ingestProviderTeamSeasonStats',
+    units,
+    gaps: [
+      ...refused.map((leagueId) => ({
+        leagueId,
+        season: 0,
+        reason: 'league not in the catalogue; its teams are not known',
+      })),
+      ...gaps,
+    ],
+    emptyReason: all
+      ? 'no teams in the catalogue fixture lists'
+      : 'no team in the catalogue fixture lists has a final whistle in the last 36 hours',
   };
 };
 
@@ -826,6 +991,46 @@ const squadTrophiesUnit = (teamId: string): EnrichmentUnit => ({
       dropped += outcome.dropped;
     }
     return complete(calls, planned, accepted, dropped);
+  },
+});
+
+const teamSeasonStatsUnit = (leagueId: number, season: number, teamId: string): EnrichmentUnit => ({
+  key: `league-${leagueId}-season-${season}-team-${teamId}`,
+  leagueId,
+  season,
+  run: async (ctx) => {
+    const path = apiFootballTeamStatisticsPath(leagueId, season, teamId);
+    const resource = `team-stats-${leagueId}-${season}-${teamId}`;
+    const result = await ctx.fetch({ workload: 'team-season-stats', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodeTeamSeasonStats(result.data, { leagueId, season, teamId, fetchedAtMs });
+    if (decoded.providerErrors !== undefined && decoded.rows.length === 0) {
+      return failed(1, 1, `provider errors ${decoded.providerErrors}`, decoded.dropped);
+    }
+    if (decoded.rows.length === 0) {
+      // Nothing to write; the stored row (if any) is kept.
+      ctx.log({
+        event: 'provider_enrichment.empty_response',
+        leagueId,
+        season,
+        reason: `no statistics for team ${teamId}${decoded.dropped > 0 ? ' (answered for another team or league)' : ''}`,
+      });
+      return complete(1, 1, 0, decoded.dropped);
+    }
+    try {
+      const response = await ctx.ingest.ingestProviderTeamSeasonStats!(
+        create(IngestProviderTeamSeasonStatsRequestSchema, {
+          metadata: metadata('team-season-stats', resource, path, fetchedAtMs, 0),
+          rows: [...decoded.rows],
+        })
+      );
+      return complete(1, 1, response.acceptedCount, decoded.dropped);
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, decoded.dropped);
+    }
   },
 });
 

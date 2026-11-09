@@ -14,6 +14,7 @@ import {
   type IngestPlayerMatchStatsRequest,
   type IngestProviderFixtureResultsRequest,
   type IngestProviderPlayerSeasonStatsRequest,
+  type IngestProviderTeamSeasonStatsRequest,
   type IngestTeamMatchStatsRequest,
   type IngestTransfersRequest,
   type IngestTrophiesRequest,
@@ -149,6 +150,10 @@ export interface ProviderEnrichmentIngestClient {
   ingestTransfers?(request: IngestTransfersRequest): Promise<IngestBatchResponse>;
   /** `trophies`. */
   ingestTrophies?(request: IngestTrophiesRequest): Promise<IngestBatchResponse>;
+  /** `team-season-stats`. */
+  ingestProviderTeamSeasonStats?(
+    request: IngestProviderTeamSeasonStatsRequest
+  ): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient &
@@ -298,6 +303,11 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestTrophies(request: IngestTrophiesRequest): Promise<IngestBatchResponse> {
       return client.ingestTrophies(request, { timeoutMs });
+    },
+    ingestProviderTeamSeasonStats(
+      request: IngestProviderTeamSeasonStatsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderTeamSeasonStats(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });
