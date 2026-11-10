@@ -184,6 +184,12 @@ export interface ApiFootballSquadPlayer {
 export interface ApiFootballStatisticsResponse {
   readonly team: ApiFootballTeamRef;
   readonly statistics: readonly ApiFootballStatisticEntry[];
+  /**
+   * Half splits, present when the request sets `half=true` (provider seasons
+   * from 2024). Same `{ type, value }` shape as `statistics`.
+   */
+  readonly statistics_1h?: readonly ApiFootballStatisticEntry[] | null;
+  readonly statistics_2h?: readonly ApiFootballStatisticEntry[] | null;
 }
 
 export interface ApiFootballStatisticEntry {

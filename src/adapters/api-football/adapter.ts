@@ -186,8 +186,14 @@ export function apiFootballEventPath(fixtureId: string): string {
   return `/fixtures/events?fixture=${encodeURIComponent(fixtureId)}`;
 }
 
+/**
+ * `/fixtures/statistics?fixture=<id>&half=true`. `half=true` adds
+ * `statistics_1h` and `statistics_2h` beside `statistics` in the same
+ * response, so the half splits cost no extra call. The cache key is the
+ * workload and fixture id, not the path, so this shares the existing key.
+ */
 export function apiFootballFixtureStatisticsPath(fixtureId: string): string {
-  return `/fixtures/statistics?fixture=${encodeURIComponent(fixtureId)}`;
+  return `/fixtures/statistics?fixture=${encodeURIComponent(fixtureId)}&half=true`;
 }
 
 export function apiFootballFixturePlayersPath(fixtureId: string): string {
@@ -1534,11 +1540,18 @@ function teamMatchStatsFromStatistics(
   setStat('offsides', stats.offsides);
   setStat('passes', stats.passes);
   setStat('passesCompleted', stats.passesCompleted);
-  setStat('passCompletionPct', stats.passCompletionPct);
+  // "Passes %" is not sent for every fixture; derive it from the counts then.
+  setStat(
+    'passCompletionPct',
+    stats.passCompletionPct ?? completionPct(stats.passesCompleted, stats.passes)
+  );
   setStat('expectedGoals', stats.expectedGoals);
   setStat('yellowCards', stats.yellowCards);
   setStat('redCards', stats.redCards);
   setStat('saves', stats.saves);
+  setStat('shotsInsideBox', stats.shotsInsideBox);
+  setStat('shotsOutsideBox', stats.shotsOutsideBox);
+  setStat('goalsPrevented', stats.goalsPrevented);
 
   const role =
     providerTeamId === options.homeTeamProviderId
@@ -1566,7 +1579,14 @@ function teamMatchStatsFromStatistics(
     shotsOffTarget: fields.shotsOffTarget ?? 0,
     shotsBlocked: fields.shotsBlocked ?? 0,
     saves: fields.saves ?? 0,
-    extraStats: stats.extra,
+    shotsInsideBox: fields.shotsInsideBox ?? 0,
+    shotsOutsideBox: fields.shotsOutsideBox ?? 0,
+    goalsPrevented: fields.goalsPrevented ?? 0,
+    extraStats: {
+      ...stats.extra,
+      ...halfStatistics('first-half', entry.statistics_1h),
+      ...halfStatistics('second-half', entry.statistics_2h),
+    },
     source: providerAttribution(options.providerId),
     provenance,
     teamResolution: team.resolutionRef,
@@ -1632,12 +1652,15 @@ function playerMatchStatsFromEntry(
   setStat('expectedAssists', doubleStat(stat.expected_assists));
   setStat('tackles', integerStat(stat.tackles?.total));
   setStat('passes', integerStat(stat.passes?.total));
-  setStat('passCompletionPct', percentStat(stat.passes?.accuracy));
+  const passing = playerPassing(stat.passes);
+  setStat('passesCompleted', passing.completed);
+  setStat('passCompletionPct', passing.pct);
   setStat('interceptions', integerStat(stat.tackles?.interceptions));
   // API-Football has no per-match clearances stat; tackles.blocks is blocks.
   setStat('blocks', integerStat(stat.tackles?.blocks));
   setStat('dribbles', integerStat(stat.dribbles?.attempts));
   setStat('dribblesCompleted', integerStat(stat.dribbles?.success));
+  setStat('dribbledPast', integerStat(stat.dribbles?.past));
   setStat('duels', integerStat(stat.duels?.total));
   setStat('duelsWon', integerStat(stat.duels?.won));
   setStat('foulsCommitted', integerStat(stat.fouls?.committed));
@@ -1658,6 +1681,10 @@ function playerMatchStatsFromEntry(
   setStat('penaltiesSaved', integerStat(stat.penalty?.saved));
 
   const isStarter = stat.games?.substitute === false;
+  const captain = stat.games?.captain;
+  if (typeof captain === 'boolean') {
+    provenance.push(fieldProvenance('isCaptain', options.providerId, options.fetchedAtMs));
+  }
 
   return create(PlayerMatchStatsSchema, {
     gameId: options.gameId,
@@ -1697,6 +1724,8 @@ function playerMatchStatsFromEntry(
     penaltiesMissed: fields.penaltiesMissed ?? 0,
     penaltiesCommitted: fields.penaltiesCommitted ?? 0,
     penaltiesSaved: fields.penaltiesSaved ?? 0,
+    dribbledPast: fields.dribbledPast ?? 0,
+    isCaptain: captain === true,
     extraStats: {},
     source: providerAttribution(options.providerId),
     provenance,
@@ -1734,6 +1763,9 @@ interface IndexedTeamStats {
   yellowCards?: number;
   redCards?: number;
   saves?: number;
+  shotsInsideBox?: number;
+  shotsOutsideBox?: number;
+  goalsPrevented?: number;
   readonly extra: Record<string, number>;
 }
 
@@ -1797,15 +1829,99 @@ function indexTeamStatistics(statistics: readonly ApiFootballStatisticEntry[]): 
       case 'goalkeeper saves':
         assign('saves', integerStat(entry.value));
         break;
+      case 'shots insidebox':
+        assign('shotsInsideBox', integerStat(entry.value));
+        break;
+      case 'shots outsidebox':
+        assign('shotsOutsideBox', integerStat(entry.value));
+        break;
+      case 'goals_prevented':
+      case 'goals prevented':
+        assign('goalsPrevented', doubleStat(entry.value));
+        break;
       default: {
         const numeric = doubleStat(entry.value);
         if (numeric !== undefined) {
-          indexed.extra[slugify(entry.type)] = numeric;
+          indexed.extra[teamStatKey(entry.type)] = numeric;
         }
       }
     }
   }
   return indexed;
+}
+
+/**
+ * The extra_stats key for an API-Football team statistic type: the type
+ * slugged, with `%` spelled `pct` first ("Shots on Goal" is `shots-on-goal`,
+ * "Passes %" is `passes-pct`, "expected_goals" is `expected-goals`). Used for
+ * the full-match extras and the half splits alike.
+ */
+export function teamStatKey(type: string): string {
+  return slugify(type.replace(/%/g, ' pct '));
+}
+
+/**
+ * Half-split statistics (`statistics_1h` / `statistics_2h`, sent with
+ * `half=true`) as extra_stats entries `<half>:<teamStatKey(type)>`, for every
+ * type, typed in the full-match line or not ("first-half:shots-on-goal",
+ * "second-half:ball-possession" = 52 for "52%"). A null value and an absent
+ * or non-array block add nothing.
+ */
+export function halfStatistics(
+  half: 'first-half' | 'second-half',
+  statistics: readonly ApiFootballStatisticEntry[] | null | undefined
+): Record<string, number> {
+  const out: Record<string, number> = {};
+  if (!Array.isArray(statistics)) {
+    return out;
+  }
+  for (const entry of statistics) {
+    if (!isRecord(entry) || typeof entry.type !== 'string' || entry.type.trim() === '') {
+      continue;
+    }
+    const numeric = doubleStat(entry.value as number | string | null | undefined);
+    if (numeric !== undefined) {
+      out[`${half}:${teamStatKey(entry.type)}`] = numeric;
+    }
+  }
+  return out;
+}
+
+/** 100 x completed / attempted, when both are known and attempted is above 0. */
+function completionPct(
+  completed: number | undefined,
+  attempted: number | undefined
+): number | undefined {
+  if (completed === undefined || attempted === undefined || attempted <= 0) {
+    return undefined;
+  }
+  if (completed < 0 || completed > attempted) {
+    return undefined;
+  }
+  return (100 * completed) / attempted;
+}
+
+/**
+ * A player's `passes` block. In `/fixtures/players` `accuracy` is the COUNT of
+ * accurate passes ("39" of 46), not a percentage, so it is stored as
+ * `passesCompleted` and the percentage is derived from it. A value sent with a
+ * `%` sign is taken as the percentage itself. A count above the total is
+ * contradictory and is dropped.
+ */
+function playerPassing(passes: ApiFootballPlayerStatistics['passes']): {
+  readonly completed?: number;
+  readonly pct?: number;
+} {
+  const accuracy = passes?.accuracy;
+  if (typeof accuracy === 'string' && accuracy.trim().endsWith('%')) {
+    return { pct: percentStat(accuracy) };
+  }
+  const completed = integerStat(accuracy);
+  const total = integerStat(passes?.total);
+  if (completed === undefined || (total !== undefined && completed > total)) {
+    return {};
+  }
+  return { completed, pct: completionPct(completed, total) };
 }
 
 /**

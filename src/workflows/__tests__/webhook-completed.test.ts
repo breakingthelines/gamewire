@@ -75,7 +75,7 @@ describe('webhookCompletedWorkflow', () => {
     // loop hits /fixtures/statistics + /fixtures/players (not the default
     // /fixtures?id= path).
     expect(calls.find((c) => c.workload === 'team-match-stats')?.path).toBe(
-      '/fixtures/statistics?fixture=12345'
+      '/fixtures/statistics?fixture=12345&half=true'
     );
     expect(calls.find((c) => c.workload === 'player-match-stats')?.path).toBe(
       '/fixtures/players?fixture=12345'

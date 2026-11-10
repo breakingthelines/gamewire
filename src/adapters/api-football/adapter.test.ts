@@ -826,8 +826,9 @@ describe('API-Football match-stats mapping', () => {
     expect(home?.yellowCards).toBe(1);
     expect(home?.redCards).toBe(0);
     expect(home?.saves).toBe(4);
-    // Unknown provider metric preserved (slugged) in extra_stats.
-    expect(home?.extraStats['goals-prevented']).toBeCloseTo(0.4);
+    // Goals prevented is typed now, not an extra.
+    expect(home?.goalsPrevented).toBeCloseTo(0.4);
+    expect(home?.extraStats).not.toHaveProperty('goals-prevented');
     // Source attribution is the API-Football provider.
     expect(home?.source?.provider).toBe('api-football');
     // Provenance: one entry per SUPPLIED field. Red Cards (=0) is present,
@@ -882,7 +883,8 @@ describe('API-Football match-stats mapping', () => {
                 offsides: 1,
                 shots: { total: 4, on: 2 },
                 goals: { total: 1, conceded: 0, assists: 1, saves: null },
-                passes: { total: 58, key: 3, accuracy: '88' },
+                // accuracy is the COUNT of accurate passes, not a percentage.
+                passes: { total: 58, key: 3, accuracy: '51' },
                 tackles: { total: 2, blocks: 0, interceptions: 1 },
                 duels: { total: 9, won: 6 },
                 dribbles: { attempts: 7, success: 5, past: null },
@@ -943,7 +945,8 @@ describe('API-Football match-stats mapping', () => {
     expect(saka?.shotsOnTarget).toBe(2);
     expect(saka?.keyPasses).toBe(3);
     expect(saka?.passes).toBe(58);
-    expect(saka?.passCompletionPct).toBeCloseTo(88);
+    expect(saka?.passesCompleted).toBe(51);
+    expect(saka?.passCompletionPct).toBeCloseTo((100 * 51) / 58);
     expect(saka?.tackles).toBe(2);
     expect(saka?.interceptions).toBe(1);
     expect(saka?.dribbles).toBe(7);
@@ -1119,7 +1122,9 @@ describe('API-Football match-stats mapping', () => {
   });
 
   it('derives the provider stat paths', () => {
-    expect(apiFootballFixtureStatisticsPath('1917')).toBe('/fixtures/statistics?fixture=1917');
+    expect(apiFootballFixtureStatisticsPath('1917')).toBe(
+      '/fixtures/statistics?fixture=1917&half=true'
+    );
     expect(apiFootballFixturePlayersPath('1917')).toBe('/fixtures/players?fixture=1917');
   });
 });
