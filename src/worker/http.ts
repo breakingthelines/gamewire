@@ -741,7 +741,8 @@ type ProviderEnrichmentParse =
  * defaults to `nightly`. The spec's `auto` and `dirty` (the K-2 schedule body)
  * are accepted as `nightly`. `full` requires non-empty `leagueIds` and
  * `seasons` for the league-season datasets, and `playerIds`, `coachIds` or
- * `teamIds` for the others. Id lists are accepted only by the datasets that
+ * `teamIds` for the others except `team-season-stats`, whose `full` is every
+ * catalogue domestic team. Id lists are accepted only by the datasets that
  * use them.
  */
 export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentParse => {
@@ -784,9 +785,17 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   if (
     (playerIds && dataset !== 'player-sidelined' && dataset !== 'trophies') ||
     (coachIds && dataset !== 'trophies') ||
-    (teamIds && dataset !== 'team-transfers' && dataset !== 'trophies')
+    (teamIds &&
+      dataset !== 'team-transfers' &&
+      dataset !== 'trophies' &&
+      dataset !== 'team-season-stats')
   ) {
     return { ok: false, reason: 'ids_not_used_by_dataset' };
+  }
+  if (seasons && dataset === 'team-season-stats') {
+    // Teams come from the catalogue season's fixture list; another season's
+    // teams are not known, so a named season cannot be honoured.
+    return { ok: false, reason: 'seasons_not_used_by_dataset' };
   }
   // K-2 sends `partition: "auto"`, which is the default (week counter mod 4).
   const partition =
@@ -806,7 +815,13 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       if (!leagueIds?.length || !seasons?.length) {
         return { ok: false, reason: 'full_mode_needs_league_ids_and_seasons' };
       }
-    } else if (!playerIds?.length && !coachIds?.length && !teamIds?.length) {
+    } else if (
+      dataset !== 'team-season-stats' &&
+      !playerIds?.length &&
+      !coachIds?.length &&
+      !teamIds?.length
+    ) {
+      // `team-season-stats` `full` is every catalogue domestic team (spec GW-6).
       return { ok: false, reason: 'full_mode_needs_ids' };
     }
   }

@@ -21,7 +21,9 @@
  * datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
  * `trophies`) are built and modelled from their units: one call per covered
  * league-season, per 20 players, per team, and per squad plus per 20 squad
- * players.
+ * players. `team-season-stats` (GW-6c) is built and modelled as one call per
+ * team: every domestic team on Monday, and on other nights the teams with a
+ * final whistle in the last 36 hours.
  *
  * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
  * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
@@ -91,6 +93,11 @@ export interface CallBudgetAssumptions {
   readonly domesticTeams: number;
   /** Players per current squad (`/players/squads`), for the trophies batches. */
   readonly squadPlayersPerTeam: number;
+  /**
+   * Domestic league matches a team plays in an average week (one round a
+   * week, plus the midweek rounds of the 24-team and congested leagues).
+   */
+  readonly domesticMatchesPerTeamPerWeek: number;
 }
 
 export interface CallBudgetLine {
@@ -177,6 +184,7 @@ export const CURRENT_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   // Ligue 1 18, Eredivisie 18, Brasileirao 20, Jupiler 16, Primeira 18.
   domesticTeams: 240,
   squadPlayersPerTeam: 30,
+  domesticMatchesPerTeamPerWeek: 1.15,
 };
 
 /**
@@ -311,6 +319,7 @@ export function estimateCallBudget(
     },
     playerSeasonStatsLine(a),
     ...availabilityTransfersTrophiesLines(a),
+    teamSeasonStatsLine(a),
     {
       workload: 'kernel weekly sweeps',
       priority: 'background',
@@ -498,6 +507,35 @@ export function availabilityTransfersTrophiesLines(a: CallBudgetAssumptions): Ca
   ];
 }
 
+/**
+ * Nightly runs that see one final whistle: the scope window is 36 hours and
+ * the team's marker lasts 20, so a match is fetched by one or two runs, 1.5
+ * on average.
+ */
+const TEAM_SEASON_STATS_RUNS_PER_MATCH = 36 / 24;
+
+/**
+ * GW-6c `team-season-stats`: one `/teams/statistics` call per team. Monday's
+ * run covers every domestic team; the other six nights cover the teams with a
+ * final whistle in the last 36 hours. The Saturday peak day is one such
+ * nightly run (Monday, the largest day, is not the Saturday peak).
+ */
+export function teamSeasonStatsLine(a: CallBudgetAssumptions): CallBudgetLine {
+  const nightly =
+    ((a.domesticTeams * a.domesticMatchesPerTeamPerWeek) / 7) * TEAM_SEASON_STATS_RUNS_PER_MATCH;
+  return {
+    workload: 'team-season-stats',
+    priority: 'background',
+    strategy:
+      `${a.domesticTeams} domestic teams on Monday, about ${Math.round(nightly)} teams ` +
+      'with a final whistle in 36h on other nights, one call each',
+    avgPerDay: (a.domesticTeams + 6 * nightly) / 7,
+    peakDay: nightly,
+    peakMinute: 0,
+    planned: false,
+  };
+}
+
 function discoveryLine(a: CallBudgetAssumptions): CallBudgetLine {
   const tickHours = INGESTION_TICK_INTERVAL_MS['fixtures-next-7d'] / 3_600_000;
   const ttlHours = INGESTION_TTL_SECONDS['fixtures-next-7d'] / 3_600;
@@ -558,7 +596,6 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     fixtureLine('head-to-head', 1, 10, 'T-48h, pair cached 7d'),
     background('league-coverage', 1, 1, 'daily, one call'),
     background('competition-leaders', 70, 40, 'daily for leagues played in 36h; full on Monday'),
-    background('team-season-stats', 150, 60, 'teams with a final whistle in 36h; full on Monday'),
     background('team-coaches', 90, 0, 'weekly'),
     background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
   ];

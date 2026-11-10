@@ -2,7 +2,7 @@
  * Decoders for API-Football enrichment datasets (Mega plan, spec GW-6).
  *
  * Player season stats (GW-6a); injuries, sidelined spells, transfers and
- * trophies (GW-6b). Each decoder turns one provider envelope into GS-2 ingest
+ * trophies (GW-6b); team season stats (GW-6c). Each decoder turns one provider envelope into GS-2 ingest
  * rows and never invents values:
  *
  * - A provider `null` is left out of `values`. A missing key means "the
@@ -25,11 +25,13 @@ import {
   AvailabilitySource,
   AvailabilityStatus,
   ProviderPlayerSeasonStatsRowSchema,
+  ProviderTeamSeasonStatsRowSchema,
   TransferRowSchema,
   TrophyEntrySchema,
   TrophyRowSchema,
   type AvailabilityRow,
   type ProviderPlayerSeasonStatsRow,
+  type ProviderTeamSeasonStatsRow,
   type TransferRow,
   type TrophyEntry,
   type TrophyRow,
@@ -710,4 +712,112 @@ export const decodeSquadPlayerIds = (envelope: unknown): DecodedSquad => {
     }
   }
   return { playerIds, names, providerErrors };
+};
+
+// ── GW-6c: team season stats ──────────────────────────────────────────────
+
+/** `/teams/statistics?league=L&season=S&team=T`: one team's season in one competition. */
+export const apiFootballTeamStatisticsPath = (
+  leagueId: number,
+  season: number,
+  teamId: string
+): string =>
+  `/teams/statistics?league=${encodeURIComponent(String(leagueId))}` +
+  `&season=${encodeURIComponent(String(season))}` +
+  `&team=${encodeURIComponent(teamId)}`;
+
+/**
+ * Provider path to `ProviderTeamSeasonStatsRow.values` key. The first six are
+ * `TeamSeasonStats` field names; `clean_sheets` and `failed_to_score` are
+ * extra_stats keys today (game-service is adding `clean_sheets` as a field
+ * under the same name); the penalty keys match the player season keys. All are
+ * whole-season totals (home plus away). Treat the list as a contract with
+ * game-service, like {@link PLAYER_SEASON_STAT_KEYS}.
+ */
+export const TEAM_SEASON_STAT_KEYS: ReadonlyArray<readonly [key: string, path: readonly string[]]> =
+  [
+    ['matches_played', ['fixtures', 'played', 'total']],
+    ['wins', ['fixtures', 'wins', 'total']],
+    ['draws', ['fixtures', 'draws', 'total']],
+    // The provider spells this field "loses".
+    ['losses', ['fixtures', 'loses', 'total']],
+    ['goals_for', ['goals', 'for', 'total', 'total']],
+    ['goals_against', ['goals', 'against', 'total', 'total']],
+    ['clean_sheets', ['clean_sheet', 'total']],
+    ['failed_to_score', ['failed_to_score', 'total']],
+    ['penalties_scored', ['penalty', 'scored', 'total']],
+    ['penalties_missed', ['penalty', 'missed', 'total']],
+  ];
+
+const pathValue = (root: unknown, path: readonly string[]): unknown => {
+  let node = root;
+  for (const part of path) {
+    if (!isRecord(node)) {
+      return undefined;
+    }
+    node = node[part];
+  }
+  return node;
+};
+
+export interface DecodedTeamSeasonStats {
+  /** One row, or none when the response holds no statistics for the team. */
+  readonly rows: readonly ProviderTeamSeasonStatsRow[];
+  /** 1 when the provider answered with a statistics object, else 0. */
+  readonly entries: number;
+  /** 1 when the object was for another league, season or team, else 0. */
+  readonly dropped: number;
+  readonly providerErrors?: string;
+}
+
+/**
+ * Decode `/teams/statistics?league&season&team`. Unlike the list endpoints,
+ * `response` is a single object (an empty array when the provider has
+ * nothing). A provider null stays out of `values`; `form` is copied as sent
+ * ('' for null). An object whose league, season or team differs from the
+ * request is dropped.
+ */
+export const decodeTeamSeasonStats = (
+  envelope: unknown,
+  options: {
+    readonly leagueId: number;
+    readonly season: number;
+    readonly teamId: string;
+    readonly fetchedAtMs: number;
+  }
+): DecodedTeamSeasonStats => {
+  const providerErrors = decodeProviderErrors(envelope);
+  const response = isRecord(envelope) ? envelope.response : undefined;
+  if (!isRecord(response)) {
+    return { rows: [], entries: 0, dropped: 0, providerErrors };
+  }
+  const league = isRecord(response.league) ? response.league : {};
+  const team = isRecord(response.team) ? response.team : {};
+  const leagueId = providerId(league.id);
+  const season = parseProviderNumber(league.season);
+  const teamId = providerId(team.id);
+  if (
+    (leagueId !== undefined && leagueId !== String(options.leagueId)) ||
+    (season !== undefined && season !== options.season) ||
+    (teamId !== undefined && teamId !== options.teamId)
+  ) {
+    return { rows: [], entries: 1, dropped: 1, providerErrors };
+  }
+  const values: Record<string, number> = {};
+  for (const [key, path] of TEAM_SEASON_STAT_KEYS) {
+    const parsed = parseProviderNumber(pathValue(response, path));
+    if (parsed !== undefined) {
+      values[key] = parsed;
+    }
+  }
+  const row = create(ProviderTeamSeasonStatsRowSchema, {
+    providerTeamId: options.teamId,
+    providerCompetitionId: String(options.leagueId),
+    seasonYear: options.season,
+    teamSnapshot: teamSnapshot(team),
+    values,
+    form: text(response.form),
+    fetchedAt: timestampFromMs(options.fetchedAtMs),
+  });
+  return { rows: [row], entries: 1, dropped: 0, providerErrors };
 };

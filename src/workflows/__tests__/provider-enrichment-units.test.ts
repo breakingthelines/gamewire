@@ -10,6 +10,7 @@ import { timestampMs } from '@bufbuild/protobuf/wkt';
 import type {
   IngestAvailabilityRequest,
   IngestBatchResponse,
+  IngestProviderTeamSeasonStatsRequest,
   IngestTransfersRequest,
   IngestTrophiesRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
@@ -35,7 +36,9 @@ import {
   packTrophyRows,
   resolveInjuriesTargets,
   sidelinedMemberKey,
+  teamSeasonStatsCoversAll,
   teamTrophiesPartition,
+  teamsWithRecentFinalWhistle,
   trophiesPartition,
   trophiesWeek,
   unitMarkerKey,
@@ -185,6 +188,39 @@ const fixtureList = (teams: number[]) => ({
   })),
 });
 
+const teamStatisticsEnvelope = (league: number, season: number, team: string) => ({
+  get: 'teams/statistics',
+  errors: [],
+  response: {
+    league: { id: league, season },
+    team: { id: Number(team), name: `Team ${team}` },
+    form: 'WDL',
+    fixtures: {
+      played: { total: 3 },
+      wins: { total: 1 },
+      draws: { total: 1 },
+      loses: { total: 1 },
+    },
+    goals: { for: { total: { total: 4 } }, against: { total: { total: 3 } } },
+    clean_sheet: { total: 1 },
+    failed_to_score: { total: null },
+  },
+});
+
+/** A cached season fixture list with kickoff times and statuses. */
+const datedFixtureList = (
+  fixtures: readonly { home: number; away: number; kickoffMs: number; status: string }[]
+) => ({
+  response: fixtures.map((f, i) => ({
+    fixture: {
+      id: 9_000 + i,
+      timestamp: Math.floor(f.kickoffMs / 1_000),
+      status: { short: f.status },
+    },
+    teams: { home: { id: f.home }, away: { id: f.away } },
+  })),
+});
+
 interface RequestInfo {
   readonly path: string;
   readonly params: URLSearchParams;
@@ -229,6 +265,12 @@ const harness = (options: HarnessOptions = {}) => {
         return trophiesEnvelope(list('players').length ? list('players') : list('coachs'));
       case '/players/squads':
         return squadEnvelope(req.params.get('team') ?? '', options.squadSize ?? 25);
+      case '/teams/statistics':
+        return teamStatisticsEnvelope(
+          Number(req.params.get('league')),
+          Number(req.params.get('season')),
+          req.params.get('team') ?? ''
+        );
       default:
         return { errors: { path: 'unknown' }, response: [] };
     }
@@ -280,6 +322,7 @@ const harness = (options: HarnessOptions = {}) => {
   const availability: IngestAvailabilityRequest[] = [];
   const transfers: IngestTransfersRequest[] = [];
   const trophies: IngestTrophiesRequest[] = [];
+  const teamStats: IngestProviderTeamSeasonStatsRequest[] = [];
   const accepted = (rows: readonly unknown[]) =>
     ({ acceptedCount: rows.length }) as IngestBatchResponse;
   const ingest: ProviderEnrichmentIngestClient = {
@@ -296,6 +339,10 @@ const harness = (options: HarnessOptions = {}) => {
       trophies.push(r);
       return accepted(r.rows);
     }),
+    ingestProviderTeamSeasonStats: vi.fn(async (r: IngestProviderTeamSeasonStatsRequest) => {
+      teamStats.push(r);
+      return accepted(r.rows);
+    }),
     ...options.ingest,
   };
   const enrichment: ProviderEnrichmentDeps | undefined =
@@ -307,6 +354,7 @@ const harness = (options: HarnessOptions = {}) => {
             'player-sidelined',
             'team-transfers',
             'trophies',
+            'team-season-stats',
           ],
           ingest,
           limiter: new ProviderMinuteLimiter({
@@ -330,12 +378,12 @@ const harness = (options: HarnessOptions = {}) => {
       { dataset, mode: 'nightly', ...input } as ProviderEnrichmentInput,
       deps
     );
-  const seedFixtureLists = async (lists: Record<number, number[]>) => {
+  const seedFixtureLists = async (lists: Record<number, number[] | unknown>) => {
     for (const [league, teams] of Object.entries(lists)) {
       const season = CATALOGUE.find((c) => c.apiFootballLeagueId === Number(league))?.season;
       await cache.set(
         loop.cacheKeyFor('fixtures-next-7d', `league-${league}-season-${season}`),
-        fixtureList(teams),
+        Array.isArray(teams) ? fixtureList(teams) : teams,
         6 * 60 * 60
       );
     }
@@ -356,6 +404,7 @@ const harness = (options: HarnessOptions = {}) => {
     availability,
     transfers,
     trophies,
+    teamStats,
     advance,
     seedFixtureLists,
     now: () => now,
@@ -363,15 +412,18 @@ const harness = (options: HarnessOptions = {}) => {
 };
 
 describe('kill switch', () => {
-  it.each(['injuries-league', 'player-sidelined', 'team-transfers', 'trophies'] as const)(
-    '%s makes no call unless it is listed',
-    async (dataset) => {
-      const h = harness({ enabled: ['player-season-stats'] });
-      const out = await h.run(dataset, { playerIds: ['1'], teamIds: ['2'] });
-      expect(out.status).toBe('disabled');
-      expect(h.fetchFn).not.toHaveBeenCalled();
-    }
-  );
+  it.each([
+    'injuries-league',
+    'player-sidelined',
+    'team-transfers',
+    'trophies',
+    'team-season-stats',
+  ] as const)('%s makes no call unless it is listed', async (dataset) => {
+    const h = harness({ enabled: ['player-season-stats'] });
+    const out = await h.run(dataset, { playerIds: ['1'], teamIds: ['2'] });
+    expect(out.status).toBe('disabled');
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
 
   it('is off when enrichment is not wired', async () => {
     const h = harness({ enrichment: null });
@@ -929,12 +981,196 @@ describe('packTrophyRows', () => {
   });
 });
 
+describe('team-season-stats', () => {
+  /** Monday 2026-11-09 03:00 UTC. */
+  const MONDAY = '2026-11-09T03:00:00.000Z';
+  const seed = (h: ReturnType<typeof harness>) =>
+    h.seedFixtureLists({
+      39: datedFixtureList([
+        { home: 33, away: 40, kickoffMs: T0 - 10 * HOUR, status: 'FT' },
+        // Outside the 36h window.
+        { home: 41, away: 42, kickoffMs: T0 - 40 * HOUR, status: 'FT' },
+        // The cached list is stale: kicked off 3h ago, still shown in play.
+        { home: 43, away: 44, kickoffMs: T0 - 3 * HOUR, status: '2H' },
+        // In play an hour after kickoff: no final whistle yet.
+        { home: 45, away: 46, kickoffMs: T0 - HOUR, status: '1H' },
+        { home: 47, away: 48, kickoffMs: T0 - 5 * HOUR, status: 'PST' },
+        { home: 49, away: 50, kickoffMs: T0 + DAY, status: 'NS' },
+      ]),
+      88: datedFixtureList([{ home: 415, away: 194, kickoffMs: T0 - 20 * HOUR, status: 'AET' }]),
+      144: datedFixtureList([{ home: 600, away: 601, kickoffMs: T0 + DAY, status: 'NS' }]),
+      // Not domestic: never in the scope.
+      2: datedFixtureList([{ home: 541, away: 33, kickoffMs: T0 - 5 * HOUR, status: 'FT' }]),
+    });
+
+  it('nightly covers the teams with a final whistle in 36h, one call per team in its league', async () => {
+    const h = harness();
+    await seed(h);
+    const out = await h.run('team-season-stats');
+    expect(out.status).toBe('completed');
+    expect(h.paths()).toEqual([
+      '/teams/statistics?league=39&season=2026&team=33',
+      '/teams/statistics?league=39&season=2026&team=40',
+      '/teams/statistics?league=39&season=2026&team=43',
+      '/teams/statistics?league=39&season=2026&team=44',
+      '/teams/statistics?league=88&season=2026&team=194',
+      '/teams/statistics?league=88&season=2026&team=415',
+    ]);
+    expect(out.targets.map((t) => t.unit)).toEqual([
+      'league-39-season-2026-team-33',
+      'league-39-season-2026-team-40',
+      'league-39-season-2026-team-43',
+      'league-39-season-2026-team-44',
+      'league-88-season-2026-team-194',
+      'league-88-season-2026-team-415',
+    ]);
+    expect(out.targets[0]).toMatchObject({ leagueId: 39, season: 2026 });
+    expect(h.teamStats).toHaveLength(6);
+    expect(h.teamStats[0]?.rows[0]).toMatchObject({
+      providerTeamId: '33',
+      providerCompetitionId: '39',
+      seasonYear: 2026,
+      form: 'WDL',
+      values: {
+        matches_played: 3,
+        wins: 1,
+        draws: 1,
+        losses: 1,
+        goals_for: 4,
+        goals_against: 3,
+        clean_sheets: 1,
+      },
+    });
+    expect(h.teamStats[0]?.rows[0]?.values).not.toHaveProperty('failed_to_score');
+    expect(h.teamStats[0]?.metadata?.normalizedBatchId).toBe(
+      'api-football:team-season-stats:team-stats-39-2026-33:0'
+    );
+    // Only "done" markers are written (D9), each with the 20h window.
+    expect(h.cacheSet.mock.calls.map((call) => [call[0], call[2]])).toEqual(
+      out.targets.map((t) => [unitMarkerKey('team-season-stats', t.unit!), 20 * 60 * 60])
+    );
+    // A retry inside the window fetches only what is new: 45 v 46 kicked off
+    // two hours ago now, so it counts as played even though the list says 1H.
+    h.urls.length = 0;
+    h.advance(HOUR);
+    const again = await h.run('team-season-stats');
+    expect(again.targets.filter((t) => t.status !== 'fresh').map((t) => t.unit)).toEqual([
+      'league-39-season-2026-team-45',
+      'league-39-season-2026-team-46',
+    ]);
+    expect(h.urls).toHaveLength(2);
+  });
+
+  it('reads the final whistle from the cached list without a provider call', () => {
+    const list = datedFixtureList([
+      { home: 1, away: 2, kickoffMs: T0 - 35 * HOUR, status: 'PEN' },
+      { home: 3, away: 4, kickoffMs: T0 - 37 * HOUR, status: 'FT' },
+      { home: 5, away: 6, kickoffMs: T0 - 4 * HOUR, status: 'NS' },
+      { home: 7, away: 8, kickoffMs: T0 - 4 * HOUR, status: 'CANC' },
+      { home: 9, away: 10, kickoffMs: T0 - 90 * 60_000, status: 'FT' },
+    ]);
+    expect(teamsWithRecentFinalWhistle(list, T0)).toEqual(['1', '2', '5', '6', '9', '10']);
+    expect(teamsWithRecentFinalWhistle({ response: 'x' }, T0)).toEqual([]);
+  });
+
+  it('covers every domestic team on a Monday and in full mode', async () => {
+    expect(teamSeasonStatsCoversAll('nightly', Date.parse(MONDAY))).toBe(true);
+    expect(teamSeasonStatsCoversAll('nightly', T0)).toBe(false);
+    expect(teamSeasonStatsCoversAll('full', T0)).toBe(true);
+    const monday = harness();
+    await seed(monday);
+    const out = await monday.run('team-season-stats', { nowUtc: MONDAY });
+    expect(out.status).toBe('completed');
+    const teams = (h: ReturnType<typeof harness>) =>
+      h.paths().map((p) => new URLSearchParams(p.split('?')[1]).get('team'));
+    expect(teams(monday)).toEqual(
+      [33, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 194, 415, 600, 601].map(String)
+    );
+    const full = harness();
+    await seed(full);
+    const parsed = parseProviderEnrichmentInput({ dataset: 'team-season-stats', mode: 'full' });
+    expect(parsed.ok).toBe(true);
+    await full.run('team-season-stats', parsed.ok ? parsed.input : {});
+    expect(teams(full)).toEqual(teams(monday));
+  });
+
+  it('narrows to named teams and leagues; refuses seasons and unknown leagues', async () => {
+    const h = harness();
+    await seed(h);
+    const out = await h.run('team-season-stats', { teamIds: ['41', '600', '999'] });
+    expect(h.paths()).toEqual([
+      '/teams/statistics?league=39&season=2026&team=41',
+      '/teams/statistics?league=144&season=2026&team=600',
+    ]);
+    expect(out.status).toBe('completed');
+    const byLeague = harness();
+    await seed(byLeague);
+    const league = await byLeague.run('team-season-stats', { leagueIds: [88, 777] });
+    expect(byLeague.paths()).toEqual([
+      '/teams/statistics?league=88&season=2026&team=194',
+      '/teams/statistics?league=88&season=2026&team=415',
+    ]);
+    expect(league.status).toBe('incomplete');
+    expect(league.targets[0]).toMatchObject({ unit: 'league-777', status: 'failed' });
+    expect(parseProviderEnrichmentInput({ dataset: 'team-season-stats', seasons: [2025] })).toEqual(
+      { ok: false, reason: 'seasons_not_used_by_dataset' }
+    );
+    const named = parseProviderEnrichmentInput({ dataset: 'team-season-stats', teamIds: [33] });
+    expect(named.ok && named.input.teamIds).toEqual(['33']);
+  });
+
+  it('skips with a reason when no team has a recent final whistle', async () => {
+    const h = harness();
+    await h.seedFixtureLists({
+      39: datedFixtureList([{ home: 1, away: 2, kickoffMs: T0 + DAY, status: 'NS' }]),
+      88: datedFixtureList([{ home: 3, away: 4, kickoffMs: T0 + DAY, status: 'NS' }]),
+      144: datedFixtureList([{ home: 5, away: 6, kickoffMs: T0 + DAY, status: 'NS' }]),
+    });
+    const out = await h.run('team-season-stats');
+    expect(out.status).toBe('skipped');
+    expect(out.reason).toContain('final whistle');
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+
+  it('completes an empty answer without writing, and fails a provider error', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/teams/statistics'
+          ? req.params.get('team') === '1'
+            ? { errors: [], response: [] }
+            : { errors: { requests: 'limit' }, response: [] }
+          : undefined,
+    });
+    await h.seedFixtureLists({
+      39: datedFixtureList([{ home: 1, away: 2, kickoffMs: T0 - 10 * HOUR, status: 'FT' }]),
+    });
+    const out = await h.run('team-season-stats', { leagueIds: [39] });
+    expect(out.status).toBe('incomplete');
+    expect(out.targets.map((t) => `${t.unit}:${t.status}`)).toEqual([
+      'league-39-season-2026-team-1:complete',
+      'league-39-season-2026-team-2:failed',
+    ]);
+    expect(h.teamStats).toEqual([]);
+  });
+
+  it('skips without a provider call when the ingest method is missing', async () => {
+    const h = harness({ ingest: { ingestProviderTeamSeasonStats: undefined } });
+    await seed(h);
+    const out = await h.run('team-season-stats');
+    expect(out.status).toBe('skipped');
+    expect(out.reason).toContain('ingestProviderTeamSeasonStats');
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+});
+
 describe('shared guards', () => {
   it('spends every call at background priority with the cache bypassed', async () => {
     const h = harness();
     await h.run('trophies', { playerIds: ['1'] });
     await h.run('team-transfers', { teamIds: ['5'] });
-    expect(h.reserve).toHaveBeenCalledTimes(2);
+    await h.seedFixtureLists({ 39: [33, 40] });
+    await h.run('team-season-stats', { teamIds: ['33'], leagueIds: [39] });
+    expect(h.reserve).toHaveBeenCalledTimes(3);
     for (const call of h.reserve.mock.calls) {
       expect(call[2]).toBe('background');
     }
@@ -1005,5 +1241,6 @@ describe('shared guards', () => {
       DEFAULT_UNIT_MAX_CALLS_PER_RUN.trophies
     );
     expect(clampEnrichmentLimit(7, 'trophies')).toBe(7);
+    expect(clampEnrichmentLimit(undefined, 'team-season-stats')).toBe(500);
   });
 });
