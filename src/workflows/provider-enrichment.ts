@@ -5,9 +5,10 @@
  * dataset and writes it straight to the GS-2 ingest RPC. This file runs
  * `player-season-stats` (`/players?league&season&page`, GW-6a) and hands the
  * GW-6b datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
- * `trophies`) to the unit runner below, whose units and decoders live in
- * `provider-enrichment-units.ts`. Leaders, team season stats and the GW-7/8
- * datasets arrive later under the same endpoint.
+ * `trophies`) and GW-6c `team-season-stats` (`/teams/statistics`) to the unit
+ * runner below, whose units and decoders live in
+ * `provider-enrichment-units.ts`. Leaders and the GW-7/8 datasets arrive later
+ * under the same endpoint.
  *
  * Rules (mega-verdict and profile-spec PF-GW2):
  * - Kill switch: a dataset runs only when it is named in
@@ -175,7 +176,7 @@ export const enrichmentCursorKey = (
 /**
  * The run's call limit: the request's `limit`, else the dataset's default
  * ({@link DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN} for player season stats,
- * `DEFAULT_UNIT_MAX_CALLS_PER_RUN` for the GW-6b datasets), never above
+ * `DEFAULT_UNIT_MAX_CALLS_PER_RUN` for the unit datasets), never above
  * {@link MAX_ENRICHMENT_CALLS_PER_RUN}.
  */
 export const clampEnrichmentLimit = (
@@ -741,7 +742,7 @@ interface UnitRunEnv {
 }
 
 /**
- * Run a GW-6b dataset (`provider-enrichment-units.ts`). Same guards as the
+ * Run a unit dataset (GW-6b, GW-6c; `provider-enrichment-units.ts`). Same guards as the
  * player-season-stats loop above: the enrichment minute limiter, background
  * priority with the cache bypassed, the per-run call limit, quota posture,
  * three failed units in a row abort, one run per unit per process, and a

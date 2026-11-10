@@ -1110,15 +1110,17 @@ export interface ProviderFixtureResultsWireResult {
  * - `player-sidelined` (GW-6b): `/sidelined?players=`, 20 players a call.
  * - `team-transfers` (GW-6b): `/transfers?team=`, one call per team.
  * - `trophies` (GW-6b): `/trophies?players=` and `?coachs=`, 20 ids a call.
- * Leaders, team season stats and the GW-7/GW-8 datasets land later under the
- * same endpoint.
+ * - `team-season-stats` (GW-6c): `/teams/statistics?league&season&team`, one
+ *   call per team.
+ * Leaders and the GW-7/GW-8 datasets land later under the same endpoint.
  */
 export type ProviderEnrichmentDataset =
   | 'player-season-stats'
   | 'injuries-league'
   | 'player-sidelined'
   | 'team-transfers'
-  | 'trophies';
+  | 'trophies'
+  | 'team-season-stats';
 
 /**
  * Modes after parsing. The wire also accepts the spec's `auto` and `dirty`,
@@ -1158,6 +1160,8 @@ export interface ProviderEnrichmentInput {
   /**
    * `team-transfers` and `trophies`: API-Football team ids. Replaces the
    * default team scope (the domestic catalogue teams).
+   * `team-season-stats`: narrows the team scope to these ids; each team is
+   * fetched for the catalogue league whose fixture list it appears in.
    */
   readonly teamIds?: readonly string[];
   /**
