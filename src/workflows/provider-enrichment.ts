@@ -6,10 +6,10 @@
  * `player-season-stats` (`/players?league&season&page`, GW-6a) and hands the
  * GW-6b datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
  * `trophies`), GW-6c `team-season-stats` (`/teams/statistics`) and
- * `team-coaches` (`/coachs?team=`) to the unit
- * runner below, whose units and decoders live in
- * `provider-enrichment-units.ts`. Leaders and the GW-7/8 datasets arrive later
- * under the same endpoint.
+ * `team-coaches` (`/coachs?team=`), and the GW-7/GW-8 pre-match datasets
+ * (`fixture-predictions`, `head-to-head`, `venue-detail`) to the unit runner
+ * below, whose units and decoders live in `provider-enrichment-units.ts`.
+ * Leaders arrive later under the same endpoint.
  *
  * Rules (mega-verdict and profile-spec PF-GW2):
  * - Kill switch: a dataset runs only when it is named in
@@ -65,6 +65,7 @@ import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { handleQuotaPosture } from './degrade.js';
 import {
   DEFAULT_UNIT_MAX_CALLS_PER_RUN,
+  PRE_MATCH_ENRICHMENT_DATASETS,
   UNIT_DATASET_NEEDS,
   UNIT_ENRICHMENT_DATASETS,
   UNIT_MARKER_WINDOW_SECONDS,
@@ -1126,3 +1127,23 @@ const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+
+/**
+ * The GW-7/GW-8 pre-match datasets the worker runs after each discovery sweep
+ * (`onDiscoveryComplete`): predictions, then head-to-head, then venues, each
+ * only when `GAMEWIRE_ENRICHMENT_DATASETS` names it. A dataset whose units are
+ * all fresh makes no provider call, so an hourly sweep costs nothing between
+ * kickoff windows.
+ */
+export const runPreMatchEnrichment = async (
+  deps: WorkflowDeps
+): Promise<readonly ProviderEnrichmentOutput[]> => {
+  const enabled = deps.enrichment?.enabledDatasets ?? [];
+  const outputs: ProviderEnrichmentOutput[] = [];
+  for (const dataset of PRE_MATCH_ENRICHMENT_DATASETS) {
+    if (enabled.includes(dataset)) {
+      outputs.push(await providerEnrichmentWorkflow({ dataset, mode: 'nightly' }, deps));
+    }
+  }
+  return outputs;
+};

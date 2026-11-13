@@ -11,7 +11,7 @@
  * - Rows with a null or 0 player id, a null or 0 team id, or the provider's
  *   `"Data not available"` placeholder name are dropped.
  */
-import { create } from '@bufbuild/protobuf';
+import { create, type JsonObject } from '@bufbuild/protobuf';
 import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
@@ -24,6 +24,10 @@ import {
   AvailabilityRowSchema,
   CoachCareerRowSchema,
   CoachProfileRowSchema,
+  HeadToHeadSnapshotSchema,
+  ProviderMeetingSchema,
+  ProviderPredictionRowSchema,
+  VenueRowSchema,
   AvailabilitySource,
   AvailabilityStatus,
   ProviderPlayerSeasonStatsRowSchema,
@@ -34,11 +38,15 @@ import {
   type AvailabilityRow,
   type CoachCareerRow,
   type CoachProfileRow,
+  type HeadToHeadSnapshot,
+  type ProviderMeeting,
   type ProviderPlayerSeasonStatsRow,
+  type ProviderPredictionRow,
   type ProviderTeamSeasonStatsRow,
   type TransferRow,
   type TrophyEntry,
   type TrophyRow,
+  type VenueRow,
 } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
 
 /** `/players?league=L&season=S&page=P`. Pages are 1-based. */
@@ -938,4 +946,266 @@ export const decodeCoachs = (
     );
   }
   return { rows, entries: envelope.response.length, dropped, providerErrors };
+};
+
+// ── GW-7: predictions and head-to-head; GW-8: venues ──────────────────────
+
+/** `/predictions?fixture=F`. One prediction object, plus the pair's last meetings. */
+export const apiFootballPredictionsPath = (fixtureId: string): string =>
+  `/predictions?fixture=${encodeURIComponent(fixtureId)}`;
+
+/** Meetings asked of `/fixtures/headtohead`, the same depth `/predictions` returns. */
+export const HEAD_TO_HEAD_LAST = 10;
+
+/**
+ * `/fixtures/headtohead?h2h=A-B&last=10`, the pair normalised low-high so A-B
+ * and B-A are one request and one stored list.
+ */
+export const apiFootballHeadToHeadPath = (teamA: string, teamB: string): string => {
+  const [low, high] = orderedTeamPair(teamA, teamB);
+  return `/fixtures/headtohead?h2h=${encodeURIComponent(low)}-${encodeURIComponent(high)}&last=${HEAD_TO_HEAD_LAST}`;
+};
+
+/** `/venues?id=V`. */
+export const apiFootballVenuePath = (venueId: string): string =>
+  `/venues?id=${encodeURIComponent(venueId)}`;
+
+/** Two provider team ids in numeric order. */
+export const orderedTeamPair = (a: string, b: string): [string, string] =>
+  Number(a) <= Number(b) ? [a, b] : [b, a];
+
+/** `"35%"` to 35, kept within 0 to 100; undefined when absent or malformed. */
+const percent = (value: unknown): number | undefined => {
+  const parsed = parseProviderNumber(value);
+  if (parsed === undefined || parsed < 0 || parsed > 100) {
+    return undefined;
+  }
+  return Math.round(parsed);
+};
+
+const unixSeconds = (value: unknown): number | undefined => {
+  const parsed = parseProviderNumber(value);
+  return parsed !== undefined && parsed > 0 ? parsed : undefined;
+};
+
+/**
+ * One provider fixture object (`/fixtures/headtohead` entries and the
+ * `/predictions` `h2h` list share the shape) as a ProviderMeeting. Undefined
+ * when the fixture id or either team id is missing.
+ */
+const decodeMeeting = (entry: unknown): ProviderMeeting | undefined => {
+  if (!isRecord(entry) || !isRecord(entry.fixture) || !isRecord(entry.teams)) {
+    return undefined;
+  }
+  const fixture = entry.fixture;
+  const fixtureId = providerId(fixture.id);
+  const home = isRecord(entry.teams.home) ? entry.teams.home : undefined;
+  const away = isRecord(entry.teams.away) ? entry.teams.away : undefined;
+  const homeId = home ? providerId(home.id) : undefined;
+  const awayId = away ? providerId(away.id) : undefined;
+  if (fixtureId === undefined || !home || !away || homeId === undefined || awayId === undefined) {
+    return undefined;
+  }
+  const league = isRecord(entry.league) ? entry.league : {};
+  const goals = isRecord(entry.goals) ? entry.goals : {};
+  const status = isRecord(fixture.status) ? fixture.status : {};
+  const periods = isRecord(fixture.periods) ? fixture.periods : {};
+  const playedMs = Date.parse(text(fixture.date));
+  const firstHalf = unixSeconds(periods.first);
+  const secondHalf = unixSeconds(periods.second);
+  const season = parseProviderNumber(league.season);
+  return create(ProviderMeetingSchema, {
+    providerFixtureId: fixtureId,
+    playedAt: Number.isFinite(playedMs) ? timestampFromMs(playedMs) : undefined,
+    providerHomeTeamId: homeId,
+    providerAwayTeamId: awayId,
+    homeTeamSnapshot: teamSnapshot(home),
+    awayTeamSnapshot: teamSnapshot(away),
+    homeGoals: Math.max(0, Math.trunc(parseProviderNumber(goals.home) ?? 0)),
+    awayGoals: Math.max(0, Math.trunc(parseProviderNumber(goals.away) ?? 0)),
+    statusShort: text(status.short),
+    providerCompetitionId: providerId(league.id) ?? '',
+    competitionName: text(league.name),
+    seasonYear: season !== undefined && Number.isInteger(season) ? season : 0,
+    refereeName: text(fixture.referee),
+    firstHalfStartedAt: firstHalf !== undefined ? timestampFromMs(firstHalf * 1_000) : undefined,
+    secondHalfStartedAt: secondHalf !== undefined ? timestampFromMs(secondHalf * 1_000) : undefined,
+  });
+};
+
+/**
+ * A pair's meetings as a HeadToHeadSnapshot. Meetings that do not involve both
+ * teams, or repeat a fixture, are dropped. An explicit empty list sets
+ * `clear_scope`: the provider confirmed the pair has never met.
+ */
+export const headToHeadSnapshot = (
+  list: readonly unknown[],
+  options: { readonly teamA: string; readonly teamB: string; readonly fetchedAtMs: number }
+): { readonly snapshot: HeadToHeadSnapshot; readonly dropped: number } => {
+  const [low, high] = orderedTeamPair(options.teamA, options.teamB);
+  const meetings: ProviderMeeting[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+  for (const entry of list) {
+    const meeting = decodeMeeting(entry);
+    const teams = meeting ? [meeting.providerHomeTeamId, meeting.providerAwayTeamId] : [];
+    if (
+      !meeting ||
+      seen.has(meeting.providerFixtureId) ||
+      !teams.includes(low) ||
+      !teams.includes(high)
+    ) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(meeting.providerFixtureId);
+    meetings.push(meeting);
+  }
+  meetings.sort((a, b) => Number(b.playedAt?.seconds ?? 0n) - Number(a.playedAt?.seconds ?? 0n));
+  return {
+    snapshot: create(HeadToHeadSnapshotSchema, {
+      providerTeamLowId: low,
+      providerTeamHighId: high,
+      meetings: meetings.slice(0, HEAD_TO_HEAD_LAST),
+      fetchedAt: timestampFromMs(options.fetchedAtMs),
+      clearScope: list.length === 0,
+    }),
+    dropped,
+  };
+};
+
+/** Decode `/fixtures/headtohead?h2h=A-B` into the pair's snapshot. */
+export const decodeHeadToHead = (
+  envelope: unknown,
+  options: { readonly teamA: string; readonly teamB: string; readonly fetchedAtMs: number }
+): {
+  readonly snapshot?: HeadToHeadSnapshot;
+  readonly entries: number;
+  readonly dropped: number;
+  readonly providerErrors?: string;
+} => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { entries: 0, dropped: 0, providerErrors };
+  }
+  if (providerErrors !== undefined && envelope.response.length === 0) {
+    return { entries: 0, dropped: 0, providerErrors };
+  }
+  const { snapshot, dropped } = headToHeadSnapshot(envelope.response, options);
+  return { snapshot, entries: envelope.response.length, dropped, providerErrors };
+};
+
+export interface DecodedPrediction {
+  /** Unset when the provider returned no prediction object. */
+  readonly row?: ProviderPredictionRow;
+  /** Home and away provider team ids, when the response names them. */
+  readonly homeTeamId?: string;
+  readonly awayTeamId?: string;
+  /**
+   * The pair's meetings from the same response (`h2h`), the list
+   * `/fixtures/headtohead?last=10` returns. Unset when the response has no
+   * `h2h` array or either team id is missing.
+   */
+  readonly headToHead?: HeadToHeadSnapshot;
+  readonly dropped: number;
+  readonly providerErrors?: string;
+}
+
+/**
+ * Decode `/predictions?fixture=F`. Percentages become whole numbers; the goal
+ * lines stay the provider's signed strings. The stored payload keeps only the
+ * `predictions` and `comparison` objects (no team or league blocks, no h2h).
+ */
+export const decodePrediction = (
+  envelope: unknown,
+  options: { readonly fixtureId: string; readonly fetchedAtMs: number }
+): DecodedPrediction => {
+  const providerErrors = decodeProviderErrors(envelope);
+  const first =
+    isRecord(envelope) && Array.isArray(envelope.response) ? envelope.response[0] : undefined;
+  if (!isRecord(first) || !isRecord(first.predictions)) {
+    return { dropped: 0, providerErrors };
+  }
+  const prediction = first.predictions;
+  const teams = isRecord(first.teams) ? first.teams : {};
+  const homeTeamId = isRecord(teams.home) ? providerId(teams.home.id) : undefined;
+  const awayTeamId = isRecord(teams.away) ? providerId(teams.away.id) : undefined;
+  const pct = isRecord(prediction.percent) ? prediction.percent : {};
+  const home = percent(pct.home);
+  const draw = percent(pct.draw);
+  const away = percent(pct.away);
+  const winner = isRecord(prediction.winner) ? prediction.winner : undefined;
+  const winnerId = winner ? providerId(winner.id) : undefined;
+  const goals = isRecord(prediction.goals) ? prediction.goals : {};
+  let dropped = 0;
+  let row: ProviderPredictionRow | undefined;
+  if (home === undefined || draw === undefined || away === undefined) {
+    dropped += 1;
+  } else {
+    const payload: JsonObject = { predictions: prediction as JsonObject };
+    if (isRecord(first.comparison)) {
+      payload.comparison = first.comparison as JsonObject;
+    }
+    row = create(ProviderPredictionRowSchema, {
+      providerFixtureId: options.fixtureId,
+      homeWinPct: home,
+      drawPct: draw,
+      awayWinPct: away,
+      advice: text(prediction.advice),
+      providerWinnerTeamId: winnerId ?? '',
+      winnerSnapshot: winner && winnerId !== undefined ? teamSnapshot(winner) : undefined,
+      winnerComment: winner ? text(winner.comment) : '',
+      goalsHomeLine: text(goals.home),
+      goalsAwayLine: text(goals.away),
+      payload,
+      fetchedAt: timestampFromMs(options.fetchedAtMs),
+    });
+  }
+  let headToHead: HeadToHeadSnapshot | undefined;
+  if (Array.isArray(first.h2h) && homeTeamId !== undefined && awayTeamId !== undefined) {
+    const decoded = headToHeadSnapshot(first.h2h, {
+      teamA: homeTeamId,
+      teamB: awayTeamId,
+      fetchedAtMs: options.fetchedAtMs,
+    });
+    headToHead = decoded.snapshot;
+    dropped += decoded.dropped;
+  }
+  return { row, homeTeamId, awayTeamId, headToHead, dropped, providerErrors };
+};
+
+/**
+ * Decode `/venues?id=V`. Undefined when the provider returned no venue for the
+ * id. A null capacity stays unset; the image url is stored, never served.
+ */
+export const decodeVenue = (
+  envelope: unknown,
+  options: { readonly venueId: string; readonly fetchedAtMs: number }
+): { readonly row?: VenueRow; readonly entries: number; readonly providerErrors?: string } => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { entries: 0, providerErrors };
+  }
+  const entry = envelope.response.find(
+    (item) => isRecord(item) && providerId(item.id) === options.venueId
+  );
+  if (!isRecord(entry)) {
+    return { entries: envelope.response.length, providerErrors };
+  }
+  const capacity = parseProviderNumber(entry.capacity);
+  return {
+    row: create(VenueRowSchema, {
+      providerVenueId: options.venueId,
+      name: text(entry.name),
+      address: text(entry.address),
+      city: text(entry.city),
+      country: text(entry.country),
+      ...(capacity !== undefined && Number.isInteger(capacity) && capacity > 0 ? { capacity } : {}),
+      surface: text(entry.surface),
+      imageUrl: text(entry.image),
+      fetchedAt: timestampFromMs(options.fetchedAtMs),
+    }),
+    entries: envelope.response.length,
+    providerErrors,
+  };
 };

@@ -322,6 +322,7 @@ export function estimateCallBudget(
     ...availabilityTransfersTrophiesLines(a),
     teamSeasonStatsLine(a),
     teamCoachesLine(a),
+    ...preMatchLines(a),
     {
       workload: 'kernel weekly sweeps',
       priority: 'background',
@@ -611,10 +612,72 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
       15,
       'pre-kickoff, covered leagues only, 2-3 calls per fixture'
     ),
-    fixtureLine('fixture-predictions', 2, 10, 'two shots: T-48h and T-3h'),
-    fixtureLine('head-to-head', 1, 10, 'T-48h, pair cached 7d'),
     background('league-coverage', 1, 1, 'daily, one call'),
     background('competition-leaders', 70, 40, 'daily for leagues played in 36h; full on Monday'),
-    background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
+  ];
+}
+
+/**
+ * Catalogue venues the venue-detail scope holds (the fixture lists of every
+ * enriched competition): 294 distinct venue ids on prod games in the 120 days
+ * to 2026-11-13, rounded up.
+ */
+const CATALOGUE_VENUES = 300;
+/** New venue ids a day: promoted clubs, neutral grounds, cup ties at small clubs. */
+const NEW_VENUES_PER_DAY = 2;
+
+/**
+ * GW-7 and GW-8, run after each discovery sweep (background priority, under
+ * the enrichment minute limiter):
+ * - `fixture-predictions`: two shots per fixture (the first sweep inside 48h,
+ *   the first inside 3h), verdict D17;
+ * - `head-to-head`: no call when predictions is on, because `/predictions`
+ *   carries the same last-10 meetings and the predictions run stores them; a
+ *   standalone pull is one call per pair a week, at most one per fixture;
+ * - `venue-detail`: each venue once, then every 90 days, plus new venues. The
+ *   first runs after switch-on take the catalogue's venues 150 an hour;
+ * - coach trophies (`coach-trophies`, inside the weekly trophies run): one
+ *   `/trophies?coachs=` call per team in the week's quarter.
+ */
+export function preMatchLines(a: CallBudgetAssumptions): CallBudgetLine[] {
+  const coachTrophyTeams = Math.ceil(a.domesticTeams / 4);
+  return [
+    {
+      workload: 'fixture-predictions',
+      priority: 'background',
+      strategy: 'after each discovery sweep: two shots per fixture, inside 48h and inside 3h',
+      avgPerDay: a.avgFixturesPerDay * 2,
+      peakDay: a.peakDayFixtures * 2,
+      peakMinute: 0,
+      planned: false,
+    },
+    {
+      workload: 'head-to-head',
+      priority: 'background',
+      strategy:
+        'stored from the predictions response; a standalone pull (predictions off) is one call per pair a week',
+      avgPerDay: 0,
+      peakDay: 0,
+      peakMinute: 0,
+      planned: false,
+    },
+    {
+      workload: 'venue-detail',
+      priority: 'background',
+      strategy: `${CATALOGUE_VENUES} catalogue venues every 90 days plus about ${NEW_VENUES_PER_DAY} new a day`,
+      avgPerDay: CATALOGUE_VENUES / 90 + NEW_VENUES_PER_DAY,
+      peakDay: CATALOGUE_VENUES / 90 + NEW_VENUES_PER_DAY,
+      peakMinute: 0,
+      planned: false,
+    },
+    {
+      workload: 'coach-trophies',
+      priority: 'background',
+      strategy: `weekly quarter partition: ${coachTrophyTeams} teams, one call for each team's coaches`,
+      avgPerDay: coachTrophyTeams / 7,
+      peakDay: 0,
+      peakMinute: 0,
+      planned: false,
+    },
   ];
 }

@@ -21,7 +21,7 @@ import {
 } from './clients/game-service.js';
 import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
-import { handleWorkerRequest } from './http.js';
+import { buildWorkflowDeps, handleWorkerRequest, type WorkerHttpHandlerOptions } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
 import { RedisProviderCache, createRedisLikeClient, type ProviderCache } from './cache.js';
 import {
@@ -49,7 +49,11 @@ import {
   createBunRedisStreamClient,
   type BunRedisLike,
 } from './redis-stream-consumer.js';
-import { STEADY_STATE_COMPETITIONS, collectVerifiedFixtureIds } from '../workflows/index.js';
+import {
+  STEADY_STATE_COMPETITIONS,
+  collectVerifiedFixtureIds,
+  runPreMatchEnrichment,
+} from '../workflows/index.js';
 
 interface ReadBodyResult {
   readonly body: unknown;
@@ -418,7 +422,16 @@ for (const warning of budgetWarnings) {
   console.log(warning);
 }
 
-const ingestion = new ApiFootballIngestionLoop({ config, onFixtureFetched, quota, minuteLimiter });
+// GW-7/GW-8 pre-match enrichment (predictions, head-to-head, venues) runs
+// after each discovery sweep. Bound below, once the workflow deps exist.
+let preMatchEnrichment: (() => Promise<void>) | undefined;
+const ingestion = new ApiFootballIngestionLoop({
+  config,
+  onFixtureFetched,
+  quota,
+  minuteLimiter,
+  onDiscoveryComplete: () => preMatchEnrichment?.(),
+});
 
 // Provider enrichment (GW-6a). One limiter for the process so concurrent
 // enrichment runs share the per-minute ceiling. Every call still passes the
@@ -493,6 +506,50 @@ console.log(
     `audience=${config.authContextAudience} scope=${config.authContextRequiredScope})`
 );
 
+const workerOptions: WorkerHttpHandlerOptions = {
+  ingestion,
+  competitions: STEADY_STATE_COMPETITIONS,
+  authContextVerifier,
+  gameServiceMissingPayloads: gameServiceLookupClient,
+  // The squad-sweep workflow ingests standing rosters via
+  // IngestFootballSquadLists and resolves provider team ids to canonical
+  // btl_football_team_* ids through identity. Both clients must reach the
+  // workflow deps or every team skips as `game_service_not_wired` (and an
+  // unresolved canonical id leaves team_squad_rosters unfindable by
+  // GetTeamSquad). gameServiceLookupClient is a FootballGameBridgeClient,
+  // which is a superset of FootballGameIngestClient.
+  gameService: gameServiceLookupClient,
+  // PF-GW1's provider-fixture-results workflow calls
+  // IngestProviderFixtureResults, which §3.4 serves only from the
+  // game-service-profile-jobs Deployment — a different target from
+  // gameServiceLookupClient/gameService above.
+  gameServiceJobs: gameServiceJobsClient,
+  // The statsbomb-backfill workflow resolves a provider fixture id to the
+  // canonical BTL game id via LookupGameByFixture before ingesting
+  // occurrences. Same FootballGameBridgeClient (superset of the lookup
+  // client) the match-concluded bridge uses.
+  gameLookup: gameServiceLookupClient,
+  identity: identityClient,
+  providerEnrichmentIngest: gameServiceLookupClient,
+  enrichmentLimiter,
+  workflowStateStore,
+  workflowLogger: (entry) => {
+    console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
+  },
+};
+
+const preMatchDeps = buildWorkflowDeps(workerOptions, config);
+if (preMatchDeps) {
+  preMatchEnrichment = async () => {
+    await runPreMatchEnrichment({
+      ...preMatchDeps,
+      logger: (entry) => {
+        console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
+      },
+    });
+  };
+}
+
 const server = createServer(async (request, response) => {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
   const { body, rawBody } = await readBody(request);
@@ -506,37 +563,7 @@ const server = createServer(async (request, response) => {
       headers: flattenHeaders(request),
     },
     config,
-    {
-      ingestion,
-      competitions: STEADY_STATE_COMPETITIONS,
-      authContextVerifier,
-      gameServiceMissingPayloads: gameServiceLookupClient,
-      // The squad-sweep workflow ingests standing rosters via
-      // IngestFootballSquadLists and resolves provider team ids to canonical
-      // btl_football_team_* ids through identity. Both clients must reach the
-      // workflow deps or every team skips as `game_service_not_wired` (and an
-      // unresolved canonical id leaves team_squad_rosters unfindable by
-      // GetTeamSquad). gameServiceLookupClient is a FootballGameBridgeClient,
-      // which is a superset of FootballGameIngestClient.
-      gameService: gameServiceLookupClient,
-      // PF-GW1's provider-fixture-results workflow calls
-      // IngestProviderFixtureResults, which §3.4 serves only from the
-      // game-service-profile-jobs Deployment — a different target from
-      // gameServiceLookupClient/gameService above.
-      gameServiceJobs: gameServiceJobsClient,
-      // The statsbomb-backfill workflow resolves a provider fixture id to the
-      // canonical BTL game id via LookupGameByFixture before ingesting
-      // occurrences. Same FootballGameBridgeClient (superset of the lookup
-      // client) the match-concluded bridge uses.
-      gameLookup: gameServiceLookupClient,
-      identity: identityClient,
-      providerEnrichmentIngest: gameServiceLookupClient,
-      enrichmentLimiter,
-      workflowStateStore,
-      workflowLogger: (entry) => {
-        console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
-      },
-    }
+    workerOptions
   );
 
   response.writeHead(workerResponse.status, workerResponse.headers);

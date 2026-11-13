@@ -116,7 +116,20 @@ export interface CompetitionEntry {
    * against live data without touching workflow code.
    */
   readonly verifiedFixtureIds?: readonly string[];
+  /**
+   * Provider enrichment class (mega-spec GW-5). `none` skips every
+   * enrichment dataset for the competition, including the pre-match
+   * predictions, head-to-head and venue pulls (owner D3, Friendlies). Unset
+   * means `full`.
+   */
+  readonly enrichment?: CompetitionEnrichmentClass;
 }
+
+export type CompetitionEnrichmentClass = 'full' | 'continental' | 'cup' | 'none';
+
+/** A competition's enrichment class, `full` when unset. */
+export const competitionEnrichmentClass = (entry: CompetitionEntry): CompetitionEnrichmentClass =>
+  entry.enrichment ?? 'full';
 
 export type DegradeAction =
   | 'continue'
@@ -1185,7 +1198,17 @@ export type ProviderEnrichmentDataset =
   | 'team-transfers'
   | 'trophies'
   | 'team-season-stats'
-  | 'team-coaches';
+  | 'team-coaches'
+  | 'fixture-predictions'
+  | 'head-to-head'
+  | 'venue-detail';
+
+/**
+ * A name in `GAMEWIRE_ENRICHMENT_DATASETS` that is not a dataset of its own:
+ * it turns on coach trophies inside the `trophies` run (each team in the
+ * week's partition also gets its coaches' trophies, one call per team).
+ */
+export const COACH_TROPHIES_SWITCH = 'coach-trophies';
 
 /**
  * Modes after parsing. The wire also accepts the spec's `auto` and `dirty`,
@@ -1242,6 +1265,14 @@ export interface ProviderEnrichmentInput {
    * a sentinel season.
    */
   readonly allowUncatalogued?: boolean;
+  /**
+   * `fixture-predictions` and `head-to-head`: API-Football fixture ids.
+   * Replaces the default scope (catalogue fixtures kicking off within 48h).
+   * A named fixture must still be in a cached catalogue fixture list.
+   */
+  readonly fixtureIds?: readonly string[];
+  /** `venue-detail`: API-Football venue ids. Replaces the default scope. */
+  readonly venueIds?: readonly string[];
   /** Ignore stored cursors and start every league-season from page 1. */
   readonly reset?: boolean;
   /** Plan only: resolve targets and cursors, make no provider calls and no writes. */

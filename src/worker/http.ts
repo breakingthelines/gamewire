@@ -477,7 +477,7 @@ const workflowNameFromPath = (pathname: string): WorkflowName => {
   return 'daily-anchor';
 };
 
-const buildWorkflowDeps = (
+export const buildWorkflowDeps = (
   options: WorkerHttpHandlerOptions,
   cfg: GamewireWorkerConfig
 ): WorkflowDeps | undefined => {
@@ -787,7 +787,15 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   const playerIds = parseEnrichmentIdList(body.playerIds);
   const coachIds = parseEnrichmentIdList(body.coachIds);
   const teamIds = parseEnrichmentIdList(body.teamIds);
-  if (playerIds === null || coachIds === null || teamIds === null) {
+  const fixtureIds = parseEnrichmentIdList(body.fixtureIds);
+  const venueIds = parseEnrichmentIdList(body.venueIds);
+  if (
+    playerIds === null ||
+    coachIds === null ||
+    teamIds === null ||
+    fixtureIds === null ||
+    venueIds === null
+  ) {
     return { ok: false, reason: 'invalid_ids' };
   }
   if (
@@ -797,7 +805,9 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       dataset !== 'team-transfers' &&
       dataset !== 'team-coaches' &&
       dataset !== 'trophies' &&
-      dataset !== 'team-season-stats')
+      dataset !== 'team-season-stats') ||
+    (fixtureIds && dataset !== 'fixture-predictions' && dataset !== 'head-to-head') ||
+    (venueIds && dataset !== 'venue-detail')
   ) {
     return { ok: false, reason: 'ids_not_used_by_dataset' };
   }
@@ -828,7 +838,9 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       dataset !== 'team-season-stats' &&
       !playerIds?.length &&
       !coachIds?.length &&
-      !teamIds?.length
+      !teamIds?.length &&
+      !fixtureIds?.length &&
+      !venueIds?.length
     ) {
       // `team-season-stats` `full` is every catalogue domestic team (spec GW-6).
       return { ok: false, reason: 'full_mode_needs_ids' };
@@ -851,6 +863,8 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       playerIds,
       coachIds,
       teamIds,
+      fixtureIds,
+      venueIds,
       partition,
       allowUncatalogued: asBoolean(body.allowUncatalogued),
       reset: asBoolean(body.reset),

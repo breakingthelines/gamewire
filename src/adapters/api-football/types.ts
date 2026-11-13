@@ -39,6 +39,18 @@ export interface ApiFootballFixtureRef {
     readonly name?: string | null;
     readonly city?: string | null;
   } | null;
+  /**
+   * Referee as the provider reports it, e.g. "C. Pereira" or
+   * "Michael Oliver, England". Null until one is appointed. Stored raw.
+   */
+  readonly referee?: string | null;
+  /**
+   * Unix seconds at which each half kicked off. Null until that half starts.
+   */
+  readonly periods?: {
+    readonly first?: number | null;
+    readonly second?: number | null;
+  } | null;
 }
 
 export interface ApiFootballLeagueRef {
