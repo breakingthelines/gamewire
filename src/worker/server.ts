@@ -54,6 +54,10 @@ import {
   collectVerifiedFixtureIds,
   runPreMatchEnrichment,
 } from '../workflows/index.js';
+import {
+  ENABLED_GATED_COMPETITION_KEYS,
+  unknownGatedCompetitionKeys,
+} from '../workflows/competitions.js';
 
 interface ReadBodyResult {
   readonly body: unknown;
@@ -305,6 +309,17 @@ const gameServiceJobsClient: GameServiceProfileJobsClient | undefined = config.g
   : undefined;
 
 console.log(`[gamewire-worker] game-service-profile-jobs target: ${config.gameServiceJobsUrl}`);
+console.log(
+  `[gamewire-worker] competitions: ${STEADY_STATE_COMPETITIONS.length}; gated on: ${
+    [...ENABLED_GATED_COMPETITION_KEYS].join(',') || 'none'
+  }`
+);
+const unknownGated = unknownGatedCompetitionKeys(ENABLED_GATED_COMPETITION_KEYS);
+if (unknownGated.length > 0) {
+  console.warn(
+    `[gamewire-worker] GAMEWIRE_GATED_COMPETITIONS names no gated competition: ${unknownGated.join(',')}`
+  );
+}
 
 /**
  * Bridge callback handed to the ingestion loop. Reads fixture-scoped provider
