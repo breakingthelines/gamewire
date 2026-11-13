@@ -61,7 +61,7 @@ const WEEKEND_AND_MIDWEEK: MatchdayCalendar = [
  * `NO_LIVE_INGESTION_ALLOWLIST` below for how any future exception must be
  * declared.
  */
-export const COMPETITIONS: readonly CompetitionEntry[] = [
+export const CATALOGUE: readonly CompetitionEntry[] = [
   {
     key: 'premier-league',
     label: 'Premier League',
@@ -385,6 +385,181 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
     liveIngestion: true,
     steadyStateSweep: true,
   },
+
+  // API-Football Mega leagues (mega-spec GW-5). Gated: each stays off until
+  // its key is in GAMEWIRE_GATED_COMPETITIONS, so this ships dark and the
+  // leagues switch on one at a time. Identity (v0.48.0) must be live first:
+  // a season binding is decided the first time game-service sees the season.
+  //
+  // Every calendar is null. MLS and Liga MX kick off overnight UTC; Nations
+  // League and Friendlies follow FIFA windows; Libertadores plays Tue-Thu
+  // evenings in South America; the European second tiers, the Scottish
+  // Premiership, Süper Lig and the Saudi Pro League are unaudited, and a null
+  // calendar only costs hourly sweeps.
+  //
+  // Seasons: 2026 is the current provider season for all twelve. MLS and
+  // Libertadores run on the calendar year; Liga MX's 2026 season started on
+  // 2026-07-17 (Apertura, then Clausura).
+  {
+    key: 'uefa-nations-league',
+    label: 'UEFA Nations League',
+    country: 'International',
+    apiFootballLeagueId: 5,
+    season: 2026,
+    calendar: null,
+    tier: 'international',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'continental',
+    gated: true,
+  },
+  {
+    key: 'international-friendlies',
+    label: 'International Friendlies',
+    country: 'International',
+    apiFootballLeagueId: 10,
+    season: 2026,
+    // Owner D3: no enrichment, and platform keeps these games out of the
+    // games sitemap. The provider league also carries U21, U19 and club
+    // friendlies, so switch it on last.
+    calendar: null,
+    tier: 'international',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'none',
+    gated: true,
+  },
+  {
+    key: 'mls',
+    label: 'Major League Soccer',
+    country: 'USA',
+    apiFootballLeagueId: 253,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'scottish-premiership',
+    label: 'Scottish Premiership',
+    country: 'Scotland',
+    apiFootballLeagueId: 179,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'saudi-pro-league',
+    label: 'Saudi Pro League',
+    country: 'Saudi Arabia',
+    apiFootballLeagueId: 307,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'ligue-2',
+    label: 'Ligue 2',
+    country: 'France',
+    apiFootballLeagueId: 62,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'serie-b',
+    label: 'Serie B',
+    country: 'Italy',
+    apiFootballLeagueId: 136,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: '2-bundesliga',
+    label: '2. Bundesliga',
+    country: 'Germany',
+    apiFootballLeagueId: 79,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'segunda-division',
+    label: 'LaLiga 2',
+    country: 'Spain',
+    apiFootballLeagueId: 141,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'super-lig',
+    label: 'Süper Lig',
+    country: 'Turkey',
+    apiFootballLeagueId: 203,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
+  {
+    key: 'copa-libertadores',
+    label: 'Copa Libertadores',
+    country: 'South America',
+    apiFootballLeagueId: 13,
+    season: 2026,
+    // Continental club cup: the same tier as the UEFA club competitions.
+    calendar: null,
+    tier: 'european',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'continental',
+    gated: true,
+  },
+  {
+    key: 'liga-mx',
+    label: 'Liga MX',
+    country: 'Mexico',
+    apiFootballLeagueId: 262,
+    season: 2026,
+    calendar: null,
+    tier: 'domestic-league',
+    liveIngestion: true,
+    steadyStateSweep: true,
+    enrichment: 'full',
+    gated: true,
+  },
 ];
 
 /**
@@ -398,6 +573,49 @@ export const COMPETITIONS: readonly CompetitionEntry[] = [
  * enforces this.
  */
 export const NO_LIVE_INGESTION_ALLOWLIST: ReadonlySet<string> = new Set([]);
+
+/** Keys of the gated catalogue entries (switched on by `GAMEWIRE_GATED_COMPETITIONS`). */
+export const GATED_COMPETITION_KEYS: readonly string[] = CATALOGUE.filter((c) => c.gated).map(
+  (c) => c.key
+);
+
+/** Parses `GAMEWIRE_GATED_COMPETITIONS`: a comma list of catalogue keys. */
+export const parseGatedCompetitionKeys = (value: string | undefined): ReadonlySet<string> =>
+  new Set(
+    (value ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter((part) => part !== '')
+  );
+
+/**
+ * The catalogue as this process runs it: every ungated entry, plus the gated
+ * entries whose key is in `enabledKeys`. A key that names no gated entry is
+ * ignored; `unknownGatedCompetitionKeys` reports it.
+ */
+export const selectCompetitions = (
+  catalogue: readonly CompetitionEntry[],
+  enabledKeys: ReadonlySet<string>
+): readonly CompetitionEntry[] =>
+  catalogue.filter((entry) => entry.gated !== true || enabledKeys.has(entry.key));
+
+/** Keys in `enabledKeys` that are not gated catalogue entries (typos, retired keys). */
+export const unknownGatedCompetitionKeys = (enabledKeys: ReadonlySet<string>): readonly string[] =>
+  [...enabledKeys].filter((key) => !GATED_COMPETITION_KEYS.includes(key));
+
+/** Gated keys switched on in this process, read once at startup. */
+export const ENABLED_GATED_COMPETITION_KEYS: ReadonlySet<string> = parseGatedCompetitionKeys(
+  process.env.GAMEWIRE_GATED_COMPETITIONS
+);
+
+/**
+ * The competitions this process covers. Every consumer reads this or a list
+ * derived from it, so a gated entry that is off is invisible everywhere.
+ */
+export const COMPETITIONS: readonly CompetitionEntry[] = selectCompetitions(
+  CATALOGUE,
+  ENABLED_GATED_COMPETITION_KEYS
+);
 
 export const COMPETITIONS_BY_KEY: ReadonlyMap<string, CompetitionEntry> = new Map(
   COMPETITIONS.map((entry) => [entry.key, entry])

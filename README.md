@@ -117,6 +117,12 @@ The per-minute buckets live in each worker process. Prod and staging share one
 API-Football key, so each gets its own full set of minute ceilings; staging needs
 its own lower minute caps before the live tick gets faster.
 
+The competition catalogue is `src/workflows/competitions.ts`. An entry marked
+`gated: true` is off until its key is listed in `GAMEWIRE_GATED_COMPETITIONS`
+(comma list, default empty). Off, it is missing from every list the live loop,
+sweeps and enrichment read. The twelve API-Football Mega leagues ship gated, and
+the worker logs which gated keys are on at startup.
+
 Provider enrichment runs through `POST /workflows/provider-enrichment`. A
 dataset runs only when `GAMEWIRE_ENRICHMENT_DATASETS` names it; the default is
 empty, so nothing runs. Calls are `background`, held to

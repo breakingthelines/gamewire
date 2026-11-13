@@ -123,6 +123,14 @@ export interface CompetitionEntry {
    * means `full`.
    */
   readonly enrichment?: CompetitionEnrichmentClass;
+  /**
+   * A gated entry is in the catalogue but switched off until its key is
+   * listed in `GAMEWIRE_GATED_COMPETITIONS` (comma list). Off, it is absent
+   * from `COMPETITIONS` and every list derived from it, so nothing polls,
+   * sweeps or enriches it. This is how a new league deploys dark (mega-spec
+   * GW-5): the image ships first, then the env switches each league on.
+   */
+  readonly gated?: boolean;
 }
 
 export type CompetitionEnrichmentClass = 'full' | 'continental' | 'cup' | 'none';
