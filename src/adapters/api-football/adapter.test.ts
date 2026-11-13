@@ -1079,6 +1079,52 @@ describe('API-Football match-stats mapping', () => {
     expect(scoredByTeam.get('203')).toBe(1);
   });
 
+  // Fixture 1557450 (Chelsea, Premier League 2026-27): the provider sent
+  // substitute: false for all 20 Chelsea players. Quenda came on for 1
+  // minute; Subuloye never played.
+  it('claims no start for a team whose substitute flags are all false', () => {
+    const player = (id: number, name: string, minutes: number, substitute: boolean) => ({
+      player: { id, name },
+      statistics: [{ games: { minutes, substitute, rating: minutes > 0 ? '6.5' : '0' } }],
+    });
+    const chelsea = [
+      ...Array.from({ length: 11 }, (_, i) => player(1000 + i, `Starter ${i}`, 90, false)),
+      player(419582, 'Geovany Quenda', 1, false),
+      player(2000, 'Marcus Subuloye', 0, false),
+    ];
+    const wolves = [
+      ...Array.from({ length: 11 }, (_, i) => player(3000 + i, `Wolves ${i}`, 90, false)),
+      player(4000, 'Wolves Sub', 20, true),
+      player(4001, 'Wolves Unused', 0, true),
+    ];
+    const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
+      replayId: 'live:player-match-stats:1557450',
+      resourceId: '1557450',
+      gameId: 'btl_football_game_g1557450',
+      envelope: {
+        response: [
+          { team: { id: 49, name: 'Chelsea' }, players: chelsea },
+          { team: { id: 39, name: 'Wolves' }, players: wolves },
+        ],
+      },
+    });
+    const byId = new Map(
+      request.playerStats.map((line) => [line.playerResolution?.providerRef?.providerId, line])
+    );
+    // Chelsea: 13 "starters" is not a lineup; nobody is a start.
+    expect(byId.get('1000')?.isStarter).toBe(false);
+    expect(byId.get('1000')?.role).toBe('SUB');
+    expect(byId.get('419582')?.isStarter).toBe(false);
+    expect(byId.get('419582')?.role).toBe('SUB');
+    expect(byId.get('2000')?.isStarter).toBe(false);
+    expect(byId.get('2000')?.role).toBe('UNUSED');
+    // Wolves: eleven starters, flags kept as sent.
+    expect(byId.get('3000')?.isStarter).toBe(true);
+    expect(byId.get('3000')?.role).toBe('STARTER');
+    expect(byId.get('4000')?.role).toBe('SUB');
+    expect(byId.get('4001')?.role).toBe('UNUSED');
+  });
+
   it('skips player entries with no statistics block', () => {
     const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
       replayId: 'live:player-match-stats:1917',
