@@ -44,7 +44,13 @@
  * This workflow does NOT change the steady-state daily-anchor/hourly cron
  * — it is a separate, on-demand endpoint.
  */
+import { create } from '@bufbuild/protobuf';
+
+import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
+import { ResolveRequestSchema } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
+
 import {
+  API_FOOTBALL_PROVIDER_ID,
   apiFootballEventPath,
   apiFootballFixturePath,
   apiFootballFixturePlayersPath,
@@ -58,6 +64,7 @@ import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './deg
 import type {
   DegradeAction,
   DegradeFlag,
+  SeasonBackfillDryRunTarget,
   SeasonBackfillInput,
   SeasonBackfillOutput,
   SeasonBackfillTarget,
@@ -92,6 +99,17 @@ const TEAM_STATS_WORKLOAD: IngestionWorkload = 'team-match-stats';
 const PLAYER_STATS_WORKLOAD: IngestionWorkload = 'player-match-stats';
 const STANDINGS_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 const SEASON_FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
+/**
+ * A dry run reads the season list under a workload outside the ingest bridge
+ * (`BRIDGE_WORKLOADS` in ingestion.ts), so the list mints no games. PF-GW1
+ * uses this workload for the same reason.
+ */
+const DRY_RUN_FIXTURES_WORKLOAD: IngestionWorkload = 'provider-fixture-results';
+
+/** Standings + season list, once per target. */
+const CALLS_PER_TARGET = 2;
+/** Per-fixture pulls: detail, events, lineups, team stats, player stats. */
+const CALLS_PER_FIXTURE = 5;
 
 /**
  * Finalised provider statuses. Only these fixtures carry a settled
@@ -159,6 +177,10 @@ export const seasonBackfillWorkflow = async (
 
   const targets = resolveTargets(input, deps);
 
+  if (input.dryRun) {
+    return dryRunWorkflow({ input, deps, targets, startedAt, maxCallsPerRun, log, clock });
+  }
+
   log({
     event: 'season_backfill.started',
     workflow: 'season-backfill',
@@ -191,6 +213,8 @@ export const seasonBackfillWorkflow = async (
       cache,
       budget,
       reset: input.reset ?? false,
+      skipPlayerStats: input.skipPlayerStats ?? false,
+      bypassCache: input.bypassCache ?? false,
       log,
     });
     targetResults.push(result.summary);
@@ -259,6 +283,8 @@ interface BackfillTargetArgs {
   readonly cache: ProviderCache;
   readonly budget: RunBudget;
   readonly reset: boolean;
+  readonly skipPlayerStats: boolean;
+  readonly bypassCache: boolean;
   readonly log: NonNullable<WorkflowDeps['logger']>;
 }
 
@@ -466,6 +492,8 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       deps,
       accumulate,
       currentMode: mode,
+      skipPlayerStats: args.skipPlayerStats,
+      bypassCache: args.bypassCache,
     });
 
     index += 1;
@@ -498,6 +526,10 @@ interface ProcessFixtureArgs {
     currentMode: DegradeAction
   ) => DegradeAction;
   readonly currentMode: DegradeAction;
+  /** Skip the player stats pull (four calls a fixture, no player rows). */
+  readonly skipPlayerStats?: boolean;
+  /** Keep the per-fixture payloads out of the shared provider cache. */
+  readonly bypassCache?: boolean;
 }
 
 /**
@@ -513,12 +545,14 @@ interface ProcessFixtureArgs {
 const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> => {
   const { fixtureId, deps, accumulate } = args;
   let mode = args.currentMode;
+  const cache = args.bypassCache ? ('bypass' as const) : undefined;
 
   const detailResult = await deps.ingestion.fetchWorkload({
     priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: FIXTURE_DETAIL_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixturePath(fixtureId),
+    cache,
   });
   mode = accumulate(detailResult, FIXTURE_DETAIL_WORKLOAD, fixtureId, mode);
   if (mode === 'abort') {
@@ -530,6 +564,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
     workload: EVENTS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballEventPath(fixtureId),
+    cache,
   });
   mode = accumulate(eventsResult, EVENTS_WORKLOAD, fixtureId, mode);
   if (mode === 'abort') {
@@ -541,6 +576,7 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
     workload: LINEUPS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballLineupPath(fixtureId),
+    cache,
   });
   mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, fixtureId, mode);
   if (mode === 'abort') {
@@ -552,9 +588,10 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
     workload: TEAM_STATS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixtureStatisticsPath(fixtureId),
+    cache,
   });
   mode = accumulate(teamStatsResult, TEAM_STATS_WORKLOAD, fixtureId, mode);
-  if (mode === 'abort') {
+  if (mode === 'abort' || args.skipPlayerStats) {
     return mode;
   }
 
@@ -563,10 +600,197 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> 
     workload: PLAYER_STATS_WORKLOAD,
     resourceId: fixtureId,
     path: apiFootballFixturePlayersPath(fixtureId),
+    cache,
   });
   mode = accumulate(playerStatsResult, PLAYER_STATS_WORKLOAD, fixtureId, mode);
 
   return mode;
+};
+
+interface DryRunArgs {
+  readonly input: SeasonBackfillInput;
+  readonly deps: WorkflowDeps;
+  readonly targets: readonly ResolvedTarget[];
+  readonly startedAt: Date;
+  readonly maxCallsPerRun: number;
+  readonly log: NonNullable<WorkflowDeps['logger']>;
+  readonly clock: () => Date;
+}
+
+/**
+ * Plan a backfill without writing anything. Each target costs one provider
+ * call: the season list, read under {@link DRY_RUN_FIXTURES_WORKLOAD} with the
+ * cache bypassed, so no game is minted and nothing is cached. The cursor is
+ * not read or written. Every distinct team in the list is resolved through
+ * identity (no provider call) and the misses are reported: those teams would
+ * land on `provider:api-football:team:<id>` ids in a real run.
+ */
+const dryRunWorkflow = async (args: DryRunArgs): Promise<SeasonBackfillOutput> => {
+  const { input, deps, targets, startedAt, maxCallsPerRun, log, clock } = args;
+  const perFixture = input.skipPlayerStats ? CALLS_PER_FIXTURE - 1 : CALLS_PER_FIXTURE;
+  const resolveCache = new Map<string, 'resolved' | 'unresolved' | 'error'>();
+  const results: SeasonBackfillTargetResult[] = [];
+  const degradeFlags: DegradeFlag[] = [];
+  let remaining = maxCallsPerRun;
+  let callsBudgeted = 0;
+  let callsUsed = 0;
+  let finalQuota: ProviderQuotaSnapshot | undefined;
+  let stopped = false;
+
+  for (const target of targets) {
+    if (stopped || remaining <= 0) {
+      results.push({ ...emptyTargetResult(target), complete: false });
+      continue;
+    }
+    const resourceId = `${seasonFixturesResourceId(target.leagueId, target.season)}-dryrun`;
+    const result = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
+      workload: DRY_RUN_FIXTURES_WORKLOAD,
+      resourceId,
+      path: seasonFixturesPath(target.leagueId, target.season),
+      cache: 'bypass',
+    });
+    remaining -= 1;
+    callsBudgeted += 1;
+    if (result.status === 'fetched') {
+      callsUsed += 1;
+    }
+    finalQuota = result.quota;
+    const posture = handleQuotaPosture(result.quota);
+    if (posture.flag) {
+      degradeFlags.push(posture.flag);
+    }
+    const errors = result.error
+      ? [`${DRY_RUN_FIXTURES_WORKLOAD}:${resourceId}:${result.error.message}`]
+      : [];
+    if (posture.action === 'abort' || result.data === undefined) {
+      stopped = posture.action === 'abort';
+      results.push({ ...emptyTargetResult(target), complete: false, errors });
+      continue;
+    }
+
+    const fixturesListed = listedFixtureCount(result.data);
+    const fixturesFinalised = finalisedFixtureIds(result.data).length;
+    const teams = seasonTeams(result.data);
+    const unresolvedTeams: string[] = [];
+    let teamLookupErrors = 0;
+    for (const team of teams) {
+      let outcome = resolveCache.get(team.id);
+      if (outcome === undefined) {
+        outcome = await resolveTeam(deps, team.id);
+        resolveCache.set(team.id, outcome);
+      }
+      if (outcome === 'unresolved') {
+        unresolvedTeams.push(`${team.id}:${team.name}`);
+      } else if (outcome === 'error') {
+        teamLookupErrors += 1;
+      }
+    }
+    const dryRun: SeasonBackfillDryRunTarget = {
+      fixturesListed,
+      fixturesFinalised,
+      plannedCalls: CALLS_PER_TARGET + fixturesFinalised * perFixture,
+      teams: teams.length,
+      unresolvedTeams,
+      teamLookupErrors,
+    };
+    log({
+      event: 'season_backfill.dry_run_target',
+      workflow: 'season-backfill',
+      competition: target.competitionKey,
+      season: target.season,
+      reason: `finalised=${fixturesFinalised} plannedCalls=${dryRun.plannedCalls} unresolvedTeams=${unresolvedTeams.length}`,
+    });
+    results.push({
+      ...emptyTargetResult(target),
+      fixturesDiscovered: fixturesFinalised,
+      complete: true,
+      callsBudgeted: 1,
+      callsUsed: result.status === 'fetched' ? 1 : 0,
+      errors,
+      dryRun,
+    });
+  }
+
+  return {
+    startedAt: startedAt.toISOString(),
+    finishedAt: clock().toISOString(),
+    status: stopped ? 'aborted' : results.every((t) => t.complete) ? 'complete' : 'incomplete',
+    callsBudgeted,
+    callsUsed,
+    fixturesProcessed: 0,
+    targets: results,
+    degradeFlags,
+    finalQuota,
+  };
+};
+
+const emptyTargetResult = (target: ResolvedTarget): SeasonBackfillTargetResult => ({
+  target: targetLabel(target),
+  competition: target.competitionKey,
+  apiFootballLeagueId: target.leagueId,
+  season: target.season,
+  fixturesDiscovered: 0,
+  fixturesProcessed: 0,
+  cursorIndex: 0,
+  complete: false,
+  callsBudgeted: 0,
+  callsUsed: 0,
+  errors: [],
+});
+
+const resolveTeam = async (
+  deps: WorkflowDeps,
+  providerTeamId: string
+): Promise<'resolved' | 'unresolved' | 'error'> => {
+  if (!deps.identity) {
+    return 'error';
+  }
+  try {
+    const response = await deps.identity.resolve(
+      create(ResolveRequestSchema, {
+        entityType: EntityType.TEAM,
+        provider: API_FOOTBALL_PROVIDER_ID,
+        providerId: providerTeamId,
+      })
+    );
+    return response.found && response.entityId ? 'resolved' : 'unresolved';
+  } catch {
+    return 'error';
+  }
+};
+
+const listedFixtureCount = (data: unknown): number =>
+  isRecord(data) && Array.isArray(data.response) ? data.response.length : 0;
+
+/** Distinct home and away teams of a season list, in first-seen order. */
+export const seasonTeams = (data: unknown): readonly { id: string; name: string }[] => {
+  if (!isRecord(data) || !Array.isArray(data.response)) {
+    return [];
+  }
+  const seen = new Map<string, string>();
+  for (const item of data.response) {
+    const teams = isRecord(item) && isRecord(item.teams) ? item.teams : undefined;
+    if (!teams) {
+      continue;
+    }
+    for (const side of [teams.home, teams.away]) {
+      if (!isRecord(side)) {
+        continue;
+      }
+      const id =
+        typeof side.id === 'number' && Number.isFinite(side.id)
+          ? String(side.id)
+          : typeof side.id === 'string'
+            ? side.id.trim()
+            : '';
+      if (id === '' || seen.has(id)) {
+        continue;
+      }
+      seen.set(id, typeof side.name === 'string' ? side.name : '');
+    }
+  }
+  return [...seen].map(([id, name]) => ({ id, name }));
 };
 
 const finalize = (
@@ -804,4 +1028,6 @@ export const __test = {
   FINALISED_STATUSES,
   resolveTargets,
   finalisedFixtureIds,
+  seasonTeams,
+  CALLS_PER_FIXTURE,
 };

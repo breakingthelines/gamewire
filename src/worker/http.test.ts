@@ -654,6 +654,41 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
     expect(targets?.[0]).toMatchObject({ target: 'unit-test:2024', season: 2024 });
   });
 
+  it('passes season-backfill dryRun, skipPlayerStats and bypassCache through', async () => {
+    const { verifier, privateKey } = makeVerifier();
+    const token = signToken(privateKey, defaultServicePayload());
+    const body = {
+      targets: [{ apiFootballLeagueId: 39, season: 2020 }],
+      dryRun: true,
+      skipPlayerStats: true,
+      bypassCache: true,
+    };
+    const response = await handleWorkerRequest(
+      {
+        method: 'POST',
+        pathname: '/workflows/season-backfill',
+        body,
+        rawBody: JSON.stringify(body),
+        headers: { 'btl-auth-context': token },
+      },
+      config,
+      {
+        ingestion: buildIngestion(),
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+      }
+    );
+    expect(response.status).toBe(200);
+    const completed = await finalCompleted(response);
+    const result = completed.result as Record<string, unknown> | undefined;
+    expect(result).toHaveProperty('fixturesProcessed', 0);
+    const targets = result?.targets as Array<Record<string, unknown>> | undefined;
+    expect(targets?.[0]).toMatchObject({
+      season: 2020,
+      dryRun: { fixturesListed: 0, fixturesFinalised: 0, plannedCalls: 2, teams: 0 },
+    });
+  });
+
   it('rejects season-backfill without a valid btl-auth-context', async () => {
     const { verifier } = makeVerifier();
     const response = await handleWorkerRequest(
