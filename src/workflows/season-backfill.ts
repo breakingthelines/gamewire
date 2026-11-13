@@ -232,6 +232,16 @@ export const seasonBackfillWorkflow = async (
         season: target.season,
         reason: 'quota hard cap',
       });
+    } else if (result.action === 'cached-only') {
+      // Soft cap or background daily cap: later targets would only be refused.
+      halted = true;
+      log({
+        event: 'season_backfill.halted',
+        workflow: 'season-backfill',
+        competition: target.competitionKey,
+        season: target.season,
+        reason: 'quota posture cached-only',
+      });
     } else if (budget.remaining <= 0) {
       halted = true;
       log({
@@ -471,6 +481,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
   // budget/quota/crash stop loses at most one fixture's progress.
   let index = cursor.nextIndex;
   const total = cursor.fixtureIds.length;
+  let held = false;
   while (index < total) {
     // Stop at the start of a fixture once the per-run budget is spent or
     // a hard cap aborted us — never mid-fixture, so a checkpoint never
@@ -480,6 +491,11 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
     if (budget.remaining <= 0 || mode === 'abort') {
       break;
     }
+    // Soft cap or background daily cap: the day's provider budget belongs to
+    // live and the scheduled sweeps. Checkpoint and let a later run resume.
+    if (mode === 'cached-only') {
+      break;
+    }
 
     const fixtureId = cursor.fixtureIds[index];
     if (fixtureId === undefined) {
@@ -487,7 +503,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       continue;
     }
 
-    mode = await processFixture({
+    const outcome = await processFixture({
       fixtureId,
       deps,
       accumulate,
@@ -495,12 +511,29 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       skipPlayerStats: args.skipPlayerStats,
       bypassCache: args.bypassCache,
     });
+    mode = outcome.mode;
+    if (outcome.held) {
+      // Not advancing: a refused call means this fixture was not pulled,
+      // and moving the cursor past it would mark it done with no data.
+      held = true;
+      break;
+    }
 
     index += 1;
     fixturesProcessed += 1;
     // Checkpoint after every fixture: the next run resumes exactly here.
     cursor = { ...cursor, nextIndex: index };
     await writeCursor(cache, cursor);
+  }
+
+  if (held) {
+    log({
+      event: 'season_backfill.held',
+      workflow: 'season-backfill',
+      competition: target.competitionKey,
+      season,
+      reason: `call refused at fixture ${index + 1}/${total}; cursor kept there`,
+    });
   }
 
   return finalize(
@@ -542,70 +575,58 @@ interface ProcessFixtureArgs {
  * soft-cap PROVIDER_OUTAGE flip, cache TTLs, and singleflight all apply to
  * the stats pulls exactly as they do to detail/events/lineups.
  */
-const processFixture = async (args: ProcessFixtureArgs): Promise<DegradeAction> => {
+const processFixture = async (args: ProcessFixtureArgs): Promise<FixtureOutcome> => {
   const { fixtureId, deps, accumulate } = args;
   let mode = args.currentMode;
   const cache = args.bypassCache ? ('bypass' as const) : undefined;
+  const steps: readonly { workload: IngestionWorkload; path: string }[] = [
+    { workload: FIXTURE_DETAIL_WORKLOAD, path: apiFootballFixturePath(fixtureId) },
+    { workload: EVENTS_WORKLOAD, path: apiFootballEventPath(fixtureId) },
+    { workload: LINEUPS_WORKLOAD, path: apiFootballLineupPath(fixtureId) },
+    { workload: TEAM_STATS_WORKLOAD, path: apiFootballFixtureStatisticsPath(fixtureId) },
+    ...(args.skipPlayerStats
+      ? []
+      : [{ workload: PLAYER_STATS_WORKLOAD, path: apiFootballFixturePlayersPath(fixtureId) }]),
+  ];
 
-  const detailResult = await deps.ingestion.fetchWorkload({
-    priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: FIXTURE_DETAIL_WORKLOAD,
-    resourceId: fixtureId,
-    path: apiFootballFixturePath(fixtureId),
-    cache,
-  });
-  mode = accumulate(detailResult, FIXTURE_DETAIL_WORKLOAD, fixtureId, mode);
-  if (mode === 'abort') {
-    return mode;
+  for (const step of steps) {
+    const result = await deps.ingestion.fetchWorkload({
+      priority: WORKFLOW_PROVIDER_PRIORITY,
+      workload: step.workload,
+      resourceId: fixtureId,
+      path: step.path,
+      cache,
+    });
+    mode = accumulate(result, step.workload, fixtureId, mode);
+    if (HELD_STATUSES.has(result.status)) {
+      // Quota or the minute limiter refused the call: the fixture was not
+      // pulled. The caller must not advance past it.
+      return { mode, held: true };
+    }
+    if (mode === 'abort') {
+      return { mode, held: false };
+    }
   }
-
-  const eventsResult = await deps.ingestion.fetchWorkload({
-    priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: EVENTS_WORKLOAD,
-    resourceId: fixtureId,
-    path: apiFootballEventPath(fixtureId),
-    cache,
-  });
-  mode = accumulate(eventsResult, EVENTS_WORKLOAD, fixtureId, mode);
-  if (mode === 'abort') {
-    return mode;
-  }
-
-  const lineupsResult = await deps.ingestion.fetchWorkload({
-    priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: LINEUPS_WORKLOAD,
-    resourceId: fixtureId,
-    path: apiFootballLineupPath(fixtureId),
-    cache,
-  });
-  mode = accumulate(lineupsResult, LINEUPS_WORKLOAD, fixtureId, mode);
-  if (mode === 'abort') {
-    return mode;
-  }
-
-  const teamStatsResult = await deps.ingestion.fetchWorkload({
-    priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: TEAM_STATS_WORKLOAD,
-    resourceId: fixtureId,
-    path: apiFootballFixtureStatisticsPath(fixtureId),
-    cache,
-  });
-  mode = accumulate(teamStatsResult, TEAM_STATS_WORKLOAD, fixtureId, mode);
-  if (mode === 'abort' || args.skipPlayerStats) {
-    return mode;
-  }
-
-  const playerStatsResult = await deps.ingestion.fetchWorkload({
-    priority: WORKFLOW_PROVIDER_PRIORITY,
-    workload: PLAYER_STATS_WORKLOAD,
-    resourceId: fixtureId,
-    path: apiFootballFixturePlayersPath(fixtureId),
-    cache,
-  });
-  mode = accumulate(playerStatsResult, PLAYER_STATS_WORKLOAD, fixtureId, mode);
-
-  return mode;
+  return { mode, held: false };
 };
+
+interface FixtureOutcome {
+  readonly mode: DegradeAction;
+  /** A call was refused (quota, background cap, minute limiter, no key); the fixture is not done. */
+  readonly held: boolean;
+}
+
+/**
+ * Statuses that mean the call never got data for a reason that passes
+ * (`denied`: hard or background daily cap; `rate_limited`: minute limiter or
+ * provider throttle; `skipped`: no key or replay mode). A `failed` call
+ * reached the provider and is recorded as an error, and the walk moves on.
+ */
+const HELD_STATUSES: ReadonlySet<IngestionFetchResult['status']> = new Set([
+  'denied',
+  'rate_limited',
+  'skipped',
+]);
 
 interface DryRunArgs {
   readonly input: SeasonBackfillInput;

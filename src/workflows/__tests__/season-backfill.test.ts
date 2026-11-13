@@ -762,3 +762,76 @@ describe('seasonBackfillWorkflow — history options', () => {
     ]);
   });
 });
+
+describe('seasonBackfillWorkflow — refused calls never skip fixtures', () => {
+  let cache: InMemoryProviderCache;
+  beforeEach(() => {
+    cache = new InMemoryProviderCache();
+  });
+
+  it('keeps the cursor on a fixture whose call was refused, then resumes there', async () => {
+    const ingestion = new MockIngestion(cache);
+    ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003]));
+    const real = ingestion.fetchWorkload.getMockImplementation();
+    let refuse = true;
+    ingestion.fetchWorkload.mockImplementation(async (options) => {
+      if (refuse && options.resourceId === '1002' && options.workload === 'events-post-final') {
+        ingestion.calls.push(options);
+        return {
+          status: 'denied',
+          workload: options.workload,
+          resourceId: options.resourceId,
+          cacheKey: 'k',
+          cacheHit: false,
+          cachedOnlyMode: true,
+          quota: baseQuota({ calls: 60_000, backgroundCapReached: true }),
+          fallbackReason: 'PROVIDER_OUTAGE',
+          error: { message: 'Provider quota background_cap reached' },
+        };
+      }
+      return real!(options);
+    });
+
+    const first = await run(ingestion, [COMPETITION_A], {
+      targets: [{ apiFootballLeagueId: 39, season: 2024 }],
+    });
+    expect(first.status).toBe('incomplete');
+    expect(first.targets[0]).toMatchObject({
+      cursorIndex: 1,
+      fixturesProcessed: 1,
+      complete: false,
+    });
+    expect(ingestion.calls.some((c) => c.resourceId === '1003')).toBe(false);
+
+    refuse = false;
+    const second = await run(ingestion, [COMPETITION_A], {
+      targets: [{ apiFootballLeagueId: 39, season: 2024 }],
+    });
+    expect(second.status).toBe('complete');
+    expect(second.targets[0]).toMatchObject({ fixturesProcessed: 2, complete: true });
+    expect(ingestion.fixtureDetailCallsFor('1002')).toBe(2);
+  });
+
+  it('stops at the next fixture once the soft cap posture is reached', async () => {
+    const ingestion = new MockIngestion(cache);
+    ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003]));
+    ingestion.setSeasonFixtures(140, 2024, seasonEnvelope([2001]));
+    // Fixture 1001's last call reports the soft cap.
+    ingestion.quotaFor = (call) =>
+      call.resourceId === '1001' && call.workload === 'player-match-stats'
+        ? baseQuota({ calls: 60_000, posture: 'soft_cap_reached', cachedOnlyMode: true })
+        : baseQuota();
+
+    const result = await run(ingestion, [COMPETITION_A, COMPETITION_B], {
+      targets: [
+        { apiFootballLeagueId: 39, season: 2024 },
+        { apiFootballLeagueId: 140, season: 2024 },
+      ],
+    });
+    expect(result.status).toBe('incomplete');
+    expect(result.targets[0]).toMatchObject({ cursorIndex: 1, complete: false });
+    expect(ingestion.calls.some((c) => c.resourceId === '1002')).toBe(false);
+    // The second target is left alone.
+    expect(result.targets[1]?.callsBudgeted).toBe(0);
+  });
+});
