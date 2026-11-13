@@ -1242,6 +1242,37 @@ describe('team-coaches', () => {
     });
   });
 
+  it('writes a vacant team: every coach, none current, with the fetch time', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/coachs'
+          ? {
+              errors: [],
+              response: [
+                {
+                  id: 25762,
+                  name: 'M. Carrick',
+                  career: [
+                    {
+                      team: { id: 33, name: 'Manchester United' },
+                      start: '2025-08-01',
+                      end: '2026-11-01',
+                    },
+                  ],
+                },
+              ],
+            }
+          : undefined,
+    });
+    const out = await h.run('team-coaches', { teamIds: ['33'] });
+    expect(out.status).toBe('completed');
+    expect(h.coaches).toHaveLength(1);
+    const [row] = h.coaches[0]!.rows;
+    expect(row).toMatchObject({ providerCoachId: '25762', currentProviderTeamId: '' });
+    expect(row!.career[0]).toMatchObject({ endDate: '2026-11-01' });
+    expect(row!.fetchedAt).toBeDefined();
+  });
+
   it('keeps stored profiles on an empty answer, and fails a provider error', async () => {
     const h = harness({
       respond: (req) =>

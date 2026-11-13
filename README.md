@@ -170,11 +170,15 @@ trophies run only for `coachIds` named in the request.
   `penalties_scored` and `penalties_missed`; `form` is copied as sent. A
   completed team keeps a 20h marker.
 - `team-coaches` writes every coach the provider links to the team, former and
-  current, with the whole career. The coach's current team is the open spell
-  that started last (provider careers keep stale open spells); a coach whose
-  spells have all ended has none. game-service serves the team's manager from
-  these rows (`coach_profiles`). An empty answer writes nothing and keeps the
-  stored profiles. A completed team keeps a 20h marker, so the nightly run
+  current, with the whole career. The coach's current team is the spell that
+  started last, when it is still open (provider careers keep stale open
+  spells, so an older open spell never counts); a coach whose latest spell
+  has ended has none. Dates are month-granular. game-service serves the
+  team's manager from these rows (`coach_profiles`), team by team: the spell
+  at the team that started last wins, and when it has ended the post is
+  vacant. A vacancy still writes every coach, so the fresh `fetched_at` tells
+  game-service the team was fetched. An empty answer writes nothing and keeps
+  the stored profiles. A completed team keeps a 20h marker, so the nightly run
   refetches every team: about 414 calls a day.
 
 ```jsonc

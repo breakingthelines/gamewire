@@ -837,27 +837,36 @@ export const apiFootballCoachsTeamPath = (teamId: string): string =>
   `/coachs?team=${encodeURIComponent(teamId)}`;
 
 /**
- * The spell a coach holds now: an open spell (no end date, or an end date
- * after the fetch day) with a team id, the one that started last. Provider
- * careers keep stale open spells (Amorim's Manchester United spell stayed
- * open after Carrick's began), so the latest start wins. A spell with no
- * start date only wins when no open spell has one.
+ * The spell a coach holds now: the spell with a team id that started last,
+ * when it is still open (no end date, or an end date after the fetch day).
+ * Provider careers keep stale open spells, so an open spell counts only when
+ * nothing started after it: Amorim's Manchester United spell stayed open
+ * after he left, and a coach sacked from a later job must not fall back to
+ * an older open one. A spell that starts after the fetch day is an
+ * announced appointment, not yet current, and is skipped. Dates are
+ * month-granular (the 1st), and a spell with no start date ranks below
+ * every dated one.
  */
 export const currentCoachSpell = (
   career: readonly CoachCareerRow[],
   fetchedAtMs: number
 ): CoachCareerRow | undefined => {
   const today = new Date(fetchedAtMs).toISOString().slice(0, 10);
-  let best: CoachCareerRow | undefined;
+  const isOpen = (spell: CoachCareerRow): boolean => spell.endDate === '' || spell.endDate > today;
+  let latest: CoachCareerRow | undefined;
   for (const spell of career) {
-    if (spell.providerTeamId === '' || (spell.endDate !== '' && spell.endDate <= today)) {
+    if (spell.providerTeamId === '' || spell.startDate > today) {
       continue;
     }
-    if (best === undefined || spell.startDate > best.startDate) {
-      best = spell;
+    if (
+      latest === undefined ||
+      spell.startDate > latest.startDate ||
+      (spell.startDate === latest.startDate && isOpen(spell) && !isOpen(latest))
+    ) {
+      latest = spell;
     }
   }
-  return best;
+  return latest !== undefined && isOpen(latest) ? latest : undefined;
 };
 
 /**

@@ -111,7 +111,7 @@ describe('decodeCoachs', () => {
 });
 
 describe('currentCoachSpell', () => {
-  it('takes the open spell that started last', () => {
+  it('takes the latest spell when it is open', () => {
     expect(
       currentCoachSpell([spell('1', '2024-11-01'), spell('2', '2025-08-01')], FETCHED)
         ?.providerTeamId
@@ -133,5 +133,56 @@ describe('currentCoachSpell', () => {
       currentCoachSpell([spell('9', ''), spell('33', '2025-08-01')], FETCHED)?.providerTeamId
     ).toBe('33');
     expect(currentCoachSpell([spell('9', '')], FETCHED)?.providerTeamId).toBe('9');
+  });
+
+  it('does not fall back to a stale open spell when the latest spell has ended', () => {
+    // Open at 1 since 2019 (never closed), then hired and sacked by 2.
+    expect(
+      currentCoachSpell([spell('1', '2019-07-01'), spell('2', '2025-08-01', '2026-11-01')], FETCHED)
+    ).toBeUndefined();
+  });
+
+  it('prefers the open spell when an ended one starts the same month', () => {
+    expect(
+      currentCoachSpell([spell('1', '2026-11-01', '2026-11-01'), spell('2', '2026-11-01')], FETCHED)
+        ?.providerTeamId
+    ).toBe('2');
+  });
+
+  it('skips an appointment that starts after the fetch day', () => {
+    expect(
+      currentCoachSpell([spell('1', '2024-07-01'), spell('2', '2026-12-01')], FETCHED)
+        ?.providerTeamId
+    ).toBe('1');
+  });
+});
+
+describe('decodeCoachs on a vacancy', () => {
+  it('still writes every coach when no one holds an open spell at the team', () => {
+    // The fixture after Carrick's spell ends in November 2026: Amorim's stale
+    // open spell is older than Carrick's, ten Hag's is closed. Every coach is
+    // still written with a fresh fetched_at, which is game-service's evidence
+    // that the team was fetched and that its latest spell has ended.
+    const envelope = load('coachs-team-33.json');
+    const response = envelope.response as Array<{
+      id: number;
+      career: Array<Record<string, unknown>>;
+    }>;
+    const carrick = response.find((coach) => coach.id === 25762)!;
+    carrick.career[0]!.end = '2026-11-01';
+    const decoded = decodeCoachs(envelope, { fetchedAtMs: FETCHED });
+    expect(decoded.rows.map((row) => row.providerCoachId)).toEqual(['1993', '4720', '25762']);
+    const byId = new Map(decoded.rows.map((row) => [row.providerCoachId, row]));
+    expect(byId.get('25762')?.currentProviderTeamId).toBe('');
+    expect(byId.get('25762')?.career[0]).toMatchObject({
+      startDate: '2025-08-01',
+      endDate: '2026-11-01',
+    });
+    // Amorim's own career cannot show he left; game-service settles that at
+    // the team, where Carrick's later spell supersedes his.
+    expect(byId.get('4720')?.currentProviderTeamId).toBe('33');
+    for (const row of decoded.rows) {
+      expect(timestampMs(row.fetchedAt!)).toBe(FETCHED);
+    }
   });
 });
