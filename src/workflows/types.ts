@@ -489,6 +489,14 @@ export interface SeasonBackfillInput {
    */
   readonly skipPlayerStats?: boolean;
   /**
+   * Skip the per-fixture `/fixtures/lineups` pull (one call fewer, no
+   * football_lineups rows). Stored lineups feed the profile jobs' lineup
+   * positions for that season and, as tiebreak evidence, for the season
+   * after it, so a history backfill that must not move any profile position
+   * sets this. Defaults to false.
+   */
+  readonly skipLineups?: boolean;
+  /**
    * Do not read or write the shared provider cache for the per-fixture pulls.
    * A history backfill walks each fixture once, so caching gains nothing, and
    * a fixture's detail plus events sit in the shared Redis for 6h (about

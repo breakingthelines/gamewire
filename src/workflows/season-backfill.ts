@@ -214,6 +214,7 @@ export const seasonBackfillWorkflow = async (
       budget,
       reset: input.reset ?? false,
       skipPlayerStats: input.skipPlayerStats ?? false,
+      skipLineups: input.skipLineups ?? false,
       bypassCache: input.bypassCache ?? false,
       log,
     });
@@ -294,6 +295,7 @@ interface BackfillTargetArgs {
   readonly budget: RunBudget;
   readonly reset: boolean;
   readonly skipPlayerStats: boolean;
+  readonly skipLineups: boolean;
   readonly bypassCache: boolean;
   readonly log: NonNullable<WorkflowDeps['logger']>;
 }
@@ -509,6 +511,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
       accumulate,
       currentMode: mode,
       skipPlayerStats: args.skipPlayerStats,
+      skipLineups: args.skipLineups,
       bypassCache: args.bypassCache,
     });
     mode = outcome.mode;
@@ -561,6 +564,8 @@ interface ProcessFixtureArgs {
   readonly currentMode: DegradeAction;
   /** Skip the player stats pull (four calls a fixture, no player rows). */
   readonly skipPlayerStats?: boolean;
+  /** Skip the lineups pull (no football_lineups rows). */
+  readonly skipLineups?: boolean;
   /** Keep the per-fixture payloads out of the shared provider cache. */
   readonly bypassCache?: boolean;
 }
@@ -582,7 +587,9 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<FixtureOutcome>
   const steps: readonly { workload: IngestionWorkload; path: string }[] = [
     { workload: FIXTURE_DETAIL_WORKLOAD, path: apiFootballFixturePath(fixtureId) },
     { workload: EVENTS_WORKLOAD, path: apiFootballEventPath(fixtureId) },
-    { workload: LINEUPS_WORKLOAD, path: apiFootballLineupPath(fixtureId) },
+    ...(args.skipLineups
+      ? []
+      : [{ workload: LINEUPS_WORKLOAD, path: apiFootballLineupPath(fixtureId) }]),
     { workload: TEAM_STATS_WORKLOAD, path: apiFootballFixtureStatisticsPath(fixtureId) },
     ...(args.skipPlayerStats
       ? []
@@ -648,7 +655,8 @@ interface DryRunArgs {
  */
 const dryRunWorkflow = async (args: DryRunArgs): Promise<SeasonBackfillOutput> => {
   const { input, deps, targets, startedAt, maxCallsPerRun, log, clock } = args;
-  const perFixture = input.skipPlayerStats ? CALLS_PER_FIXTURE - 1 : CALLS_PER_FIXTURE;
+  const perFixture =
+    CALLS_PER_FIXTURE - (input.skipPlayerStats ? 1 : 0) - (input.skipLineups ? 1 : 0);
   const resolveCache = new Map<string, 'resolved' | 'unresolved' | 'error'>();
   const results: SeasonBackfillTargetResult[] = [];
   const degradeFlags: DegradeFlag[] = [];

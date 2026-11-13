@@ -652,6 +652,29 @@ describe('seasonBackfillWorkflow — history options', () => {
     expect(result.callsBudgeted).toBe(2 + 2 * 4);
   });
 
+  it('skipLineups drops the lineups pull and the dry run counts it', async () => {
+    const ingestion = new MockIngestion(cache);
+    ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001]));
+    const result = await run(ingestion, [COMPETITION_A], {
+      targets: [{ apiFootballLeagueId: 39, season: 2024 }],
+      skipLineups: true,
+      skipPlayerStats: true,
+    });
+    expect(ingestion.calls.filter((c) => c.resourceId === '1001').map((c) => c.workload)).toEqual([
+      'fixture-detail-fullTime',
+      'events-post-final',
+      'team-match-stats',
+    ]);
+    expect(result.callsBudgeted).toBe(2 + 3);
+
+    const dry = await run(new MockIngestion(new InMemoryProviderCache()), [COMPETITION_A], {
+      targets: [{ apiFootballLeagueId: 39, season: 2024 }],
+      dryRun: true,
+      skipLineups: true,
+    });
+    expect(dry.targets[0]?.dryRun?.plannedCalls).toBe(2);
+  });
+
   it('bypassCache keeps per-fixture pulls out of the cache, not the season list', async () => {
     const ingestion = new MockIngestion(cache);
     ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001]));
