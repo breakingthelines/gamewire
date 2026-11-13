@@ -161,3 +161,25 @@ export class RedisProviderCache implements ProviderCache {
     return `${this.#namespace}:cache:${key}`;
   }
 }
+
+/** Anything that can send a raw Redis command, such as `Bun.redis`. */
+export interface RedisCommandClient {
+  send(command: string, args: string[]): Promise<unknown>;
+}
+
+/** Adapt a raw command sender (`Bun.redis`) to {@link RedisLikeClient}. */
+export const createRedisLikeClient = (sender: RedisCommandClient): RedisLikeClient => ({
+  async get(key) {
+    const raw = await sender.send('GET', [key]);
+    return raw === null || raw === undefined ? null : String(raw);
+  },
+  async set(key, value, options) {
+    return sender.send('SET', [key, value, 'EX', String(options.EX)]);
+  },
+  async incrBy(key, by) {
+    return Number(await sender.send('INCRBY', [key, String(by)]));
+  },
+  async expire(key, ttlSeconds) {
+    return Number(await sender.send('EXPIRE', [key, String(ttlSeconds)]));
+  },
+});

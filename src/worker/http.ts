@@ -15,6 +15,7 @@ import type {
   GameServiceProfileJobsClient,
   ProviderEnrichmentIngestClient,
 } from './clients/game-service.js';
+import type { ProviderCache } from './cache.js';
 import type { ProviderMinuteLimiter } from './minute-limiter.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
@@ -329,6 +330,8 @@ export interface WorkerHttpHandlerOptions {
   readonly enrichmentLimiter?: ProviderMinuteLimiter;
   /** Sleep used by the provider-enrichment workflow. Tests inject a fake. */
   readonly enrichmentSleep?: (ms: number) => Promise<void>;
+  /** Durable workflow state (the season-backfill cursor). Redis in production. */
+  readonly workflowStateStore?: ProviderCache;
   /**
    * btl-auth-context verifier built at boot via
    * {@link createAuthContextVerifier}. Required for `/workflows/*`
@@ -497,6 +500,7 @@ const buildWorkflowDeps = (
       minuteCap: cfg.enrichmentMinuteCap,
       sleep: options.enrichmentSleep,
     },
+    stateStore: options.workflowStateStore,
   };
 };
 

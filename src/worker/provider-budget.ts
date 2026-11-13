@@ -49,13 +49,15 @@ export function createProviderBudget(
     caps: config.providerMinuteCaps,
     store: options.minuteStore,
     clock: options.minuteClock,
+    smoothBackground: true,
   });
   const summary =
     `[gamewire-worker] provider budget hardCap=${config.providerHardCap} ` +
     `softCap=${config.providerSoftCap} backgroundDailyCap=${quota.backgroundDailyCap} ` +
     `planCeiling=${config.providerPlanCeiling} quotaSource=${quota.quotaSource} ` +
     `minuteCaps=live:${minuteLimiter.caps.live},near-live:${minuteLimiter.caps['near-live']},` +
-    `background:${minuteLimiter.caps.background} minuteStore=${minuteLimiter.backend} ` +
+    `background:${minuteLimiter.caps.background} ` +
+    `backgroundPerSecond=${minuteLimiter.backgroundSecondCap} minuteStore=${minuteLimiter.backend} ` +
     `requestTimeoutMs=${config.providerRequestTimeoutMs}`;
   const warnings: string[] = [];
   if (

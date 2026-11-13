@@ -33,8 +33,11 @@
  * run skips fixtures it already processed instead of re-walking them.
  *
  * Resumability + throttling. The season fixture list and a `nextIndex`
- * are persisted in the shared `ProviderCache` (Redis in production) under
- * `backfill:cursor:{league}:{season}`. Each invocation processes fixtures
+ * are persisted in `deps.stateStore` (Redis in production, key
+ * `gamewire:cache:backfill:cursor:{league}:{season}`), falling back to the
+ * ingestion cache when no state store is wired. The ingestion cache is process
+ * memory in production, so before the state store a pod restart dropped every
+ * cursor and the next run walked each season again from fixture 0. Each invocation processes fixtures
  * until it either finishes the season or hits `maxCallsPerRun` (the
  * per-run throttle that stops one backfill from draining the day's whole
  * provider quota and starving the live loops), then checkpoints and
@@ -106,6 +109,20 @@ const SEASON_FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
  */
 const DRY_RUN_FIXTURES_WORKLOAD: IngestionWorkload = 'provider-fixture-results';
 
+/**
+ * Back-off before each retry of a call the provider or the minute limiter
+ * refused for rate (`rate_limited`). The provider refuses short bursts with
+ * "too many requests ... per minute", so a refusal says more about the
+ * second it landed in than about the minute: retry soon, then back off. After
+ * the last wait the fixture is held and the cursor stays on it.
+ */
+const RATE_LIMIT_BACKOFF_MS: readonly number[] = [2_000, 5_000, 15_000, 30_000, 60_000];
+
+const defaultSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 /** Standings + season list, once per target. */
 const CALLS_PER_TARGET = 2;
 /** Per-fixture pulls: detail, events, lineups, team stats, player stats. */
@@ -173,7 +190,7 @@ export const seasonBackfillWorkflow = async (
     input.maxCallsPerRun && input.maxCallsPerRun > 0
       ? input.maxCallsPerRun
       : DEFAULT_MAX_CALLS_PER_RUN;
-  const cache = deps.ingestion.cache;
+  const cache = deps.stateStore ?? deps.ingestion.cache;
 
   const targets = resolveTargets(input, deps);
 
@@ -317,17 +334,25 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
   let fixturesProcessed = 0;
   let lastQuota: ProviderQuotaSnapshot | undefined;
   let mode: DegradeAction = 'continue' as DegradeAction;
+  let rateLimitRetries = 0;
 
   const accumulate = (
     result: IngestionFetchResult,
     workload: IngestionWorkload,
     resourceId: string,
-    currentMode: DegradeAction
+    currentMode: DegradeAction,
+    options: AccumulateOptions = {}
   ): DegradeAction => {
     callsBudgeted += 1;
     budget.remaining -= 1;
     if (result.status === 'fetched') {
       callsUsed += 1;
+    }
+    if (options.quiet) {
+      // A refused attempt that will be retried: it spends budget, but it is
+      // not an error of the run and raises no degrade flag.
+      rateLimitRetries += 1;
+      return currentMode;
     }
     if (result.error) {
       errors.push(`${workload}:${resourceId}:${result.error.message}`);
@@ -361,7 +386,7 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
     workflow: 'season-backfill',
     competition: target.competitionKey,
     season,
-    reason: cursor ? `resume@${cursor.nextIndex}/${cursor.fixtureIds.length}` : 'fresh',
+    reason: `${cursor ? `resume@${cursor.nextIndex}/${cursor.fixtureIds.length}` : 'fresh'} cursorStore=${cache.backend}`,
   });
 
   // Step 1: standings (once per season). Cheap, warms the league table,
@@ -377,7 +402,8 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
         errors,
         flags,
         mode,
-        lastQuota
+        lastQuota,
+        rateLimitRetries
       );
     }
     const standingsResult = await deps.ingestion.fetchWorkload({
@@ -402,7 +428,8 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
         errors,
         flags,
         mode,
-        lastQuota
+        lastQuota,
+        rateLimitRetries
       );
     }
     // Standings succeeded (or cache-hit/soft-degraded but not aborted);
@@ -429,7 +456,8 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
         errors,
         flags,
         mode,
-        lastQuota
+        lastQuota,
+        rateLimitRetries
       );
     }
     const fixturesResult = await deps.ingestion.fetchWorkload({
@@ -454,7 +482,8 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
         errors,
         flags,
         mode,
-        lastQuota
+        lastQuota,
+        rateLimitRetries
       );
     }
     const fixtureIds = finalisedFixtureIds(fixturesResult.data);
@@ -548,9 +577,15 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
     errors,
     flags,
     mode,
-    lastQuota
+    lastQuota,
+    rateLimitRetries
   );
 };
+
+interface AccumulateOptions {
+  /** Count the attempt against the budget only (a rate refusal about to be retried). */
+  readonly quiet?: boolean;
+}
 
 interface ProcessFixtureArgs {
   readonly fixtureId: string;
@@ -559,7 +594,8 @@ interface ProcessFixtureArgs {
     result: IngestionFetchResult,
     workload: IngestionWorkload,
     resourceId: string,
-    currentMode: DegradeAction
+    currentMode: DegradeAction,
+    options?: AccumulateOptions
   ) => DegradeAction;
   readonly currentMode: DegradeAction;
   /** Skip the player stats pull (four calls a fixture, no player rows). */
@@ -596,14 +632,35 @@ const processFixture = async (args: ProcessFixtureArgs): Promise<FixtureOutcome>
       : [{ workload: PLAYER_STATS_WORKLOAD, path: apiFootballFixturePlayersPath(fixtureId) }]),
   ];
 
+  const sleep = deps.sleep ?? defaultSleep;
+  const log = deps.logger ?? (() => undefined);
+
   for (const step of steps) {
-    const result = await deps.ingestion.fetchWorkload({
-      priority: WORKFLOW_PROVIDER_PRIORITY,
-      workload: step.workload,
-      resourceId: fixtureId,
-      path: step.path,
-      cache,
-    });
+    const fetchStep = () =>
+      deps.ingestion.fetchWorkload({
+        priority: WORKFLOW_PROVIDER_PRIORITY,
+        workload: step.workload,
+        resourceId: fixtureId,
+        path: step.path,
+        cache,
+      });
+    let result = await fetchStep();
+    // A rate refusal (provider "too many requests", or the minute limiter
+    // still full after its own wait) passes: back off and retry the same
+    // call instead of ending the walk.
+    for (const waitMs of RATE_LIMIT_BACKOFF_MS) {
+      if (result.status !== 'rate_limited') {
+        break;
+      }
+      mode = accumulate(result, step.workload, fixtureId, mode, { quiet: true });
+      log({
+        event: 'season_backfill.rate_limited',
+        workflow: 'season-backfill',
+        reason: `${step.workload}:${fixtureId} ${result.throttled ? 'limiter' : 'provider'}; retry in ${waitMs}ms`,
+      });
+      await sleep(waitMs);
+      result = await fetchStep();
+    }
     mode = accumulate(result, step.workload, fixtureId, mode);
     if (HELD_STATUSES.has(result.status)) {
       // Quota or the minute limiter refused the call: the fixture was not
@@ -831,7 +888,8 @@ const finalize = (
   errors: readonly string[],
   flags: readonly DegradeFlag[],
   mode: DegradeAction,
-  finalQuota: ProviderQuotaSnapshot | undefined
+  finalQuota: ProviderQuotaSnapshot | undefined,
+  rateLimitRetries = 0
 ): BackfillTargetOutcome => {
   const fixturesDiscovered = cursor?.fixtureIds.length ?? 0;
   const cursorIndex = cursor?.nextIndex ?? 0;
@@ -849,6 +907,7 @@ const finalize = (
       callsBudgeted,
       callsUsed,
       errors,
+      ...(rateLimitRetries > 0 ? { rateLimitRetries } : {}),
     },
     flags,
     action: mode,

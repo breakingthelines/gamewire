@@ -858,3 +858,140 @@ describe('seasonBackfillWorkflow — refused calls never skip fixtures', () => {
     expect(result.targets[1]?.callsBudgeted).toBe(0);
   });
 });
+
+describe('seasonBackfillWorkflow — rate refusals and a durable cursor', () => {
+  let cache: InMemoryProviderCache;
+  beforeEach(() => {
+    cache = new InMemoryProviderCache();
+  });
+
+  const rateLimited = (
+    options: IngestionFetchOptions,
+    throttled = false
+  ): IngestionFetchResult => ({
+    status: 'rate_limited',
+    workload: options.workload,
+    resourceId: options.resourceId,
+    cacheKey: `${options.workload}:${options.resourceId}`,
+    cacheHit: false,
+    cachedOnlyMode: false,
+    quota: baseQuota(),
+    fallbackReason: 'PROVIDER_RATE_LIMITED',
+    throttled,
+    error: {
+      message:
+        'Too many requests. You have exceeded the limit of requests per minute of your subscription.',
+    },
+  });
+
+  /** Refuse `workload` for fixture `fixtureId` the first `times` attempts. */
+  const refuseFirst = (
+    ingestion: MockIngestion,
+    fixtureId: string,
+    workload: IngestionFetchOptions['workload'],
+    times: number
+  ): void => {
+    const real = ingestion.fetchWorkload.getMockImplementation()!;
+    let refused = 0;
+    ingestion.fetchWorkload.mockImplementation(async (options) => {
+      if (options.resourceId === fixtureId && options.workload === workload && refused < times) {
+        refused += 1;
+        ingestion.calls.push(options);
+        return rateLimited(options, refused % 2 === 0);
+      }
+      return real(options);
+    });
+  };
+
+  it('backs off on a provider 429 and carries on with the same fixture', async () => {
+    const ingestion = new MockIngestion(cache);
+    ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003]));
+    refuseFirst(ingestion, '1002', 'team-match-stats', 2);
+    const sleep = vi.fn(async (_ms: number) => undefined);
+
+    const result = await run(
+      ingestion,
+      [COMPETITION_A],
+      { targets: [{ apiFootballLeagueId: 39, season: 2024 }], skipPlayerStats: true },
+      { sleep }
+    );
+
+    expect(result.status).toBe('complete');
+    expect(result.targets[0]).toMatchObject({
+      cursorIndex: 3,
+      fixturesProcessed: 3,
+      complete: true,
+      errors: [],
+      rateLimitRetries: 2,
+    });
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([2_000, 5_000]);
+    expect(result.degradeFlags).toEqual([]);
+    const statsCalls = ingestion.calls.filter(
+      (c) => c.resourceId === '1002' && c.workload === 'team-match-stats'
+    );
+    expect(statsCalls).toHaveLength(3);
+  });
+
+  it('holds the fixture after the last back-off and resumes there next run', async () => {
+    const ingestion = new MockIngestion(cache);
+    ingestion.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003]));
+    refuseFirst(ingestion, '1002', 'lineups-post-confirm', 6);
+    const sleep = vi.fn(async (_ms: number) => undefined);
+
+    const first = await run(
+      ingestion,
+      [COMPETITION_A],
+      { targets: [{ apiFootballLeagueId: 39, season: 2024 }], skipPlayerStats: true },
+      { sleep }
+    );
+    expect(first.status).toBe('incomplete');
+    expect(first.targets[0]).toMatchObject({ cursorIndex: 1, complete: false });
+    expect(first.targets[0]?.errors).toHaveLength(1);
+    expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([2_000, 5_000, 15_000, 30_000, 60_000]);
+    expect(ingestion.calls.some((c) => c.resourceId === '1003')).toBe(false);
+
+    const second = await run(
+      ingestion,
+      [COMPETITION_A],
+      { targets: [{ apiFootballLeagueId: 39, season: 2024 }], skipPlayerStats: true },
+      { sleep }
+    );
+    expect(second.status).toBe('complete');
+    expect(second.targets[0]).toMatchObject({ cursorIndex: 3, fixturesProcessed: 2 });
+  });
+
+  it('keeps the cursor in the state store, so a restarted worker resumes', async () => {
+    const stateStore = new InMemoryProviderCache();
+    const before = new MockIngestion(new InMemoryProviderCache());
+    before.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003, 1004]));
+    const first = await run(
+      before,
+      [COMPETITION_A],
+      {
+        targets: [{ apiFootballLeagueId: 39, season: 2024 }],
+        skipPlayerStats: true,
+        maxCallsPerRun: 2 + 4 * 2,
+      },
+      { stateStore }
+    );
+    expect(first.targets[0]).toMatchObject({ cursorIndex: 2, complete: false });
+    expect(await before.cache.get(__test.cursorKey(39, 2024))).toBeUndefined();
+    expect(await stateStore.get(__test.cursorKey(39, 2024))).toMatchObject({ nextIndex: 2 });
+
+    // A new pod: empty process cache, same Redis.
+    const after = new MockIngestion(new InMemoryProviderCache());
+    after.setSeasonFixtures(39, 2024, seasonEnvelope([1001, 1002, 1003, 1004]));
+    const second = await run(
+      after,
+      [COMPETITION_A],
+      { targets: [{ apiFootballLeagueId: 39, season: 2024 }], skipPlayerStats: true },
+      { stateStore }
+    );
+    expect(second.status).toBe('complete');
+    expect(second.targets[0]).toMatchObject({ cursorIndex: 4, fixturesProcessed: 2 });
+    // No re-discovery, no standings, and fixtures 1001-1002 are not pulled again.
+    expect(after.calls.map((c) => c.resourceId)).not.toContain('1001');
+    expect(after.calls.map((c) => c.resourceId)).not.toContain('1002');
+    expect(after.calls.some((c) => c.resourceId.startsWith('backfill-'))).toBe(false);
+  });
+});

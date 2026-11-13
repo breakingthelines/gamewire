@@ -60,6 +60,13 @@ import type { ProviderQuotaSnapshot } from './quota.js';
 import { ProviderQuotaTracker } from './quota.js';
 import { Singleflight } from './singleflight.js';
 
+/** Longest a near-live or background call waits for the minute limiter. */
+const MAX_MINUTE_WAIT_MS = 60_000;
+/** Spread for calls held by the one-second bucket, so they do not all retry together. */
+const SECOND_HOLD_JITTER_MS = 200;
+/** Floor on a one-second-bucket wait. */
+const MIN_SECOND_HOLD_MS = 50;
+
 /**
  * Workload identifier. Mirrors the cache TTL table in the task brief.
  */
@@ -701,32 +708,53 @@ export class ApiFootballIngestionLoop {
    * Ask the per-minute limiter for a token. `live` is answered at once (a
    * denied live call serves the last-good payload instead). `near-live` and
    * `background` wait, at most 60s, until the limiter expects room (the next
-   * minute boundary or a little after it), and retry once.
+   * minute boundary or a little after it), and retry once. A background call
+   * held by the one-second bucket (`second_cap`) waits for the next second and
+   * tries again, within the same 60s, without using up that one retry.
    */
   async #acquireMinute(
     priority: ProviderPriority,
     workload: IngestionWorkload,
     cacheKey: string
   ): Promise<MinuteAcquireResult> {
-    const first = await this.#minuteLimiter.tryAcquire(priority);
-    if (first.allowed || priority === 'live') {
-      return first;
+    let result = await this.#minuteLimiter.tryAcquire(priority);
+    if (result.allowed || priority === 'live') {
+      return result;
     }
-    // Wait until the estimate would admit this call, never more than 60s.
-    const waitMs = Math.max(0, Math.min(60_000, first.retryAfterMs ?? first.msUntilNextMinute));
-    this.#log({
-      event: 'provider_minute_wait',
-      provider: this.#provider,
-      workload,
-      priority,
-      cacheKey,
-      reason: first.reason,
-      estimate: first.estimate,
-      ceiling: first.ceiling,
-      waitMs,
-    });
-    await this.#sleep(waitMs);
-    return this.#minuteLimiter.tryAcquire(priority);
+    let waited = 0;
+    let minuteRetries = 0;
+    while (!result.allowed && waited < MAX_MINUTE_WAIT_MS) {
+      const secondHold = result.reason === 'second_cap';
+      if (!secondHold) {
+        if (minuteRetries >= 1) {
+          return result;
+        }
+        minuteRetries += 1;
+      }
+      // Wait until the estimate would admit this call, never more than 60s in all.
+      const baseWait = secondHold
+        ? Math.max(MIN_SECOND_HOLD_MS, result.retryAfterMs ?? 1_000)
+        : (result.retryAfterMs ?? result.msUntilNextMinute);
+      const jitter = secondHold ? Math.floor(Math.random() * SECOND_HOLD_JITTER_MS) : 0;
+      const waitMs = Math.max(0, Math.min(MAX_MINUTE_WAIT_MS - waited, baseWait + jitter));
+      if (!secondHold) {
+        this.#log({
+          event: 'provider_minute_wait',
+          provider: this.#provider,
+          workload,
+          priority,
+          cacheKey,
+          reason: result.reason,
+          estimate: result.estimate,
+          ceiling: result.ceiling,
+          waitMs,
+        });
+      }
+      await this.#sleep(waitMs);
+      waited += Math.max(waitMs, 1);
+      result = await this.#minuteLimiter.tryAcquire(priority);
+    }
+    return result;
   }
 
   async #throttled<TResponse>(
