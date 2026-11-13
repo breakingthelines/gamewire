@@ -480,8 +480,56 @@ export interface SeasonBackfillInput {
    * controls cursor reuse. Defaults to false (resume).
    */
   readonly reset?: boolean;
+  /**
+   * Skip the per-fixture `/fixtures/players` pull, so a fixture costs four
+   * calls instead of five and writes no player match stats. For a history
+   * backfill that only wants team stats (and must leave player profiles
+   * alone). Player rows can be filled later with sweep-missing-payloads
+   * `player-match-stats`. Defaults to false.
+   */
+  readonly skipPlayerStats?: boolean;
+  /**
+   * Skip the per-fixture `/fixtures/lineups` pull (one call fewer, no
+   * football_lineups rows). Stored lineups feed the profile jobs' lineup
+   * positions for that season and, as tiebreak evidence, for the season
+   * after it, so a history backfill that must not move any profile position
+   * sets this. Defaults to false.
+   */
+  readonly skipLineups?: boolean;
+  /**
+   * Do not read or write the shared provider cache for the per-fixture pulls.
+   * A history backfill walks each fixture once, so caching gains nothing, and
+   * a fixture's detail plus events sit in the shared Redis for 6h (about
+   * 45 KB a fixture), which thousands of fixtures would push toward the
+   * Redis memory limit. The bridge still runs on every payload. The season
+   * list and standings stay cached. Defaults to false.
+   */
+  readonly bypassCache?: boolean;
+  /**
+   * Plan only: one `/fixtures?league&season` call per target, read outside
+   * the ingest bridge and the cache, so nothing is written to game-service,
+   * the cursor or the cache. Reports finalised fixtures, the planned call
+   * count and the teams identity cannot resolve. Defaults to false.
+   */
+  readonly dryRun?: boolean;
   /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
   readonly nowUtc?: string;
+}
+
+/** What a dry run found for one target. */
+export interface SeasonBackfillDryRunTarget {
+  /** Fixtures in the season list, any status. */
+  readonly fixturesListed: number;
+  /** Finalised fixtures, the ones a real run pulls. */
+  readonly fixturesFinalised: number;
+  /** Provider calls a real run would make: standings + list + fixtures × per-fixture calls. */
+  readonly plannedCalls: number;
+  /** Distinct provider teams in the season list. */
+  readonly teams: number;
+  /** Teams identity did not resolve, as `<provider id>:<name>`. They would land on provider ids. */
+  readonly unresolvedTeams: readonly string[];
+  /** Teams whose identity lookup errored, so their status is unknown. */
+  readonly teamLookupErrors: number;
 }
 
 export interface SeasonBackfillTargetResult {
@@ -501,6 +549,8 @@ export interface SeasonBackfillTargetResult {
   readonly callsBudgeted: number;
   readonly callsUsed: number;
   readonly errors: readonly string[];
+  /** Set on a dry run only. */
+  readonly dryRun?: SeasonBackfillDryRunTarget;
 }
 
 export interface SeasonBackfillOutput {

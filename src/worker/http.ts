@@ -574,6 +574,10 @@ const parseSeasonBackfillInput = (body: unknown): SeasonBackfillInput => {
     competitions: asStringList(body.competitions),
     maxCallsPerRun: asNumber(body.maxCallsPerRun),
     reset: asBoolean(body.reset),
+    skipPlayerStats: asBoolean(body.skipPlayerStats),
+    skipLineups: asBoolean(body.skipLineups),
+    bypassCache: asBoolean(body.bypassCache),
+    dryRun: asBoolean(body.dryRun),
     nowUtc: asString(body.nowUtc),
   };
 };
