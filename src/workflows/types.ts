@@ -12,6 +12,7 @@
  * action rather than implementing their own posture switching.
  */
 import type { ApiFootballIngestionLoop, IngestionFetchResult } from '../worker/ingestion.js';
+import type { ProviderCache } from '../worker/cache.js';
 import type { ProviderMinuteLimiter, ProviderPriority } from '../worker/minute-limiter.js';
 import type {
   FootballGameIngestClient,
@@ -217,6 +218,15 @@ export interface WorkflowDeps {
    * unset, every dataset counts as disabled (the kill switch default).
    */
   readonly enrichment?: ProviderEnrichmentDeps;
+  /**
+   * Store for workflow state that must outlive the pod, such as the
+   * season-backfill cursor. Redis in production. When unset the workflow falls
+   * back to `ingestion.cache`, which is process memory in production, so a
+   * restart loses the cursor and the next run walks the season again.
+   */
+  readonly stateStore?: ProviderCache;
+  /** Sleep used by workflows that back off and retry. Tests inject a fake. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -549,6 +559,8 @@ export interface SeasonBackfillTargetResult {
   readonly callsBudgeted: number;
   readonly callsUsed: number;
   readonly errors: readonly string[];
+  /** Rate refusals (provider or minute limiter) that were backed off and retried. */
+  readonly rateLimitRetries?: number;
   /** Set on a dry run only. */
   readonly dryRun?: SeasonBackfillDryRunTarget;
 }

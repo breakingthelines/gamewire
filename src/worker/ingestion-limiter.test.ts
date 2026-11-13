@@ -95,6 +95,8 @@ const harness = (
     readonly sleepAdvancesClock?: boolean;
     readonly cfg?: GamewireWorkerConfig;
     readonly start?: number;
+    readonly smoothBackground?: boolean;
+    readonly onSleep?: (ms: number) => Promise<void>;
   } = {}
 ): Harness => {
   const clock = makeClock(input.start ?? T0);
@@ -104,6 +106,7 @@ const harness = (
     caps: { live: 4, 'near-live': 3, background: 2, ...input.caps },
     store,
     clock: clock.now,
+    smoothBackground: input.smoothBackground,
   });
   const quota =
     input.quota ??
@@ -118,6 +121,7 @@ const harness = (
     if (input.sleepAdvancesClock) {
       clock.advance(ms);
     }
+    await input.onSleep?.(ms);
   });
   const bridge = vi.fn();
   const logs: Record<string, unknown>[] = [];
@@ -782,5 +786,59 @@ describe('tick deadline', () => {
     expect(defaultTickDeadlineMs(30_000)).toBe(2 * MINUTE);
     expect(defaultTickDeadlineMs(60_000)).toBe(4 * MINUTE);
     expect(defaultTickDeadlineMs(60 * MINUTE)).toBe(15 * MINUTE);
+  });
+});
+
+describe('background held by the one-second bucket', () => {
+  it('waits for the next second and fetches, without a minute wait', async () => {
+    const h = harness({
+      caps: { live: 800, 'near-live': 650, background: 120 },
+      smoothBackground: true,
+      sleepAdvancesClock: true,
+      start: T0 + 10_400,
+    });
+    const statuses: string[] = [];
+    for (const id of ['1', '2', '3']) {
+      const result = await h.loop.fetchWorkload({
+        workload: 'team-match-stats',
+        resourceId: id,
+        priority: 'background',
+      });
+      statuses.push(result.status);
+    }
+    expect(statuses).toEqual(['fetched', 'fetched', 'fetched']);
+    expect(h.fetchFn).toHaveBeenCalledTimes(3);
+    expect(h.sleep).toHaveBeenCalledTimes(1);
+    const waited = h.sleep.mock.calls[0]![0] as number;
+    expect(waited).toBeGreaterThanOrEqual(600);
+    expect(waited).toBeLessThan(800);
+    expect(h.logs.some((entry) => entry.event === 'provider_minute_wait')).toBe(false);
+  });
+
+  it('keeps waiting while live traffic fills each second, without spending the one minute retry', async () => {
+    let first = true;
+    const h = harness({
+      caps: { live: 800, 'near-live': 650, background: 120 },
+      smoothBackground: true,
+      sleepAdvancesClock: true,
+      start: T0 + 10_000,
+      // Live traffic takes the whole of the next second before background wakes.
+      onSleep: async () => {
+        if (first) {
+          first = false;
+          await h.limiter.tryAcquire('live');
+          await h.limiter.tryAcquire('live');
+        }
+      },
+    });
+    await h.limiter.tryAcquire('live');
+    await h.limiter.tryAcquire('live');
+    const result = await h.loop.fetchWorkload({
+      workload: 'team-match-stats',
+      resourceId: '9',
+      priority: 'background',
+    });
+    expect(result.status).toBe('fetched');
+    expect(h.sleep).toHaveBeenCalledTimes(2);
   });
 });

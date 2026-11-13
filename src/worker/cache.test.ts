@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { InMemoryProviderCache, RedisProviderCache, type RedisLikeClient } from './cache.js';
+import {
+  InMemoryProviderCache,
+  RedisProviderCache,
+  createRedisLikeClient,
+  type RedisLikeClient,
+} from './cache.js';
 
 describe('InMemoryProviderCache', () => {
   it('returns undefined on miss', async () => {
@@ -99,5 +104,35 @@ describe('RedisProviderCache', () => {
     const cache = new RedisProviderCache({ client });
     await cache.set('k', 'v', 0);
     expect(client.setMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('createRedisLikeClient', () => {
+  it('maps cache calls onto raw Redis commands, with SET EX for the TTL', async () => {
+    const sent: string[] = [];
+    const store = new Map<string, string>();
+    const cache = new RedisProviderCache({
+      client: createRedisLikeClient({
+        send: async (command, args) => {
+          sent.push(`${command} ${args.join(' ')}`);
+          if (command === 'SET') {
+            store.set(args[0]!, args[1]!);
+            return 'OK';
+          }
+          if (command === 'GET') {
+            return store.get(args[0]!) ?? null;
+          }
+          return 1;
+        },
+      }),
+    });
+    await cache.set('backfill:cursor:39:2024', { nextIndex: 194 }, 604_800);
+    expect(await cache.get('backfill:cursor:39:2024')).toEqual({ nextIndex: 194 });
+    expect(await cache.get('missing')).toBeUndefined();
+    expect(sent).toEqual([
+      'SET gamewire:cache:backfill:cursor:39:2024 {"nextIndex":194} EX 604800',
+      'GET gamewire:cache:backfill:cursor:39:2024',
+      'GET gamewire:cache:missing',
+    ]);
   });
 });

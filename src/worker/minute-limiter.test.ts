@@ -5,6 +5,8 @@ import {
   InMemoryMinuteCounterStore,
   ProviderMinuteLimiter,
   RedisMinuteCounterStore,
+  backgroundSecondCap,
+  createRedisMinuteCounterClient,
   validateMinuteCaps,
   type MinuteCounterStore,
   type ProviderPriority,
@@ -284,5 +286,96 @@ describe('RedisMinuteCounterStore', () => {
       `EXPIRE gamewire:provider:api-football:minute:${minute} 120`,
     ]);
     expect(limiter.backend).toBe('redis');
+  });
+});
+
+describe('ProviderMinuteLimiter one-second smoothing', () => {
+  const smoothed = (clock: ReturnType<typeof makeClock>, background = 450) =>
+    new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      caps: { live: 800, 'near-live': 650, background },
+      clock: clock.now,
+      smoothBackground: true,
+    });
+
+  it('derives the background second cap from the minute cap', () => {
+    expect(backgroundSecondCap(DEFAULT_PROVIDER_MINUTE_CAPS)).toBe(8);
+    expect(backgroundSecondCap({ live: 120, 'near-live': 120, background: 120 })).toBe(2);
+    expect(backgroundSecondCap({ live: 30, 'near-live': 30, background: 30 })).toBe(1);
+    const clock = makeClock(T0);
+    expect(smoothed(clock).backgroundSecondCap).toBe(8);
+    expect(
+      new ProviderMinuteLimiter({ providerId: 'api-football', clock: clock.now })
+        .backgroundSecondCap
+    ).toBeUndefined();
+  });
+
+  it('holds background to the second cap and admits it again next second', async () => {
+    const clock = makeClock(T0 + 10_250);
+    const limiter = smoothed(clock);
+    expect(await fill(limiter, 'background', 20)).toBe(8);
+    const held = await limiter.tryAcquire('background');
+    expect(held).toMatchObject({ allowed: false, reason: 'second_cap', retryAfterMs: 750 });
+    clock.set(T0 + 11_000);
+    expect(await fill(limiter, 'background', 20)).toBe(8);
+  });
+
+  it('a held call is refunded from the minute bucket', async () => {
+    const clock = makeClock(T0 + 10_000);
+    const store = new InMemoryMinuteCounterStore({ clock: clock.now });
+    const limiter = new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      store,
+      clock: clock.now,
+      smoothBackground: true,
+    });
+    await fill(limiter, 'background', 30);
+    expect(await store.read(limiter.keyFor(Math.floor(clock.now() / MINUTE)))).toBe(8);
+  });
+
+  it('never holds live or near-live, and background yields to them', async () => {
+    const clock = makeClock(T0 + 5_000);
+    const limiter = smoothed(clock);
+    expect(await fill(limiter, 'live', 12)).toBe(12);
+    expect(await fill(limiter, 'near-live', 5)).toBe(5);
+    expect(await limiter.tryAcquire('background')).toMatchObject({
+      allowed: false,
+      reason: 'second_cap',
+    });
+  });
+
+  it('release returns the second token too', async () => {
+    const clock = makeClock(T0 + 1_000);
+    const store = new InMemoryMinuteCounterStore({ clock: clock.now });
+    const limiter = new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      store,
+      clock: clock.now,
+      smoothBackground: true,
+    });
+    const token = await limiter.tryAcquire('background');
+    expect(token.epochSecond).toBe(Math.floor(clock.now() / 1_000));
+    await limiter.release(token);
+    expect(await store.read(limiter.secondKeyFor(token.epochSecond!))).toBe(0);
+  });
+});
+
+describe('createRedisMinuteCounterClient', () => {
+  it('maps the counter calls onto raw Redis commands', async () => {
+    const sent: string[] = [];
+    const client = createRedisMinuteCounterClient({
+      send: async (command, args) => {
+        sent.push(`${command} ${args.join(' ')}`);
+        if (command === 'GET') {
+          return args[0] === 'present' ? '7' : null;
+        }
+        return 3;
+      },
+    });
+    expect(await client.get('present')).toBe('7');
+    expect(await client.get('absent')).toBeNull();
+    expect(await client.incrBy('k', -1)).toBe(3);
+    expect(await client.expire('k', 5)).toBe(3);
+    expect(sent).toEqual(['GET present', 'GET absent', 'INCRBY k -1', 'EXPIRE k 5']);
   });
 });

@@ -23,6 +23,12 @@
  *   calls) have used the headroom.
  * - If the counter store fails, `live` and `near-live` are allowed (fail open)
  *   and `background` is refused (fail closed).
+ * - With `smoothBackground`, every class also counts into a one-second bucket,
+ *   and `background` is refused once that second holds `ceil(background / 60)`
+ *   calls. The provider refuses bursts well under its 900 a minute (about 20
+ *   calls inside one second drew "too many requests" in prod), so a minute
+ *   count alone does not keep background clear of it. Live and near-live are
+ *   never held by the second bucket; background yields to them.
  *
  * The limiter only answers "may this call leave now". What a denied caller does
  * (serve the last good payload, or wait for the next minute and retry once) is
@@ -140,13 +146,19 @@ export class RedisMinuteCounterStore implements MinuteCounterStore {
   }
 }
 
-export type MinuteDenyReason = 'minute_cap' | 'provider_minute_header' | 'store_unavailable';
+export type MinuteDenyReason =
+  | 'minute_cap'
+  | 'second_cap'
+  | 'provider_minute_header'
+  | 'store_unavailable';
 
 export interface MinuteAcquireResult {
   readonly allowed: boolean;
   readonly priority: ProviderPriority;
   /** Epoch minute the token was taken from (used by {@link ProviderMinuteLimiter.release}). */
   readonly epochMinute: number;
+  /** Epoch second the token was taken from, when the second bucket was counted. */
+  readonly epochSecond?: number;
   /** Sliding-window estimate of calls in the last 60s, including this one when allowed. */
   readonly estimate: number;
   readonly ceiling: number;
@@ -171,7 +183,18 @@ export interface ProviderMinuteLimiterOptions {
   readonly caps?: Partial<ProviderMinuteCaps>;
   readonly headerReserve?: number;
   readonly clock?: () => number;
+  /**
+   * Count every call in a one-second bucket and refuse `background` above
+   * `ceil(caps.background / 60)` calls in that second. Off by default.
+   */
+  readonly smoothBackground?: boolean;
 }
+
+/** One-second ceiling for background when smoothing is on. */
+export const backgroundSecondCap = (caps: ProviderMinuteCaps): number =>
+  Math.max(1, Math.ceil(caps.background / 60));
+
+const SECOND_BUCKET_TTL_SECONDS = 5;
 
 export class ProviderMinuteLimiter {
   readonly #providerId: string;
@@ -180,6 +203,7 @@ export class ProviderMinuteLimiter {
   readonly #caps: ProviderMinuteCaps;
   readonly #headerReserve: number;
   readonly #clock: () => number;
+  readonly #secondCap: number | undefined;
   #remoteMinute: { epochMinute: number; remaining: number; limit?: number } | undefined;
 
   constructor(options: ProviderMinuteLimiterOptions) {
@@ -191,6 +215,12 @@ export class ProviderMinuteLimiter {
     this.#store = options.store ?? new InMemoryMinuteCounterStore({ clock: this.#clock });
     this.#caps = caps;
     this.#headerReserve = options.headerReserve ?? DEFAULT_PROVIDER_MINUTE_HEADER_RESERVE;
+    this.#secondCap = options.smoothBackground ? backgroundSecondCap(caps) : undefined;
+  }
+
+  /** Background calls allowed in one second, or undefined when smoothing is off. */
+  get backgroundSecondCap(): number | undefined {
+    return this.#secondCap;
   }
 
   get caps(): ProviderMinuteCaps {
@@ -203,6 +233,10 @@ export class ProviderMinuteLimiter {
 
   keyFor(epochMinute: number): string {
     return `${this.#namespace}:provider:${this.#providerId}:minute:${epochMinute}`;
+  }
+
+  secondKeyFor(epochSecond: number): string {
+    return `${this.#namespace}:provider:${this.#providerId}:second:${epochSecond}`;
   }
 
   /**
@@ -241,7 +275,27 @@ export class ProviderMinuteLimiter {
           retryAfterMs: retryAfterMs(previous, current - 1, ceiling, elapsed, msUntilNextMinute),
         };
       }
-      return { ...base, allowed: true, estimate };
+      if (this.#secondCap === undefined) {
+        return { ...base, allowed: true, estimate };
+      }
+      const epochSecond = Math.floor(nowMs / 1_000);
+      const inSecond = await this.#store.increment(
+        this.secondKeyFor(epochSecond),
+        1,
+        SECOND_BUCKET_TTL_SECONDS
+      );
+      if (priority === 'background' && inSecond > this.#secondCap) {
+        await this.#store.increment(this.keyFor(epochMinute), -1, BUCKET_TTL_SECONDS);
+        await this.#store.increment(this.secondKeyFor(epochSecond), -1, SECOND_BUCKET_TTL_SECONDS);
+        return {
+          ...base,
+          allowed: false,
+          estimate: estimate - 1,
+          reason: 'second_cap',
+          retryAfterMs: (epochSecond + 1) * 1_000 - nowMs,
+        };
+      }
+      return { ...base, allowed: true, estimate, epochSecond };
     } catch {
       const allowed = priority !== 'background';
       return {
@@ -264,6 +318,13 @@ export class ProviderMinuteLimiter {
     }
     try {
       await this.#store.increment(this.keyFor(acquired.epochMinute), -1, BUCKET_TTL_SECONDS);
+      if (acquired.epochSecond !== undefined) {
+        await this.#store.increment(
+          this.secondKeyFor(acquired.epochSecond),
+          -1,
+          SECOND_BUCKET_TTL_SECONDS
+        );
+      }
     } catch {
       // The bucket expires in 120s regardless.
     }
@@ -334,3 +395,28 @@ export function validateMinuteCaps(caps: ProviderMinuteCaps): void {
     );
   }
 }
+
+/** Anything that can send a raw Redis command, such as `Bun.redis`. */
+export interface RedisCommandSender {
+  send(command: string, args: string[]): Promise<unknown>;
+}
+
+/**
+ * Adapt a raw command sender (`Bun.redis`) to {@link RedisMinuteCounterClient},
+ * so the minute and second buckets are shared by every worker pod and survive
+ * a restart.
+ */
+export const createRedisMinuteCounterClient = (
+  sender: RedisCommandSender
+): RedisMinuteCounterClient => ({
+  async get(key) {
+    const raw = await sender.send('GET', [key]);
+    return raw === null || raw === undefined ? null : String(raw);
+  },
+  async incrBy(key, by) {
+    return Number(await sender.send('INCRBY', [key, String(by)]));
+  },
+  async expire(key, ttlSeconds) {
+    return Number(await sender.send('EXPIRE', [key, String(ttlSeconds)]));
+  },
+});

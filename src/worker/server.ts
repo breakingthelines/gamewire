@@ -23,7 +23,15 @@ import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
 import { handleWorkerRequest } from './http.js';
 import { ApiFootballIngestionLoop, type OnFixtureFetchedCallback } from './ingestion.js';
-import { DEFAULT_ENRICHMENT_MINUTE_CAP, ProviderMinuteLimiter } from './minute-limiter.js';
+import { RedisProviderCache, createRedisLikeClient, type ProviderCache } from './cache.js';
+import {
+  DEFAULT_ENRICHMENT_MINUTE_CAP,
+  ProviderMinuteLimiter,
+  RedisMinuteCounterStore,
+  createRedisMinuteCounterClient,
+  type MinuteCounterStore,
+  type RedisCommandSender,
+} from './minute-limiter.js';
 import { createProviderBudget } from './provider-budget.js';
 import { createAssetMirrorBridge } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
@@ -371,6 +379,27 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBri
   assetMirrorBridge
 );
 
+// Redis-backed minute buckets and workflow state. The minute and second
+// buckets must be shared by every pod (a rolling deploy runs two) and by the
+// enrichment limiter, and the season-backfill cursor must survive a restart:
+// in process memory each deploy dropped every cursor and the next wave run
+// walked its seasons again from fixture 0.
+const sharedRedis: RedisCommandSender | undefined = config.redisUrl
+  ? (globalThis as { Bun?: { redis?: RedisCommandSender } }).Bun?.redis
+  : undefined;
+const minuteStore: MinuteCounterStore | undefined = sharedRedis
+  ? new RedisMinuteCounterStore(createRedisMinuteCounterClient(sharedRedis))
+  : undefined;
+const workflowStateStore: ProviderCache | undefined = sharedRedis
+  ? new RedisProviderCache({
+      namespace: config.redisNamespace,
+      client: createRedisLikeClient(sharedRedis),
+    })
+  : undefined;
+console.log(
+  `[gamewire-worker] workflow state store=${workflowStateStore?.backend ?? 'memory (ingestion cache)'}`
+);
+
 // The caps come from env through the factory (see provider-budget.test.ts).
 // Before GW-1 they were logged but never reached the tracker.
 const {
@@ -379,6 +408,7 @@ const {
   summary: budgetSummary,
   warnings: budgetWarnings,
 } = createProviderBudget(config, {
+  minuteStore,
   logger: (entry) => {
     console.log(JSON.stringify({ ...entry, ts: new Date().toISOString() }));
   },
@@ -397,6 +427,8 @@ const enrichmentMinuteCap = config.enrichmentMinuteCap ?? DEFAULT_ENRICHMENT_MIN
 const enrichmentLimiter = new ProviderMinuteLimiter({
   providerId: `${config.providerId}:enrichment`,
   namespace: config.redisNamespace,
+  store: minuteStore,
+  smoothBackground: true,
   caps: {
     live: enrichmentMinuteCap,
     'near-live': enrichmentMinuteCap,
@@ -500,6 +532,7 @@ const server = createServer(async (request, response) => {
       identity: identityClient,
       providerEnrichmentIngest: gameServiceLookupClient,
       enrichmentLimiter,
+      workflowStateStore,
       workflowLogger: (entry) => {
         console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
       },

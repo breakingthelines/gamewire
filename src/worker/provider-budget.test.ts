@@ -48,15 +48,28 @@ describe('createProviderBudget', () => {
   });
 
   it('env minute caps reach the limiter', async () => {
-    const now = NOW.getTime();
+    // Start on a minute boundary and spread the calls one a second: background
+    // is also held to ceil(30 / 60) = 1 call a second.
+    let now = Math.floor(NOW.getTime() / 60_000) * 60_000;
     const { minuteLimiter } = createProviderBudget(loadConfig(STAGING_ENV), {
       minuteClock: () => now,
     });
     expect(minuteLimiter.caps).toEqual({ live: 60, 'near-live': 60, background: 30 });
+    expect(minuteLimiter.backgroundSecondCap).toBe(1);
     for (let i = 0; i < 30; i += 1) {
       expect((await minuteLimiter.tryAcquire('background')).allowed).toBe(true);
+      if (i === 0) {
+        expect(await minuteLimiter.tryAcquire('background')).toMatchObject({
+          allowed: false,
+          reason: 'second_cap',
+        });
+      }
+      now += 1_000;
     }
-    expect((await minuteLimiter.tryAcquire('background')).allowed).toBe(false);
+    expect(await minuteLimiter.tryAcquire('background')).toMatchObject({
+      allowed: false,
+      reason: 'minute_cap',
+    });
   });
 
   it('uses the env quota source and an explicit background cap', () => {
