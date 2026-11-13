@@ -1,5 +1,5 @@
 import { create } from '@bufbuild/protobuf';
-import { TimestampSchema, timestampFromMs } from '@bufbuild/protobuf/wkt';
+import { TimestampSchema, timestampFromMs, type Timestamp } from '@bufbuild/protobuf/wkt';
 
 import {
   CurrentSeasonEntrySchema,
@@ -1266,6 +1266,7 @@ function liveGame(
       value: create(FootballGamePayloadSchema, {
         matchday: matchdayFromRound(response.league.round),
         stage: response.league.round ?? '',
+        ...fixtureOfficiating(response.fixture),
       }),
     },
     updatedAt: create(TimestampSchema, timestampFromMs(options.fetchedAtMs)),
@@ -1995,7 +1996,45 @@ function percentStat(value: number | string | null | undefined): number | undefi
   return doubleStat(value);
 }
 
-function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIXTURE_ID }) {
+/**
+ * GW-4: the referee and half kick-off times for `FootballGamePayload`. The
+ * referee string is stored raw ("" when unassigned); a half-start is set only
+ * once the provider reports it. game-service keeps a stored value when a later
+ * payload omits it, so a list fetch without a referee never wipes one.
+ */
+export function fixtureOfficiating(fixture: {
+  readonly referee?: unknown;
+  readonly periods?: unknown;
+}): {
+  refereeName: string;
+  firstHalfStartedAt?: Timestamp;
+  secondHalfStartedAt?: Timestamp;
+} {
+  const referee = typeof fixture.referee === 'string' ? fixture.referee.trim() : '';
+  const periods =
+    fixture.periods !== null && typeof fixture.periods === 'object'
+      ? (fixture.periods as { readonly first?: unknown; readonly second?: unknown })
+      : {};
+  const halfStart = (value: unknown) =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0
+      ? create(TimestampSchema, timestampFromMs(value * 1_000))
+      : undefined;
+  const first = halfStart(periods.first);
+  const second = halfStart(periods.second);
+  return {
+    refereeName: referee,
+    ...(first ? { firstHalfStartedAt: first } : {}),
+    ...(second ? { secondHalfStartedAt: second } : {}),
+  };
+}
+
+function game(
+  fixture: {
+    readonly id?: unknown;
+    readonly referee?: unknown;
+    readonly periods?: unknown;
+  } = { id: API_FOOTBALL_REPLAY_FIXTURE_ID }
+) {
   return create(GameSchema, {
     id: API_FOOTBALL_REPLAY_GAME_ID,
     slug: 'arsenal-v-chelsea-2026-05-11',
@@ -2071,6 +2110,7 @@ function game(fixture: { readonly id?: unknown } = { id: API_FOOTBALL_REPLAY_FIX
       value: create(FootballGamePayloadSchema, {
         matchday: 1,
         stage: 'regular-season',
+        ...fixtureOfficiating(fixture),
       }),
     },
     updatedAt: undefined,

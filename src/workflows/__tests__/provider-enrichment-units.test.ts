@@ -11,10 +11,14 @@ import type {
   IngestAvailabilityRequest,
   IngestCoachProfilesRequest,
   IngestBatchResponse,
+  IngestHeadToHeadRequest,
+  IngestProviderPredictionsRequest,
+  IngestVenuesRequest,
   IngestProviderTeamSeasonStatsRequest,
   IngestTransfersRequest,
   IngestTrophiesRequest,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
+import { SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb';
 import { AvailabilitySource } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -26,13 +30,20 @@ import { ApiFootballIngestionLoop } from '../../worker/ingestion.js';
 import { InMemoryMinuteCounterStore, ProviderMinuteLimiter } from '../../worker/minute-limiter.js';
 import type { ProviderFetch } from '../../worker/provider-http.js';
 import { ProviderQuotaTracker } from '../../worker/quota.js';
-import { clampEnrichmentLimit, providerEnrichmentWorkflow } from '../provider-enrichment.js';
+import {
+  clampEnrichmentLimit,
+  providerEnrichmentWorkflow,
+  runPreMatchEnrichment,
+} from '../provider-enrichment.js';
 import {
   DEFAULT_UNIT_MAX_CALLS_PER_RUN,
   INJURIES_COVERED_LEAGUE_IDS,
   MAX_TROPHIES_PER_INGEST,
   SIDELINED_LOOKBACK_MS,
+  fixturesFromListEnvelope,
+  headToHeadUnitKey,
   injuryDigestKey,
+  teamCoachsDigestKey,
   mergeInjuryDigest,
   packTrophyRows,
   resolveInjuriesTargets,
@@ -110,6 +121,7 @@ const CATALOGUE: readonly CompetitionEntry[] = [
   entry('fa-cup', 45, 'domestic-cup', 2025),
   entry('champions-league', 2, 'european'),
   entry('world-cup', 1, 'international'),
+  { ...entry('friendlies', 10, 'international'), enrichment: 'none' },
 ];
 
 const ids = (from: number, count: number): number[] =>
@@ -250,6 +262,79 @@ const datedFixtureList = (
   })),
 });
 
+/** One provider fixture object, the shape `/fixtures/headtohead` and `/predictions` h2h share. */
+const meeting = (id: number, home: number, away: number, date: string) => ({
+  fixture: {
+    id,
+    date: `${date}T15:00:00+00:00`,
+    referee: 'A. Referee',
+    periods: { first: 1_740_841_200, second: 1_740_844_800 },
+    status: { short: 'FT' },
+  },
+  league: { id: 39, name: 'Premier League', season: 2024 },
+  teams: { home: { id: home, name: `T${home}` }, away: { id: away, name: `T${away}` } },
+  goals: { home: 2, away: 1 },
+});
+
+/** `/predictions?fixture=F` for a fixture between 40 and 33, with two past meetings. */
+const predictionsEnvelope = (fixtureId: string) => ({
+  errors: [],
+  response: [
+    {
+      predictions: {
+        winner: { id: 33, name: 'T33', comment: 'Win or draw' },
+        win_or_draw: true,
+        goals: { home: '-1.5', away: '-2.5' },
+        advice: 'Double chance : T33 or draw',
+        percent: { home: '45%', draw: '45%', away: '10%' },
+      },
+      league: { id: 39 },
+      teams: { home: { id: 40, name: 'T40' }, away: { id: 33, name: 'T33' } },
+      comparison: { total: { home: '40%', away: '60%' } },
+      h2h: [meeting(1, 33, 40, '2024-01-01'), meeting(2, 40, 33, '2025-01-01')],
+      fixture: fixtureId,
+    },
+  ],
+});
+
+const venueEnvelope = (id: string) => ({
+  errors: [],
+  response: [
+    {
+      id: Number(id),
+      name: `Ground ${id}`,
+      address: 'Road',
+      city: 'City',
+      country: 'X',
+      capacity: id === '0' ? null : 12_815,
+      surface: 'grass',
+      image: `https://media.example/venues/${id}.png`,
+    },
+  ],
+});
+
+/** A cached season fixture list with ids, kickoffs, statuses and venues. */
+const preMatchList = (
+  fixtures: readonly {
+    id: number;
+    home: number;
+    away: number;
+    kickoffMs: number;
+    status?: string;
+    venue?: number;
+  }[]
+) => ({
+  response: fixtures.map((f) => ({
+    fixture: {
+      id: f.id,
+      date: new Date(f.kickoffMs).toISOString(),
+      status: { short: f.status ?? 'NS' },
+      venue: { id: f.venue ?? null, name: 'Ground' },
+    },
+    teams: { home: { id: f.home }, away: { id: f.away } },
+  })),
+});
+
 interface RequestInfo {
   readonly path: string;
   readonly params: URLSearchParams;
@@ -296,6 +381,14 @@ const harness = (options: HarnessOptions = {}) => {
         return squadEnvelope(req.params.get('team') ?? '', options.squadSize ?? 25);
       case '/coachs':
         return coachsEnvelope(req.params.get('team') ?? '');
+      case '/predictions':
+        return predictionsEnvelope(req.params.get('fixture') ?? '');
+      case '/fixtures/headtohead': {
+        const [a, b] = (req.params.get('h2h') ?? '').split('-');
+        return { errors: [], response: [meeting(77, Number(a), Number(b), '2025-03-01')] };
+      }
+      case '/venues':
+        return venueEnvelope(req.params.get('id') ?? '');
       case '/teams/statistics':
         return teamStatisticsEnvelope(
           Number(req.params.get('league')),
@@ -355,6 +448,9 @@ const harness = (options: HarnessOptions = {}) => {
   const trophies: IngestTrophiesRequest[] = [];
   const teamStats: IngestProviderTeamSeasonStatsRequest[] = [];
   const coaches: IngestCoachProfilesRequest[] = [];
+  const predictions: IngestProviderPredictionsRequest[] = [];
+  const headToHead: IngestHeadToHeadRequest[] = [];
+  const venues: IngestVenuesRequest[] = [];
   const accepted = (rows: readonly unknown[]) =>
     ({ acceptedCount: rows.length }) as IngestBatchResponse;
   const ingest: ProviderEnrichmentIngestClient = {
@@ -377,6 +473,18 @@ const harness = (options: HarnessOptions = {}) => {
     }),
     ingestCoachProfiles: vi.fn(async (r: IngestCoachProfilesRequest) => {
       coaches.push(r);
+      return accepted(r.rows);
+    }),
+    ingestProviderPredictions: vi.fn(async (r: IngestProviderPredictionsRequest) => {
+      predictions.push(r);
+      return accepted(r.rows);
+    }),
+    ingestHeadToHead: vi.fn(async (r: IngestHeadToHeadRequest) => {
+      headToHead.push(r);
+      return accepted(r.snapshots);
+    }),
+    ingestVenues: vi.fn(async (r: IngestVenuesRequest) => {
+      venues.push(r);
       return accepted(r.rows);
     }),
     ...options.ingest,
@@ -443,6 +551,9 @@ const harness = (options: HarnessOptions = {}) => {
     trophies,
     teamStats,
     coaches,
+    predictions,
+    headToHead,
+    venues,
     advance,
     seedFixtureLists,
     now: () => now,
@@ -1379,5 +1490,220 @@ describe('shared guards', () => {
     );
     expect(clampEnrichmentLimit(7, 'trophies')).toBe(7);
     expect(clampEnrichmentLimit(undefined, 'team-season-stats')).toBe(500);
+  });
+});
+
+/**
+ * Every catalogue league's cached list: `lists` where given, else one long
+ * finished fixture (no venue), so the pre-match scope reads every league from
+ * cache as it does right after a discovery sweep.
+ */
+const withQuietLists = (now: number, lists: Record<number, unknown>) => {
+  const out: Record<number, unknown> = {};
+  for (const c of CATALOGUE) {
+    out[c.apiFootballLeagueId] =
+      lists[c.apiFootballLeagueId] ??
+      preMatchList([{ id: 1, home: 900, away: 901, kickoffMs: now - 30 * DAY, status: 'FT' }]);
+  }
+  return out;
+};
+
+describe('fixture-predictions', () => {
+  const lists = (now: number) => ({
+    39: preMatchList([
+      { id: 101, home: 40, away: 33, kickoffMs: now + 30 * HOUR },
+      { id: 102, home: 1, away: 2, kickoffMs: now + 60 * HOUR },
+      { id: 103, home: 3, away: 4, kickoffMs: now + 10 * HOUR, status: 'PST' },
+      { id: 104, home: 5, away: 6, kickoffMs: now - HOUR, status: 'FT' },
+    ]),
+    // Friendlies are enrichment class none (owner D3): never asked.
+    10: preMatchList([{ id: 201, home: 7, away: 8, kickoffMs: now + 5 * HOUR }]),
+  });
+
+  it('asks once inside 48h and once inside 3h, never for a called-off or other-class fixture', async () => {
+    const h = harness({ enabled: ['fixture-predictions'] });
+    const t0 = h.now();
+    // Discovery rewrites the lists every sweep; the kickoffs stay put.
+    const sweep = () => h.seedFixtureLists(withQuietLists(t0, lists(t0)));
+    await sweep();
+    const first = await h.run('fixture-predictions');
+    expect(first.status).toBe('completed');
+    expect(h.paths()).toEqual(['/predictions?fixture=101']);
+    expect(first.targets.map((t) => t.unit)).toEqual(['fixture-101-shot-1']);
+
+    // 20h on: 101's shot 1 is fresh; 102 has entered the 48h window.
+    h.advance(20 * HOUR);
+    await sweep();
+    await h.run('fixture-predictions');
+    expect(h.paths()).toEqual(['/predictions?fixture=101', '/predictions?fixture=102']);
+
+    // Inside 3h: the second and last shot.
+    h.advance(8 * HOUR);
+    await sweep();
+    await h.run('fixture-predictions');
+    h.advance(HOUR);
+    await sweep();
+    await h.run('fixture-predictions');
+    expect(h.paths()).toEqual([
+      '/predictions?fixture=101',
+      '/predictions?fixture=102',
+      '/predictions?fixture=101',
+    ]);
+
+    const row = h.predictions[0]!.rows[0]!;
+    expect([row.homeWinPct, row.drawPct, row.awayWinPct]).toEqual([45, 45, 10]);
+    expect(row.providerWinnerTeamId).toBe('33');
+    expect([row.goalsHomeLine, row.goalsAwayLine]).toEqual(['-1.5', '-2.5']);
+    expect(Object.keys(row.payload ?? {}).sort()).toEqual(['comparison', 'predictions']);
+    expect(h.predictions[0]!.metadata?.normalizedBatchId).toBe(
+      'api-football:fixture-predictions:predictions-101:0'
+    );
+    // head-to-head is off: the meetings in the response are not written.
+    expect(h.headToHead).toHaveLength(0);
+  });
+
+  it('stores the pair meetings from the same response when head-to-head is on, so head-to-head asks nothing', async () => {
+    const h = harness({ enabled: ['fixture-predictions', 'head-to-head'] });
+    await h.seedFixtureLists(withQuietLists(h.now(), lists(h.now())));
+    await h.run('fixture-predictions');
+    expect(h.headToHead).toHaveLength(1);
+    const snapshot = h.headToHead[0]!.snapshots[0]!;
+    expect([snapshot.providerTeamLowId, snapshot.providerTeamHighId]).toEqual(['33', '40']);
+    expect(snapshot.meetings.map((m) => m.providerFixtureId)).toEqual(['2', '1']);
+    expect(snapshot.meetings[0]!.refereeName).toBe('A. Referee');
+
+    const pair = await h.run('head-to-head');
+    expect(pair.targets.map((t) => [t.unit, t.status])).toEqual([['pair-33-40', 'fresh']]);
+    expect(h.paths()).toEqual(['/predictions?fixture=101']);
+  });
+
+  it('runs the pre-match datasets in order, only those switched on', async () => {
+    const h = harness({ enabled: ['fixture-predictions', 'head-to-head'] });
+    await h.seedFixtureLists(withQuietLists(h.now(), lists(h.now())));
+    const outputs = await runPreMatchEnrichment(h.deps);
+    expect(outputs.map((o) => o.dataset)).toEqual(['fixture-predictions', 'head-to-head']);
+    expect(h.paths()).toEqual(['/predictions?fixture=101']);
+  });
+
+  it('takes named fixtures and refuses them on other datasets', async () => {
+    const h = harness({ enabled: ['fixture-predictions'] });
+    await h.seedFixtureLists(withQuietLists(h.now(), lists(h.now())));
+    await h.run('fixture-predictions', { fixtureIds: ['999'] });
+    expect(h.paths()).toEqual([]);
+    expect(
+      parseProviderEnrichmentInput({ dataset: 'fixture-predictions', fixtureIds: [101] }).ok
+    ).toBe(true);
+    expect(parseProviderEnrichmentInput({ dataset: 'trophies', fixtureIds: [101] })).toEqual({
+      ok: false,
+      reason: 'ids_not_used_by_dataset',
+    });
+  });
+});
+
+describe('head-to-head', () => {
+  it('asks once per pair, low id first, and is fresh for 7 days', async () => {
+    const h = harness({ enabled: ['head-to-head'] });
+    await h.seedFixtureLists(
+      withQuietLists(h.now(), {
+        39: preMatchList([
+          { id: 101, home: 40, away: 33, kickoffMs: h.now() + 30 * HOUR },
+          // The reverse fixture of the same pair inside the window: one call.
+          { id: 105, home: 33, away: 40, kickoffMs: h.now() + 40 * HOUR },
+        ]),
+      })
+    );
+    await h.run('head-to-head');
+    expect(h.paths()).toEqual(['/fixtures/headtohead?h2h=33-40&last=10']);
+    expect(headToHeadUnitKey('40', '33')).toBe('pair-33-40');
+    expect(h.headToHead[0]!.snapshots[0]!.meetings).toHaveLength(1);
+    h.advance(6 * DAY);
+    await h.seedFixtureLists(
+      withQuietLists(h.now(), {
+        39: preMatchList([{ id: 106, home: 40, away: 33, kickoffMs: h.now() + 30 * HOUR }]),
+      })
+    );
+    await h.run('head-to-head');
+    expect(h.paths()).toHaveLength(1);
+  });
+});
+
+describe('venue-detail', () => {
+  it('asks each catalogue venue once, then not for 90 days, and skips class none', async () => {
+    const h = harness({ enabled: ['venue-detail'] });
+    const lists = {
+      39: preMatchList([
+        { id: 101, home: 40, away: 33, kickoffMs: h.now() - 5 * DAY, venue: 556 },
+        { id: 102, home: 1, away: 2, kickoffMs: h.now() + DAY, venue: 1288 },
+        { id: 103, home: 3, away: 4, kickoffMs: h.now() + DAY },
+      ]),
+      88: preMatchList([{ id: 104, home: 5, away: 6, kickoffMs: h.now() + DAY, venue: 556 }]),
+      10: preMatchList([{ id: 201, home: 7, away: 8, kickoffMs: h.now() + DAY, venue: 99 }]),
+    };
+    await h.seedFixtureLists(withQuietLists(h.now(), lists));
+    await h.run('venue-detail');
+    expect(h.paths()).toEqual(['/venues?id=556', '/venues?id=1288']);
+    const row = h.venues[0]!.rows[0]!;
+    expect([row.providerVenueId, row.capacity, row.surface, row.city]).toEqual([
+      '556',
+      12_815,
+      'grass',
+      'City',
+    ]);
+    h.advance(89 * DAY);
+    await h.seedFixtureLists(withQuietLists(h.now(), lists));
+    await h.run('venue-detail');
+    expect(h.paths()).toHaveLength(2);
+    h.advance(2 * DAY);
+    await h.run('venue-detail', { venueIds: ['556'] });
+    expect(h.paths()).toEqual(['/venues?id=556', '/venues?id=1288', '/venues?id=556']);
+  });
+
+  it('reads venue ids from a cached fixture list', () => {
+    const fixtures = fixturesFromListEnvelope(
+      preMatchList([{ id: 7, home: 1, away: 2, kickoffMs: T0, venue: 42 }])
+    );
+    expect(fixtures).toEqual([
+      {
+        fixtureId: '7',
+        kickoffMs: T0,
+        status: 'NS',
+        homeTeamId: '1',
+        awayTeamId: '2',
+        venueId: '42',
+      },
+    ]);
+  });
+});
+
+describe('coach trophies', () => {
+  it('adds one call for the coaches team-coaches listed, only with coach-trophies on', async () => {
+    const h = harness({
+      enabled: ['team-coaches', 'trophies', 'coach-trophies'] as never,
+      squadSize: 2,
+    });
+    await h.run('team-coaches', { teamIds: ['33'] });
+    expect(await h.cache.get(teamCoachsDigestKey('33'))).toEqual({ coachIds: ['331', '332'] });
+    const out = await h.run('trophies', { teamIds: ['33'] });
+    expect(out.targets[0]).toMatchObject({ unit: 'squad-33', pagesFetched: 3, pagesTotal: 3 });
+    expect(h.paths().slice(1)).toEqual([
+      '/players/squads?team=33',
+      '/trophies?players=33000-33001',
+      '/trophies?coachs=331-332',
+    ]);
+    const coachRows = h.trophies
+      .flatMap((r) => r.rows)
+      .filter((r) => r.subjectType === SubjectType.COACH);
+    expect(coachRows.map((r) => r.providerSubjectId)).toEqual(['331', '332']);
+  });
+
+  it('asks no coach without the switch, or before team-coaches listed any', async () => {
+    const off = harness({ squadSize: 2 });
+    await off.run('team-coaches', { teamIds: ['33'] });
+    await off.run('trophies', { teamIds: ['33'] });
+    expect(off.paths().some((p) => p.includes('coachs='))).toBe(false);
+
+    const unlisted = harness({ enabled: ['trophies', 'coach-trophies'] as never, squadSize: 2 });
+    await unlisted.run('trophies', { teamIds: ['33'] });
+    expect(unlisted.paths()).toEqual(['/players/squads?team=33', '/trophies?players=33000-33001']);
   });
 });

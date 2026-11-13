@@ -40,6 +40,9 @@ import {
   apiFootballTeamStatisticsPath,
   apiFootballTransfersPath,
   apiFootballTrophiesPath,
+  apiFootballHeadToHeadPath,
+  apiFootballPredictionsPath,
+  apiFootballVenuePath,
 } from '../adapters/api-football/enrichment-decoders.js';
 import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import type { ProviderCache } from './cache.js';
@@ -90,7 +93,10 @@ export type IngestionWorkload =
   | 'team-transfers'
   | 'trophies'
   | 'team-season-stats'
-  | 'team-coaches';
+  | 'team-coaches'
+  | 'fixture-predictions'
+  | 'head-to-head'
+  | 'venue-detail';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -155,6 +161,11 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   // GW-6c: never cached either (D9).
   'team-season-stats': 0,
   'team-coaches': 0,
+  // GW-7 and GW-8 pre-match enrichment: never cached either (D9). A unit
+  // marker per fixture shot, team pair or venue stands in for the cache.
+  'fixture-predictions': 0,
+  'head-to-head': 0,
+  'venue-detail': 0,
 } as const;
 
 /**
@@ -227,6 +238,11 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   trophies: 0,
   'team-season-stats': 0,
   'team-coaches': 0,
+  // GW-7 and GW-8: run by the same endpoint, and after every discovery
+  // sweep (`onDiscoveryComplete`), never on a tick of their own.
+  'fixture-predictions': 0,
+  'head-to-head': 0,
+  'venue-detail': 0,
 } as const;
 
 /**
@@ -334,6 +350,15 @@ export interface IngestionLoopOptions {
    * bridge keeps running past it. Default {@link DEFAULT_BRIDGE_TIMEOUT_MS}.
    */
   readonly bridgeTimeoutMs?: number;
+  /**
+   * Fired, without being awaited, after each `fixtures-next-7d` discovery
+   * sweep (hourly and at boot) once every league's list is fetched or read
+   * from cache. The worker hangs the GW-7/GW-8 pre-match enrichment on it
+   * (predictions, head-to-head, venues), which reads those cached lists. A
+   * sweep that starts while the previous hook still runs does not fire it
+   * again. Errors are caught and logged.
+   */
+  readonly onDiscoveryComplete?: () => Promise<void> | void;
 }
 
 /** Default wait for the fixture bridge inside one fetch. */
@@ -394,6 +419,8 @@ export class ApiFootballIngestionLoop {
   readonly #timers: unknown[] = [];
   readonly #onFixtureFetched?: OnFixtureFetchedCallback;
   readonly #bridgeTimeoutMs: number;
+  readonly #onDiscoveryComplete?: () => Promise<void> | void;
+  #discoveryHookRunning = false;
 
   constructor(options: IngestionLoopOptions) {
     this.#config = options.config;
@@ -412,6 +439,28 @@ export class ApiFootballIngestionLoop {
     this.#log = options.logger ?? defaultLogger;
     this.#onFixtureFetched = options.onFixtureFetched;
     this.#bridgeTimeoutMs = options.bridgeTimeoutMs ?? DEFAULT_BRIDGE_TIMEOUT_MS;
+    this.#onDiscoveryComplete = options.onDiscoveryComplete;
+  }
+
+  /** Fire the post-discovery hook in the background; one at a time. */
+  #fireDiscoveryHook(): void {
+    const hook = this.#onDiscoveryComplete;
+    if (!hook || this.#discoveryHookRunning) {
+      return;
+    }
+    this.#discoveryHookRunning = true;
+    void Promise.resolve()
+      .then(() => hook())
+      .catch((error: unknown) => {
+        this.#log({
+          event: 'ingestion_discovery_hook_failed',
+          provider: this.#provider,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        this.#discoveryHookRunning = false;
+      });
   }
 
   get metrics(): IngestionMetrics {
@@ -1080,6 +1129,7 @@ export class ApiFootballIngestionLoop {
       // Drop settled fixtures so the in-memory set stays bounded over long
       // uptimes instead of growing forever.
       pruneSettledFixtures();
+      this.#fireDiscoveryHook();
     };
     enqueueTick('fixtures-next-7d', discoverFixtures);
 
@@ -1547,6 +1597,17 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
     }
     case 'team-coaches':
       return apiFootballCoachsTeamPath(resourceId.trim().replace(/^coachs-/, ''));
+    // GW-7 and GW-8: the workflow always passes `path`.
+    case 'fixture-predictions':
+      return apiFootballPredictionsPath(resourceId.trim().replace(/^predictions-/, ''));
+    case 'head-to-head': {
+      const match = /^h2h-(\d+)-(\d+)$/.exec(resourceId.trim());
+      return match
+        ? apiFootballHeadToHeadPath(match[1] ?? '', match[2] ?? '')
+        : '/fixtures/headtohead';
+    }
+    case 'venue-detail':
+      return apiFootballVenuePath(resourceId.trim().replace(/^venue-/, ''));
   }
 }
 

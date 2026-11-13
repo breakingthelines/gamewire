@@ -419,6 +419,36 @@ describe('API-Football adapter', () => {
     expect(game?.venue?.slug).toBe('selhurst-park');
   });
 
+  it('carries the referee and half kick-offs into the football payload (GW-4)', () => {
+    const request = apiFootballIngestGamesRequestFromFixtures({
+      replayId: 'live:fixture-detail:1575541',
+      resourceId: '1575541',
+      fetchedAtMs: Date.parse('2026-11-13T12:00:00Z'),
+      envelope: {
+        response: [
+          {
+            fixture: {
+              id: 1575541,
+              date: '2026-11-08T13:30:00+00:00',
+              status: { short: 'FT' },
+              referee: 'C. Pereira',
+              periods: { first: 1794169800, second: 1794173400 },
+            },
+            league: { id: 94, name: 'Primeira Liga', season: 2026, round: 'Regular Season - 10' },
+            teams: { home: { id: 1, name: 'A' }, away: { id: 2, name: 'B' } },
+            goals: { home: 1, away: 0 },
+          },
+        ],
+      },
+    });
+    const payload = request.games[0]?.sportPayload;
+    expect(payload?.case).toBe('football');
+    const football = payload?.case === 'football' ? payload.value : undefined;
+    expect(football?.refereeName).toBe('C. Pereira');
+    expect(Number(football?.firstHalfStartedAt?.seconds)).toBe(1794169800);
+    expect(Number(football?.secondHalfStartedAt?.seconds)).toBe(1794173400);
+  });
+
   it('emits a label-only Game.venue when the provider supplies no stadium id', () => {
     const request = apiFootballIngestGamesRequestFromFixtures({
       replayId: 'live:fixture-detail:1208022',

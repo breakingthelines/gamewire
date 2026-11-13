@@ -129,5 +129,6 @@ export {
   clampEnrichmentLimit,
   enrichmentCursorKey,
   providerEnrichmentWorkflow,
+  runPreMatchEnrichment,
   resolveEnrichmentTargets,
 } from './provider-enrichment.js';

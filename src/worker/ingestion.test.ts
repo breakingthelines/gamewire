@@ -95,6 +95,9 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       trophies: 0,
       'team-season-stats': 0,
       'team-coaches': 0,
+      'fixture-predictions': 0,
+      'head-to-head': 0,
+      'venue-detail': 0,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Enrichment runs only from /workflows/provider-enrichment.
@@ -699,6 +702,51 @@ describe('ApiFootballIngestionLoop.start', () => {
     }
     const urls = fetchFn.mock.calls.map((call) => String(call[0]));
     expect(urls.some((url) => url.includes('/fixtures?id=1489370'))).toBe(true);
+    stop();
+  });
+
+  it('fires the pre-match hook once after each discovery sweep, never twice at once', async () => {
+    const fetchFn = buildFetchMock({ response: [] });
+    let release: () => void = () => undefined;
+    const hook = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          release = resolve;
+        })
+    );
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+      onDiscoveryComplete: hook,
+    });
+    const callbacks: Array<() => void> = [];
+    const stop = loop.start({
+      bootstrapFixtureIds: [],
+      runImmediately: false,
+      intervals: { 'fixtures-next-7d': 1_000 },
+      schedule: vi.fn((cb: () => void) => {
+        callbacks.push(cb);
+        return 'h';
+      }),
+      cancel: vi.fn(),
+    });
+    const drain = async () => {
+      for (let i = 0; i < 30; i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+    };
+    await drain();
+    expect(hook).toHaveBeenCalledTimes(1);
+    // A sweep that ends while the hook still runs does not start another.
+    callbacks.forEach((cb) => cb());
+    await drain();
+    expect(hook).toHaveBeenCalledTimes(1);
+    release();
+    await drain();
+    callbacks.forEach((cb) => cb());
+    await drain();
+    expect(hook).toHaveBeenCalledTimes(2);
     stop();
   });
 

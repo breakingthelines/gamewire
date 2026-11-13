@@ -6,6 +6,9 @@ import {
   type IngestAvailabilityRequest,
   type IngestBatchResponse,
   type IngestCoachProfilesRequest,
+  type IngestHeadToHeadRequest,
+  type IngestProviderPredictionsRequest,
+  type IngestVenuesRequest,
   type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
@@ -157,6 +160,14 @@ export interface ProviderEnrichmentIngestClient {
   ): Promise<IngestBatchResponse>;
   /** `team-coaches`. */
   ingestCoachProfiles?(request: IngestCoachProfilesRequest): Promise<IngestBatchResponse>;
+  /** `fixture-predictions`. */
+  ingestProviderPredictions?(
+    request: IngestProviderPredictionsRequest
+  ): Promise<IngestBatchResponse>;
+  /** `head-to-head`, and `fixture-predictions` when it stores a pair's meetings. */
+  ingestHeadToHead?(request: IngestHeadToHeadRequest): Promise<IngestBatchResponse>;
+  /** `venue-detail`. */
+  ingestVenues?(request: IngestVenuesRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient &
@@ -314,6 +325,17 @@ export const createFetchFootballGameLookupClient = (
     },
     ingestCoachProfiles(request: IngestCoachProfilesRequest): Promise<IngestBatchResponse> {
       return client.ingestCoachProfiles(request, { timeoutMs });
+    },
+    ingestProviderPredictions(
+      request: IngestProviderPredictionsRequest
+    ): Promise<IngestBatchResponse> {
+      return client.ingestProviderPredictions(request, { timeoutMs });
+    },
+    ingestHeadToHead(request: IngestHeadToHeadRequest): Promise<IngestBatchResponse> {
+      return client.ingestHeadToHead(request, { timeoutMs });
+    },
+    ingestVenues(request: IngestVenuesRequest): Promise<IngestBatchResponse> {
+      return client.ingestVenues(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });

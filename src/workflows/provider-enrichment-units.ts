@@ -2,6 +2,12 @@
  * GW-6b provider enrichment datasets: player availability (injuries and
  * sidelined spells), transfers and trophies. GW-6c: team season stats.
  * Team coaches: `/coachs?team=`, the current manager and coach careers.
+ * GW-7: `fixture-predictions` (`/predictions?fixture=`, two shots per fixture,
+ * storing the pair's meetings from the same response when `head-to-head` is
+ * on) and `head-to-head` (`/fixtures/headtohead`, one call per pair a week).
+ * GW-8: `venue-detail` (`/venues?id=`, each venue once per 90 days) and coach
+ * trophies (`coach-trophies`, inside the trophies run). The pre-match three
+ * also run after every discovery sweep (`runPreMatchEnrichment`).
  *
  * They run on the GW-6a endpoint (`POST /workflows/provider-enrichment`) and
  * under the same rules as `player-season-stats`:
@@ -30,7 +36,10 @@ import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 import {
   IngestAvailabilityRequestSchema,
   IngestCoachProfilesRequestSchema,
+  IngestHeadToHeadRequestSchema,
   IngestMetadataSchema,
+  IngestProviderPredictionsRequestSchema,
+  IngestVenuesRequestSchema,
   IngestProviderTeamSeasonStatsRequestSchema,
   IngestTransfersRequestSchema,
   IngestTrophiesRequestSchema,
@@ -48,6 +57,9 @@ import { API_FOOTBALL_PROVIDER_ID } from '../adapters/api-football/index.js';
 import {
   PROVIDER_MULTI_ID_MAX,
   apiFootballCoachsTeamPath,
+  apiFootballHeadToHeadPath,
+  apiFootballPredictionsPath,
+  apiFootballVenuePath,
   apiFootballInjuriesLeaguePath,
   apiFootballSidelinedPath,
   apiFootballSquadPath,
@@ -55,7 +67,11 @@ import {
   apiFootballTransfersPath,
   apiFootballTrophiesPath,
   decodeCoachs,
+  decodeHeadToHead,
   decodeInjuries,
+  decodePrediction,
+  decodeVenue,
+  orderedTeamPair,
   decodeSidelined,
   decodeSquadPlayerIds,
   decodeTeamSeasonStats,
@@ -68,12 +84,14 @@ import type { ProviderCache } from '../worker/cache.js';
 import type { ProviderEnrichmentIngestClient } from '../worker/clients/game-service.js';
 import type { IngestionWorkload } from '../worker/ingestion.js';
 import { teamIdsFromFixtureListEnvelope } from './squad-sweep.js';
-import type {
-  CompetitionEntry,
-  ProviderEnrichmentDataset,
-  ProviderEnrichmentInput,
-  WorkflowDeps,
-  WorkflowLogEntry,
+import {
+  COACH_TROPHIES_SWITCH,
+  competitionEnrichmentClass,
+  type CompetitionEntry,
+  type ProviderEnrichmentDataset,
+  type ProviderEnrichmentInput,
+  type WorkflowDeps,
+  type WorkflowLogEntry,
 } from './types.js';
 
 /** The datasets this module runs. */
@@ -86,7 +104,22 @@ export const UNIT_ENRICHMENT_DATASETS: readonly UnitEnrichmentDataset[] = [
   'trophies',
   'team-season-stats',
   'team-coaches',
+  'fixture-predictions',
+  'head-to-head',
+  'venue-detail',
 ];
+
+/**
+ * GW-7 and GW-8 pre-match datasets. Besides the endpoint, the worker runs them
+ * after every `fixtures-next-7d` discovery sweep, in this order, so the
+ * predictions run can store each pair's meetings before the head-to-head run
+ * plans its calls.
+ */
+export const PRE_MATCH_ENRICHMENT_DATASETS = [
+  'fixture-predictions',
+  'head-to-head',
+  'venue-detail',
+] as const satisfies readonly UnitEnrichmentDataset[];
 
 export const isUnitEnrichmentDataset = (
   dataset: ProviderEnrichmentDataset
@@ -125,6 +158,15 @@ export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDatas
   trophies: 600,
   'team-season-stats': 500,
   'team-coaches': 500,
+  // One shot per fixture inside 48h of kickoff; the busiest 48h holds about
+  // 150 catalogue fixtures, which the first run after a deploy all plans.
+  'fixture-predictions': 200,
+  // One call per team pair a week, and none for a pair the predictions run
+  // already stored.
+  'head-to-head': 200,
+  // New venues and the 90-day refresh. The first runs after a deploy work
+  // through the catalogue's venues (about 300) 150 at a time.
+  'venue-detail': 150,
 };
 
 /**
@@ -145,7 +187,34 @@ export const UNIT_MARKER_WINDOW_SECONDS: Readonly<
   trophies: { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
   'team-season-stats': { nightly: 20 * 60 * 60, full: 20 * 60 * 60 },
   'team-coaches': { nightly: 20 * 60 * 60, full: 20 * 60 * 60 },
+  // A shot's marker outlives the 48h window, so each shot fires once.
+  'fixture-predictions': { nightly: 3 * 24 * 60 * 60, full: 3 * 24 * 60 * 60 },
+  'head-to-head': { nightly: 7 * 24 * 60 * 60, full: 7 * 24 * 60 * 60 },
+  'venue-detail': { nightly: 90 * 24 * 60 * 60, full: 90 * 24 * 60 * 60 },
 };
+
+/** A team pair's stored meetings count as fresh for 7 days (the head-to-head marker window). */
+export const HEAD_TO_HEAD_WINDOW_SECONDS = 7 * 24 * 60 * 60;
+/** Predictions and head-to-head cover fixtures kicking off within 48h. */
+export const PRE_MATCH_WINDOW_MS = 48 * 60 * 60 * 1_000;
+/**
+ * Inside 3h of kickoff a fixture gets its second (and last) prediction call:
+ * the "TTL 3h" refresh, as two explicit shots (verdict D17) instead of a
+ * fetch on every expiry.
+ */
+export const PREDICTION_FINAL_SHOT_MS = 3 * 60 * 60 * 1_000;
+/** Provider statuses of a fixture that has not kicked off and is not called off. */
+const PRE_MATCH_STATUSES: ReadonlySet<string> = new Set(['NS', 'TBD']);
+/** The team-coaches run's list of a team's coach ids, read by coach trophies. */
+const TEAM_COACHS_DIGEST_TTL_SECONDS = 8 * 24 * 60 * 60;
+
+export const teamCoachsDigestKey = (teamId: string): string =>
+  `enrich:team-coaches:coachs:${teamId}`;
+
+/** Coach ids from a team's last `/coachs?team=` pull. */
+export interface TeamCoachsDigest {
+  readonly coachIds: readonly string[];
+}
 
 /** Players listed in an injuries pull this recently are in the sidelined scope. */
 export const SIDELINED_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1_000;
@@ -189,6 +258,9 @@ export const UNIT_DATASET_NEEDS: Readonly<Record<UnitEnrichmentDataset, UnitPlan
   trophies: 'ingestTrophies',
   'team-season-stats': 'ingestProviderTeamSeasonStats',
   'team-coaches': 'ingestCoachProfiles',
+  'fixture-predictions': 'ingestProviderPredictions',
+  'head-to-head': 'ingestHeadToHead',
+  'venue-detail': 'ingestVenues',
 };
 
 /** What a provider call gave back to a unit. */
@@ -258,7 +330,10 @@ export interface UnitPlan {
     | 'ingestTransfers'
     | 'ingestTrophies'
     | 'ingestProviderTeamSeasonStats'
-    | 'ingestCoachProfiles';
+    | 'ingestCoachProfiles'
+    | 'ingestProviderPredictions'
+    | 'ingestHeadToHead'
+    | 'ingestVenues';
   /** Team scope: leagues whose fixture list could not be read or fetched. */
   readonly gaps?: readonly ScopeGap[];
   /** Sidelined: players left out because their marker is still fresh. */
@@ -302,6 +377,12 @@ export const planUnitDataset = async (
       return planTeamSeasonStats(input, deps, nowMs, options);
     case 'team-coaches':
       return planCoaches(input, deps, options);
+    case 'fixture-predictions':
+      return planPredictions(input, deps, nowMs, options);
+    case 'head-to-head':
+      return planHeadToHead(input, deps, nowMs, options);
+    case 'venue-detail':
+      return planVenues(input, deps, options);
   }
 };
 
@@ -401,16 +482,22 @@ export interface LeagueFixtureList {
 export const readLeagueFixtureLists = async (
   input: Pick<ProviderEnrichmentInput, 'leagueIds'>,
   deps: WorkflowDeps,
-  loadFixtureList?: FixtureListLoader
+  loadFixtureList?: FixtureListLoader,
+  scope: 'domestic' | 'enriched' = 'domestic'
 ): Promise<{
   readonly lists: readonly LeagueFixtureList[];
   readonly gaps: readonly ScopeGap[];
 }> => {
   const leagueFilter = new Set(uniquePositiveInts(input.leagueIds ?? []));
+  // `enriched` (the pre-match datasets) is every catalogue competition whose
+  // enrichment class is not `none`; `domestic` is the team scope's tiers.
   const entries = deps.competitions.filter((entry) =>
-    leagueFilter.size > 0
-      ? leagueFilter.has(entry.apiFootballLeagueId)
-      : TEAM_SCOPE_TIERS.has(entry.tier)
+    scope === 'enriched'
+      ? competitionEnrichmentClass(entry) !== 'none' &&
+        (leagueFilter.size === 0 || leagueFilter.has(entry.apiFootballLeagueId))
+      : leagueFilter.size > 0
+        ? leagueFilter.has(entry.apiFootballLeagueId)
+        : TEAM_SCOPE_TIERS.has(entry.tier)
   );
   const lists: LeagueFixtureList[] = [];
   const gaps: ScopeGap[] = [];
@@ -713,9 +800,10 @@ const planTrophies = async (
     input.teamIds && input.teamIds.length > 0
       ? scope.teamIds
       : scope.teamIds.filter((teamId) => teamTrophiesPartition(teamId) === partition);
+  const withCoaches = (deps.enrichment?.enabledDatasets ?? []).includes(COACH_TROPHIES_SWITCH);
   return {
     needs: 'ingestTrophies',
-    units: selected.map((teamId) => squadTrophiesUnit(teamId)),
+    units: selected.map((teamId) => squadTrophiesUnit(teamId, withCoaches)),
     gaps: scope.gaps,
     emptyReason: `no teams in partition ${partition} of the catalogue fixture lists; pass teamIds or playerIds`,
   };
@@ -949,6 +1037,13 @@ const coachesUnit = (teamId: string): EnrichmentUnit => ({
       });
       return complete(1, 1, 0, decoded.dropped);
     }
+    // The coach trophies pull (`coach-trophies`) reads this list, so it asks
+    // for exactly the coaches game-service holds profiles for.
+    await ctx.cache.set<TeamCoachsDigest>(
+      teamCoachsDigestKey(teamId),
+      { coachIds: sortIds(decoded.rows.map((row) => row.providerCoachId)) },
+      TEAM_COACHS_DIGEST_TTL_SECONDS
+    );
     try {
       const accepted = await ingestInBatches(decoded.rows, async (batch, start) =>
         ctx.ingest.ingestCoachProfiles!(
@@ -1031,8 +1126,13 @@ const trophiesUnit = (subject: 'player' | 'coach', ids: readonly string[]): Enri
   },
 });
 
-/** One team: its current squad, then its players' trophies in batches of 20. */
-const squadTrophiesUnit = (teamId: string): EnrichmentUnit => ({
+/**
+ * One team: its current squad, then its players' trophies in batches of 20.
+ * With `coach-trophies` on, then its coaches' trophies: the ids the last
+ * team-coaches pull listed for the team (current and former coaches, the
+ * profiles game-service stores), 20 a call. No list yet means no coach call.
+ */
+const squadTrophiesUnit = (teamId: string, withCoaches = false): EnrichmentUnit => ({
   key: `squad-${teamId}`,
   leagueId: 0,
   season: 0,
@@ -1049,13 +1149,28 @@ const squadTrophiesUnit = (teamId: string): EnrichmentUnit => ({
     if (decodedSquad.providerErrors !== undefined && decodedSquad.playerIds.length === 0) {
       return failed(1, 1, `squad: provider errors ${decodedSquad.providerErrors}`, 0);
     }
-    const batches = chunk(decodedSquad.playerIds, PROVIDER_MULTI_ID_MAX);
+    const batches: { readonly subject: 'player' | 'coach'; readonly ids: readonly string[] }[] =
+      chunk(decodedSquad.playerIds, PROVIDER_MULTI_ID_MAX).map((ids) => ({
+        subject: 'player' as const,
+        ids,
+      }));
+    if (withCoaches) {
+      const digest = await ctx.cache.get<TeamCoachsDigest>(teamCoachsDigestKey(teamId));
+      for (const ids of chunk(sortIds(digest?.coachIds ?? []), PROVIDER_MULTI_ID_MAX)) {
+        batches.push({ subject: 'coach', ids });
+      }
+    }
     const planned = 1 + batches.length;
     let calls = 1;
     let accepted = 0;
     let dropped = 0;
-    for (const ids of batches) {
-      const outcome = await fetchAndIngestTrophies(ctx, 'player', ids, decodedSquad.names);
+    for (const { subject, ids } of batches) {
+      const outcome = await fetchAndIngestTrophies(
+        ctx,
+        subject,
+        ids,
+        subject === 'player' ? decodedSquad.names : undefined
+      );
       if (!outcome.ok) {
         if (outcome.stopped) {
           return partial(calls, planned, accepted, dropped, []);
@@ -1106,6 +1221,339 @@ const teamSeasonStatsUnit = (leagueId: number, season: number, teamId: string): 
       return complete(1, 1, response.acceptedCount, decoded.dropped);
     } catch (error) {
       return failed(1, 1, `ingest failed: ${errorMessage(error)}`, decoded.dropped);
+    }
+  },
+});
+
+// ── GW-7 and GW-8: pre-match datasets ─────────────────────────────────────
+
+/** One fixture from a cached `/fixtures?league&season` list. */
+export interface ListedFixture {
+  readonly fixtureId: string;
+  readonly kickoffMs: number;
+  readonly status: string;
+  readonly homeTeamId?: string;
+  readonly awayTeamId?: string;
+  readonly venueId?: string;
+}
+
+const recordOf = (value: unknown): Record<string, unknown> | undefined =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+
+/** The fixtures of one cached fixture-list envelope. Entries with no id or date are skipped. */
+export const fixturesFromListEnvelope = (envelope: unknown): readonly ListedFixture[] => {
+  const response = recordOf(envelope)?.response;
+  if (!Array.isArray(response)) {
+    return [];
+  }
+  const out: ListedFixture[] = [];
+  for (const item of response) {
+    const fixture = recordOf(recordOf(item)?.fixture);
+    const teams = recordOf(recordOf(item)?.teams);
+    const fixtureId = fixture ? parseProviderId(fixture.id) : undefined;
+    const kickoffMs = fixture ? Date.parse(String(fixture.date ?? '')) : Number.NaN;
+    if (!fixture || fixtureId === undefined || !Number.isFinite(kickoffMs)) {
+      continue;
+    }
+    out.push({
+      fixtureId,
+      kickoffMs,
+      status: String(recordOf(fixture.status)?.short ?? '').toUpperCase(),
+      homeTeamId: parseProviderId(recordOf(teams?.home)?.id),
+      awayTeamId: parseProviderId(recordOf(teams?.away)?.id),
+      venueId: parseProviderId(recordOf(fixture.venue)?.id),
+    });
+  }
+  return out;
+};
+
+interface PreMatchFixture extends ListedFixture {
+  readonly leagueId: number;
+  readonly season: number;
+}
+
+/**
+ * Catalogue fixtures (enrichment class not `none`) that have not kicked off,
+ * are not called off, and kick off within 48h. `fixtureIds` narrows the set.
+ */
+const preMatchFixtures = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  nowMs: number,
+  options: PlanOptions
+): Promise<{
+  readonly fixtures: readonly PreMatchFixture[];
+  readonly gaps: readonly ScopeGap[];
+}> => {
+  const { lists, gaps } = await readLeagueFixtureLists(
+    input,
+    deps,
+    options.loadFixtureList,
+    'enriched'
+  );
+  const named = new Set(sortIds(input.fixtureIds ?? []));
+  const seen = new Set<string>();
+  const fixtures: PreMatchFixture[] = [];
+  for (const { entry, list } of lists) {
+    for (const fixture of fixturesFromListEnvelope(list)) {
+      const untilKickoff = fixture.kickoffMs - nowMs;
+      if (
+        seen.has(fixture.fixtureId) ||
+        (named.size > 0 && !named.has(fixture.fixtureId)) ||
+        !PRE_MATCH_STATUSES.has(fixture.status) ||
+        untilKickoff <= 0 ||
+        untilKickoff > PRE_MATCH_WINDOW_MS
+      ) {
+        continue;
+      }
+      seen.add(fixture.fixtureId);
+      fixtures.push({ ...fixture, leagueId: entry.apiFootballLeagueId, season: entry.season });
+    }
+  }
+  fixtures.sort((a, b) => a.kickoffMs - b.kickoffMs);
+  return { fixtures, gaps };
+};
+
+/** The unit key of a pair's head-to-head pull, low id first. */
+export const headToHeadUnitKey = (teamA: string, teamB: string): string => {
+  const [low, high] = orderedTeamPair(teamA, teamB);
+  return `pair-${low}-${high}`;
+};
+
+/**
+ * Predictions: one unit per fixture shot. A fixture more than 3h out gets
+ * shot 1; inside 3h it gets shot 2. Each shot's marker outlives the window,
+ * so a fixture costs two calls (one when first seen inside 3h), whatever the
+ * discovery cadence. With `head-to-head` on as well, each shot also stores
+ * the pair's meetings from the same response.
+ */
+const planPredictions = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  nowMs: number,
+  options: PlanOptions
+): Promise<UnitPlan> => {
+  const { fixtures, gaps } = await preMatchFixtures(input, deps, nowMs, options);
+  const withHeadToHead = (deps.enrichment?.enabledDatasets ?? []).includes('head-to-head');
+  return {
+    needs: 'ingestProviderPredictions',
+    units: fixtures.map((fixture) =>
+      predictionsUnit(
+        fixture,
+        fixture.kickoffMs - nowMs <= PREDICTION_FINAL_SHOT_MS ? 2 : 1,
+        withHeadToHead
+      )
+    ),
+    gaps,
+    emptyReason: 'no catalogue fixtures kick off within 48h',
+  };
+};
+
+/** Head-to-head: one unit per team pair playing within 48h. */
+const planHeadToHead = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  nowMs: number,
+  options: PlanOptions
+): Promise<UnitPlan> => {
+  const { fixtures, gaps } = await preMatchFixtures(input, deps, nowMs, options);
+  const units: EnrichmentUnit[] = [];
+  const seen = new Set<string>();
+  for (const fixture of fixtures) {
+    if (!fixture.homeTeamId || !fixture.awayTeamId || fixture.homeTeamId === fixture.awayTeamId) {
+      continue;
+    }
+    const key = headToHeadUnitKey(fixture.homeTeamId, fixture.awayTeamId);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    units.push(headToHeadUnit(fixture.homeTeamId, fixture.awayTeamId, fixture));
+  }
+  return {
+    needs: 'ingestHeadToHead',
+    units,
+    gaps,
+    emptyReason: 'no catalogue fixtures with two teams kick off within 48h',
+  };
+};
+
+/**
+ * Venues: `venueIds` when given, else every venue in the catalogue fixture
+ * lists (enrichment class not `none`), past and upcoming. A venue's 90-day
+ * marker makes this "each new venue once, then every 90 days".
+ */
+const planVenues = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  options: PlanOptions
+): Promise<UnitPlan> => {
+  if (input.venueIds && input.venueIds.length > 0) {
+    return { needs: 'ingestVenues', units: sortIds(input.venueIds).map(venueUnit) };
+  }
+  const { lists, gaps } = await readLeagueFixtureLists(
+    input,
+    deps,
+    options.loadFixtureList,
+    'enriched'
+  );
+  const ids = new Set<string>();
+  for (const { list } of lists) {
+    for (const fixture of fixturesFromListEnvelope(list)) {
+      if (fixture.venueId !== undefined) {
+        ids.add(fixture.venueId);
+      }
+    }
+  }
+  return {
+    needs: 'ingestVenues',
+    units: sortIds([...ids]).map(venueUnit),
+    gaps,
+    emptyReason: 'no venue ids in the catalogue fixture lists',
+  };
+};
+
+const predictionsUnit = (
+  fixture: PreMatchFixture,
+  shot: 1 | 2,
+  withHeadToHead: boolean
+): EnrichmentUnit => ({
+  key: `fixture-${fixture.fixtureId}-shot-${shot}`,
+  leagueId: fixture.leagueId,
+  season: fixture.season,
+  run: async (ctx) => {
+    const path = apiFootballPredictionsPath(fixture.fixtureId);
+    const resource = `predictions-${fixture.fixtureId}`;
+    const result = await ctx.fetch({ workload: 'fixture-predictions', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodePrediction(result.data, { fixtureId: fixture.fixtureId, fetchedAtMs });
+    if (decoded.providerErrors !== undefined && !decoded.row) {
+      return failed(1, 1, `provider errors ${decoded.providerErrors}`, decoded.dropped);
+    }
+    let accepted = 0;
+    try {
+      if (decoded.row) {
+        const response = await ctx.ingest.ingestProviderPredictions!(
+          create(IngestProviderPredictionsRequestSchema, {
+            metadata: metadata('fixture-predictions', resource, path, fetchedAtMs, 0),
+            rows: [decoded.row],
+          })
+        );
+        accepted += response.acceptedCount;
+      } else {
+        ctx.log({
+          event: 'provider_enrichment.empty_response',
+          leagueId: fixture.leagueId,
+          season: fixture.season,
+          reason: `no prediction for fixture ${fixture.fixtureId}`,
+        });
+      }
+      const pair = decoded.headToHead;
+      if (withHeadToHead && pair && (pair.meetings.length > 0 || pair.clearScope)) {
+        const markerKey = unitMarkerKey(
+          'head-to-head',
+          headToHeadUnitKey(pair.providerTeamLowId, pair.providerTeamHighId)
+        );
+        const marker = await ctx.cache.get<UnitMarker>(markerKey);
+        if (!marker || ctx.nowMs - marker.completedAtMs > HEAD_TO_HEAD_WINDOW_SECONDS * 1_000) {
+          const response = await ctx.ingest.ingestHeadToHead!(
+            create(IngestHeadToHeadRequestSchema, {
+              metadata: metadata('head-to-head', resource, path, fetchedAtMs, 0),
+              snapshots: [pair],
+            })
+          );
+          accepted += response.acceptedCount;
+          await ctx.cache.set<UnitMarker>(
+            markerKey,
+            { completedAtMs: ctx.clockMs() },
+            HEAD_TO_HEAD_WINDOW_SECONDS
+          );
+        }
+      }
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, decoded.dropped, accepted);
+    }
+    return complete(1, 1, accepted, decoded.dropped);
+  },
+});
+
+const headToHeadUnit = (
+  teamA: string,
+  teamB: string,
+  fixture: PreMatchFixture
+): EnrichmentUnit => ({
+  key: headToHeadUnitKey(teamA, teamB),
+  leagueId: fixture.leagueId,
+  season: fixture.season,
+  run: async (ctx) => {
+    const [low, high] = orderedTeamPair(teamA, teamB);
+    const path = apiFootballHeadToHeadPath(low, high);
+    const resource = `h2h-${low}-${high}`;
+    const result = await ctx.fetch({ workload: 'head-to-head', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodeHeadToHead(result.data, { teamA: low, teamB: high, fetchedAtMs });
+    if (!decoded.snapshot) {
+      return failed(1, 1, `provider errors ${decoded.providerErrors ?? 'no response'}`, 0);
+    }
+    try {
+      const response = await ctx.ingest.ingestHeadToHead!(
+        create(IngestHeadToHeadRequestSchema, {
+          metadata: metadata('head-to-head', resource, path, fetchedAtMs, 0),
+          snapshots: [decoded.snapshot],
+        })
+      );
+      return complete(1, 1, response.acceptedCount, decoded.dropped);
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, decoded.dropped);
+    }
+  },
+});
+
+const venueUnit = (venueId: string): EnrichmentUnit => ({
+  key: `venue-${venueId}`,
+  leagueId: 0,
+  season: 0,
+  run: async (ctx) => {
+    const path = apiFootballVenuePath(venueId);
+    const resource = `venue-${venueId}`;
+    const result = await ctx.fetch({ workload: 'venue-detail', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodeVenue(result.data, { venueId, fetchedAtMs });
+    if (!decoded.row) {
+      if (decoded.providerErrors !== undefined) {
+        return failed(1, 1, `provider errors ${decoded.providerErrors}`, 0);
+      }
+      // The provider has no record for the id; the marker keeps it from
+      // being asked again for 90 days.
+      ctx.log({
+        event: 'provider_enrichment.empty_response',
+        leagueId: 0,
+        season: 0,
+        reason: `no venue record for ${venueId}`,
+      });
+      return complete(1, 1, 0, 0);
+    }
+    try {
+      const response = await ctx.ingest.ingestVenues!(
+        create(IngestVenuesRequestSchema, {
+          metadata: metadata('venue-detail', resource, path, fetchedAtMs, 0),
+          rows: [decoded.row],
+        })
+      );
+      return complete(1, 1, response.acceptedCount, 0);
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, 0);
     }
   },
 });
