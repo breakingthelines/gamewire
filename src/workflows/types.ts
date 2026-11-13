@@ -1255,7 +1255,10 @@ export interface ProviderEnrichmentInput {
   readonly coachIds?: readonly string[];
   /**
    * `team-transfers`, `team-coaches` and `trophies`: API-Football team ids. Replaces the
-   * default team scope (the domestic catalogue teams).
+   * default team scope (the domestic catalogue teams; for `team-coaches`, also
+   * the national teams of the international competitions).
+   * `venue-detail`: teams whose own record (`/teams?id=`) to read for their
+   * home ground. With or without `venueIds`, replaces the default scope.
    * `team-season-stats`: narrows the team scope to these ids; each team is
    * fetched for the catalogue league whose fixture list it appears in.
    */
@@ -1279,7 +1282,7 @@ export interface ProviderEnrichmentInput {
    * A named fixture must still be in a cached catalogue fixture list.
    */
   readonly fixtureIds?: readonly string[];
-  /** `venue-detail`: API-Football venue ids. Replaces the default scope. */
+  /** `venue-detail`: API-Football venue ids. With or without `teamIds`, replaces the default scope. */
   readonly venueIds?: readonly string[];
   /** Ignore stored cursors and start every league-season from page 1. */
   readonly reset?: boolean;

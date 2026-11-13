@@ -297,6 +297,25 @@ const predictionsEnvelope = (fixtureId: string) => ({
   ],
 });
 
+/** `/teams?id=T`: the team's record and the venue it names as home (T + 5000). */
+const teamRecordEnvelope = (id: string) => ({
+  errors: [],
+  response: [
+    {
+      team: { id: Number(id), name: `Team ${id}`, country: 'England', national: false },
+      venue: {
+        id: id === '0' ? null : Number(id) + 5000,
+        name: `Home of ${id}`,
+        address: 'Lane',
+        city: 'Town',
+        capacity: 28_723,
+        surface: 'grass',
+        image: `https://media.example/venues/${Number(id) + 5000}.png`,
+      },
+    },
+  ],
+});
+
 const venueEnvelope = (id: string) => ({
   errors: [],
   response: [
@@ -389,6 +408,8 @@ const harness = (options: HarnessOptions = {}) => {
       }
       case '/venues':
         return venueEnvelope(req.params.get('id') ?? '');
+      case '/teams':
+        return teamRecordEnvelope(req.params.get('id') ?? '');
       case '/teams/statistics':
         return teamStatisticsEnvelope(
           Number(req.params.get('league')),
@@ -1314,14 +1335,32 @@ describe('team-season-stats', () => {
 });
 
 describe('team-coaches', () => {
-  it('fetches every team in the domestic scope once and writes each coach with its career', async () => {
+  it('fetches every domestic and national team once and writes each coach with its career', async () => {
     const h = harness();
-    await h.seedFixtureLists({ 39: [33, 40], 88: [194], 144: [194], 2: [541] });
+    await h.seedFixtureLists({
+      39: [33, 40],
+      88: [194],
+      144: [194],
+      2: [541],
+      1: [10, 25],
+      10: [77],
+    });
     const out = await h.run('team-coaches');
     expect(out.status).toBe('completed');
-    // The Champions League list (2) is not domestic: 541 is not fetched.
-    expect(h.paths()).toEqual(['/coachs?team=33', '/coachs?team=40', '/coachs?team=194']);
-    expect(h.coaches).toHaveLength(3);
+    // The Champions League list (2) is neither domestic nor international, and
+    // friendlies (10) are class none: 541 and 77 are not fetched. The World
+    // Cup's national teams (1) are.
+    expect(h.paths()).toEqual([
+      '/coachs?team=10',
+      '/coachs?team=25',
+      '/coachs?team=33',
+      '/coachs?team=40',
+      '/coachs?team=194',
+    ]);
+    expect(h.coaches).toHaveLength(5);
+    // Each batch names the team whose whole list it is.
+    expect(h.coaches.map((r) => r.providerTeamId)).toEqual(['10', '25', '33', '40', '194']);
+    h.coaches.splice(0, 2);
     const rows = h.coaches[0]!.rows;
     expect(rows.map((r) => [r.providerCoachId, r.currentProviderTeamId])).toEqual([
       ['331', ''],
@@ -1628,6 +1667,55 @@ describe('head-to-head', () => {
 });
 
 describe('venue-detail', () => {
+  it('asks each catalogue team record once, then not for 90 days, linking its home ground', async () => {
+    const h = harness({ enabled: ['venue-detail'] });
+    const lists = {
+      39: preMatchList([{ id: 101, home: 68, away: 33, kickoffMs: h.now() - 5 * DAY, venue: 489 }]),
+      1: preMatchList([{ id: 102, home: 10, away: 3, kickoffMs: h.now() + DAY, venue: 566 }]),
+      10: preMatchList([{ id: 201, home: 7, away: 8, kickoffMs: h.now() + DAY, venue: 99 }]),
+    };
+    await h.seedFixtureLists(withQuietLists(h.now(), lists));
+    await h.run('venue-detail');
+    const teams = h.paths().filter((p) => p.startsWith('/teams'));
+    // Every team in an enriched list, friendlies (10, class none) left out,
+    // and team records before venue records.
+    expect(teams).toEqual(['3', '10', '33', '68', '900', '901'].map((id) => `/teams?id=${id}`));
+    expect(h.paths().indexOf('/teams?id=901')).toBeLessThan(h.paths().indexOf('/venues?id=489'));
+    const england = h.venues.flatMap((r) => r.rows).find((r) => r.homeProviderTeamId === '10')!;
+    expect([england.providerVenueId, england.name, england.country, england.capacity]).toEqual([
+      '5010',
+      'Home of 10',
+      'England',
+      28_723,
+    ]);
+    const before = h.paths().length;
+    h.advance(89 * DAY);
+    await h.seedFixtureLists(withQuietLists(h.now(), lists));
+    await h.run('venue-detail');
+    expect(h.paths()).toHaveLength(before);
+    h.advance(2 * DAY);
+    await h.run('venue-detail', { teamIds: ['68'] });
+    expect(h.paths().slice(before)).toEqual(['/teams?id=68']);
+    expect(parseProviderEnrichmentInput({ dataset: 'venue-detail', teamIds: [68] }).ok).toBe(true);
+  });
+
+  it('writes nothing for a team record without a venue id', async () => {
+    const h = harness({
+      enabled: ['venue-detail'],
+      respond: (req) =>
+        req.path === '/teams'
+          ? {
+              errors: [],
+              response: [{ team: { id: 70, name: 'Team 70' }, venue: { id: null, name: null } }],
+            }
+          : undefined,
+    });
+    const out = await h.run('venue-detail', { teamIds: ['70'] });
+    expect(out.status).toBe('completed');
+    expect(h.paths()).toEqual(['/teams?id=70']);
+    expect(h.venues).toHaveLength(0);
+  });
+
   it('asks each catalogue venue once, then not for 90 days, and skips class none', async () => {
     const h = harness({ enabled: ['venue-detail'] });
     const lists = {
@@ -1641,8 +1729,9 @@ describe('venue-detail', () => {
     };
     await h.seedFixtureLists(withQuietLists(h.now(), lists));
     await h.run('venue-detail');
-    expect(h.paths()).toEqual(['/venues?id=556', '/venues?id=1288']);
-    const row = h.venues[0]!.rows[0]!;
+    const venuePaths = () => h.paths().filter((p) => p.startsWith('/venues'));
+    expect(venuePaths()).toEqual(['/venues?id=556', '/venues?id=1288']);
+    const row = h.venues.flatMap((r) => r.rows).find((r) => r.homeProviderTeamId === '')!;
     expect([row.providerVenueId, row.capacity, row.surface, row.city]).toEqual([
       '556',
       12_815,
@@ -1652,10 +1741,10 @@ describe('venue-detail', () => {
     h.advance(89 * DAY);
     await h.seedFixtureLists(withQuietLists(h.now(), lists));
     await h.run('venue-detail');
-    expect(h.paths()).toHaveLength(2);
+    expect(venuePaths()).toHaveLength(2);
     h.advance(2 * DAY);
     await h.run('venue-detail', { venueIds: ['556'] });
-    expect(h.paths()).toEqual(['/venues?id=556', '/venues?id=1288', '/venues?id=556']);
+    expect(venuePaths()).toEqual(['/venues?id=556', '/venues?id=1288', '/venues?id=556']);
   });
 
   it('reads venue ids from a cached fixture list', () => {

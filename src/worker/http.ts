@@ -805,7 +805,8 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
       dataset !== 'team-transfers' &&
       dataset !== 'team-coaches' &&
       dataset !== 'trophies' &&
-      dataset !== 'team-season-stats') ||
+      dataset !== 'team-season-stats' &&
+      dataset !== 'venue-detail') ||
     (fixtureIds && dataset !== 'fixture-predictions' && dataset !== 'head-to-head') ||
     (venueIds && dataset !== 'venue-detail')
   ) {
