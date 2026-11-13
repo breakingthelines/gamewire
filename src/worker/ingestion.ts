@@ -33,6 +33,7 @@ import {
   providerGameIdFromFixture,
 } from '../adapters/api-football/index.js';
 import {
+  apiFootballCoachsTeamPath,
   apiFootballInjuriesLeaguePath,
   apiFootballPlayerSeasonStatsPath,
   apiFootballSidelinedPath,
@@ -81,7 +82,8 @@ export type IngestionWorkload =
   | 'player-sidelined'
   | 'team-transfers'
   | 'trophies'
-  | 'team-season-stats';
+  | 'team-season-stats'
+  | 'team-coaches';
 
 /**
  * TTL table verbatim from the task brief. Keep changes here in lockstep with
@@ -145,6 +147,7 @@ export const INGESTION_TTL_SECONDS: Record<IngestionWorkload, number> = {
   trophies: 0,
   // GW-6c: never cached either (D9).
   'team-season-stats': 0,
+  'team-coaches': 0,
 } as const;
 
 /**
@@ -216,6 +219,7 @@ export const INGESTION_TICK_INTERVAL_MS: Record<IngestionWorkload, number> = {
   'team-transfers': 0,
   trophies: 0,
   'team-season-stats': 0,
+  'team-coaches': 0,
 } as const;
 
 /**
@@ -1513,6 +1517,8 @@ function apiFootballPathFor(workload: IngestionWorkload, resourceId: string): st
         ? apiFootballTeamStatisticsPath(Number(match[1]), Number(match[2]), match[3] ?? '')
         : '/teams/statistics';
     }
+    case 'team-coaches':
+      return apiFootballCoachsTeamPath(resourceId.trim().replace(/^coachs-/, ''));
   }
 }
 

@@ -2,7 +2,7 @@
  * Decoders for API-Football enrichment datasets (Mega plan, spec GW-6).
  *
  * Player season stats (GW-6a); injuries, sidelined spells, transfers and
- * trophies (GW-6b); team season stats (GW-6c). Each decoder turns one provider envelope into GS-2 ingest
+ * trophies (GW-6b); team season stats (GW-6c); team coaches. Each decoder turns one provider envelope into GS-2 ingest
  * rows and never invents values:
  *
  * - A provider `null` is left out of `values`. A missing key means "the
@@ -22,6 +22,8 @@ import { SubjectType } from '@breakingthelines/protos/btl/context/v1/context_pb'
 import {
   AvailabilityKind,
   AvailabilityRowSchema,
+  CoachCareerRowSchema,
+  CoachProfileRowSchema,
   AvailabilitySource,
   AvailabilityStatus,
   ProviderPlayerSeasonStatsRowSchema,
@@ -30,6 +32,8 @@ import {
   TrophyEntrySchema,
   TrophyRowSchema,
   type AvailabilityRow,
+  type CoachCareerRow,
+  type CoachProfileRow,
   type ProviderPlayerSeasonStatsRow,
   type ProviderTeamSeasonStatsRow,
   type TransferRow,
@@ -820,4 +824,109 @@ export const decodeTeamSeasonStats = (
     fetchedAt: timestampFromMs(options.fetchedAtMs),
   });
   return { rows: [row], entries: 1, dropped: 0, providerErrors };
+};
+
+// ── Team coaches ──────────────────────────────────────────────────────────
+
+/**
+ * `/coachs?team=T`: every coach the provider links to the team, current and
+ * former, each with a full career. The top-level `team` on each coach is the
+ * queried team, not the coach's current one, so it is ignored.
+ */
+export const apiFootballCoachsTeamPath = (teamId: string): string =>
+  `/coachs?team=${encodeURIComponent(teamId)}`;
+
+/**
+ * The spell a coach holds now: an open spell (no end date, or an end date
+ * after the fetch day) with a team id, the one that started last. Provider
+ * careers keep stale open spells (Amorim's Manchester United spell stayed
+ * open after Carrick's began), so the latest start wins. A spell with no
+ * start date only wins when no open spell has one.
+ */
+export const currentCoachSpell = (
+  career: readonly CoachCareerRow[],
+  fetchedAtMs: number
+): CoachCareerRow | undefined => {
+  const today = new Date(fetchedAtMs).toISOString().slice(0, 10);
+  let best: CoachCareerRow | undefined;
+  for (const spell of career) {
+    if (spell.providerTeamId === '' || (spell.endDate !== '' && spell.endDate <= today)) {
+      continue;
+    }
+    if (best === undefined || spell.startDate > best.startDate) {
+      best = spell;
+    }
+  }
+  return best;
+};
+
+/**
+ * Decode `/coachs?team=T` into one profile row per coach with the whole
+ * career, most recent first. Coaches with no id or the placeholder name are
+ * dropped; so are career spells with no team id. A malformed date is kept as
+ * ''. `current_provider_team_id` is {@link currentCoachSpell}'s team, or ''
+ * when every spell has ended (a sacked coach with no new post).
+ */
+export const decodeCoachs = (
+  envelope: unknown,
+  options: { readonly fetchedAtMs: number }
+): DecodedEnrichmentResponse<CoachProfileRow> => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { rows: [], entries: 0, dropped: 0, providerErrors };
+  }
+  const fetchedAt = timestampFromMs(options.fetchedAtMs);
+  const rows: CoachProfileRow[] = [];
+  const seen = new Set<string>();
+  let dropped = 0;
+  for (const entry of envelope.response) {
+    const id = isRecord(entry) ? providerId(entry.id) : undefined;
+    if (!isRecord(entry) || id === undefined || isPlaceholderName(entry.name) || seen.has(id)) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(id);
+    const career: CoachCareerRow[] = [];
+    for (const spell of Array.isArray(entry.career) ? entry.career : []) {
+      const team = isRecord(spell) && isRecord(spell.team) ? spell.team : undefined;
+      const teamId = team ? providerId(team.id) : undefined;
+      if (!isRecord(spell) || !team || teamId === undefined) {
+        dropped += 1;
+        continue;
+      }
+      career.push(
+        create(CoachCareerRowSchema, {
+          providerTeamId: teamId,
+          teamSnapshot: teamSnapshot(team),
+          teamName: text(team.name),
+          startDate: isoDate(spell.start),
+          endDate: isoDate(spell.end),
+        })
+      );
+    }
+    career.sort((a, b) => (a.startDate === b.startDate ? 0 : a.startDate > b.startDate ? -1 : 1));
+    const birth = isRecord(entry.birth) ? entry.birth : {};
+    const name = text(entry.name);
+    rows.push(
+      create(CoachProfileRowSchema, {
+        providerCoachId: id,
+        coachSnapshot: create(ProviderEntitySnapshotSchema, {
+          label: name,
+          imageUrl: text(entry.photo),
+        }),
+        name,
+        firstname: text(entry.firstname),
+        lastname: text(entry.lastname),
+        birthDate: isoDate(birth.date),
+        birthPlace: text(birth.place),
+        birthCountry: text(birth.country),
+        nationality: text(entry.nationality),
+        photoUrl: text(entry.photo),
+        career,
+        currentProviderTeamId: currentCoachSpell(career, options.fetchedAtMs)?.providerTeamId ?? '',
+        fetchedAt,
+      })
+    );
+  }
+  return { rows, entries: envelope.response.length, dropped, providerErrors };
 };

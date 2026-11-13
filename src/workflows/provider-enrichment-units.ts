@@ -1,6 +1,7 @@
 /**
  * GW-6b provider enrichment datasets: player availability (injuries and
  * sidelined spells), transfers and trophies. GW-6c: team season stats.
+ * Team coaches: `/coachs?team=`, the current manager and coach careers.
  *
  * They run on the GW-6a endpoint (`POST /workflows/provider-enrichment`) and
  * under the same rules as `player-season-stats`:
@@ -15,7 +16,7 @@
  *   enrichment minute limiter in front of it, and a per-run call limit.
  *
  * Work is split into units. A unit is one league-season (injuries), one team
- * (transfers, or a squad plus its players' trophies), one team in one league
+ * (transfers, coaches, or a squad plus its players' trophies), one team in one league
  * (team season stats) or a batch of up to 20 player or coach ids (sidelined,
  * trophies). A completed unit writes its
  * marker; a re-run inside the marker window reports it `fresh` and fetches
@@ -28,6 +29,7 @@ import { timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
   IngestAvailabilityRequestSchema,
+  IngestCoachProfilesRequestSchema,
   IngestMetadataSchema,
   IngestProviderTeamSeasonStatsRequestSchema,
   IngestTransfersRequestSchema,
@@ -37,6 +39,7 @@ import {
   AvailabilityReplaceScopeSchema,
   AvailabilitySource,
   type AvailabilityRow,
+  type CoachProfileRow,
   type TransferRow,
   type TrophyRow,
 } from '@breakingthelines/protos/btl/game/v1/types/provider_data_pb';
@@ -44,12 +47,14 @@ import {
 import { API_FOOTBALL_PROVIDER_ID } from '../adapters/api-football/index.js';
 import {
   PROVIDER_MULTI_ID_MAX,
+  apiFootballCoachsTeamPath,
   apiFootballInjuriesLeaguePath,
   apiFootballSidelinedPath,
   apiFootballSquadPath,
   apiFootballTeamStatisticsPath,
   apiFootballTransfersPath,
   apiFootballTrophiesPath,
+  decodeCoachs,
   decodeInjuries,
   decodeSidelined,
   decodeSquadPlayerIds,
@@ -80,6 +85,7 @@ export const UNIT_ENRICHMENT_DATASETS: readonly UnitEnrichmentDataset[] = [
   'team-transfers',
   'trophies',
   'team-season-stats',
+  'team-coaches',
 ];
 
 export const isUnitEnrichmentDataset = (
@@ -98,7 +104,7 @@ export const INJURIES_COVERED_LEAGUE_IDS: ReadonlySet<number> = new Set([
   1, 2, 3, 31, 32, 39, 40, 61, 71, 78, 88, 135, 140, 203, 253,
 ]);
 
-/** Catalogue tiers whose teams make up the transfers and trophies team scope. */
+/** Catalogue tiers whose teams make up the transfers, coaches and trophies team scope. */
 const TEAM_SCOPE_TIERS: ReadonlySet<CompetitionEntry['tier']> = new Set([
   'domestic-top-five',
   'domestic-league',
@@ -109,7 +115,8 @@ const TEAM_SCOPE_TIERS: ReadonlySet<CompetitionEntry['tier']> = new Set([
  * at the Mega catalogue (see `call-budget.ts`): injuries 15 league-seasons,
  * sidelined about 60 batches, transfers about 415 teams, trophies a quarter
  * of the teams (about 104 squads plus about 160 trophy batches), team season
- * stats every team on a Monday (about 415).
+ * stats every team on a Monday (about 415), coaches every team daily (about
+ * 415).
  */
 export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDataset, number>> = {
   'injuries-league': 60,
@@ -117,6 +124,7 @@ export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDatas
   'team-transfers': 500,
   trophies: 600,
   'team-season-stats': 500,
+  'team-coaches': 500,
 };
 
 /**
@@ -124,7 +132,9 @@ export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDatas
  * the K-2 schedule, so 2.5h keeps a retry from repeating a pull without
  * blocking the next scheduled one. The weekly datasets use 6 days. A `full`
  * injuries run (history) keeps its league-seasons for 30 days. Team season
- * stats run nightly, so 20h, like the player-season-stats cursor.
+ * stats and team coaches run nightly, so 20h, like the player-season-stats
+ * cursor: a retry the same day fetches nothing, the next day's run fetches
+ * every team again.
  */
 export const UNIT_MARKER_WINDOW_SECONDS: Readonly<
   Record<UnitEnrichmentDataset, { readonly nightly: number; readonly full: number }>
@@ -134,6 +144,7 @@ export const UNIT_MARKER_WINDOW_SECONDS: Readonly<
   'team-transfers': { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
   trophies: { nightly: 6 * 24 * 60 * 60, full: 6 * 24 * 60 * 60 },
   'team-season-stats': { nightly: 20 * 60 * 60, full: 20 * 60 * 60 },
+  'team-coaches': { nightly: 20 * 60 * 60, full: 20 * 60 * 60 },
 };
 
 /** Players listed in an injuries pull this recently are in the sidelined scope. */
@@ -177,6 +188,7 @@ export const UNIT_DATASET_NEEDS: Readonly<Record<UnitEnrichmentDataset, UnitPlan
   'team-transfers': 'ingestTransfers',
   trophies: 'ingestTrophies',
   'team-season-stats': 'ingestProviderTeamSeasonStats',
+  'team-coaches': 'ingestCoachProfiles',
 };
 
 /** What a provider call gave back to a unit. */
@@ -245,7 +257,8 @@ export interface UnitPlan {
     | 'ingestAvailability'
     | 'ingestTransfers'
     | 'ingestTrophies'
-    | 'ingestProviderTeamSeasonStats';
+    | 'ingestProviderTeamSeasonStats'
+    | 'ingestCoachProfiles';
   /** Team scope: leagues whose fixture list could not be read or fetched. */
   readonly gaps?: readonly ScopeGap[];
   /** Sidelined: players left out because their marker is still fresh. */
@@ -287,6 +300,8 @@ export const planUnitDataset = async (
       return planTrophies(input, deps, nowMs, options);
     case 'team-season-stats':
       return planTeamSeasonStats(input, deps, nowMs, options);
+    case 'team-coaches':
+      return planCoaches(input, deps, options);
   }
 };
 
@@ -344,7 +359,7 @@ export interface TeamScope {
 }
 
 /**
- * Team scope for transfers and trophies: `teamIds` when given, else every
+ * Team scope for transfers, coaches and trophies: `teamIds` when given, else every
  * team in the fixture lists of the catalogue's domestic leagues (or of
  * `leagueIds`, catalogue leagues only). A list is read from the key the live
  * loop's discovery writes (`fixtures-next-7d`, 6h). That entry is missing for
@@ -660,6 +675,20 @@ const planTransfers = async (
   };
 };
 
+const planCoaches = async (
+  input: ProviderEnrichmentInput,
+  deps: WorkflowDeps,
+  options: PlanOptions
+): Promise<UnitPlan> => {
+  const scope = await resolveTeamScope(input, deps, options.loadFixtureList);
+  return {
+    needs: 'ingestCoachProfiles',
+    units: scope.teamIds.map((teamId) => coachesUnit(teamId)),
+    gaps: scope.gaps,
+    emptyReason: 'no teams in the catalogue fixture lists; pass teamIds',
+  };
+};
+
 const planTrophies = async (
   input: ProviderEnrichmentInput,
   deps: WorkflowDeps,
@@ -879,6 +908,53 @@ const transfersUnit = (teamId: string): EnrichmentUnit => ({
           create(IngestTransfersRequestSchema, {
             metadata: metadata('team-transfers', `team-${teamId}`, path, fetchedAtMs, start),
             rows: batch as TransferRow[],
+          })
+        )
+      );
+      return complete(1, 1, accepted, decoded.dropped);
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, decoded.dropped);
+    }
+  },
+});
+
+/**
+ * One team's coaches, current and former, each with a full career. A coach
+ * the provider leaves out keeps the stored profile: an omission is not
+ * evidence that a spell ended, and game-service skips a row older than the
+ * stored one.
+ */
+const coachesUnit = (teamId: string): EnrichmentUnit => ({
+  key: `team-${teamId}`,
+  leagueId: 0,
+  season: 0,
+  run: async (ctx) => {
+    const path = apiFootballCoachsTeamPath(teamId);
+    const resource = `coachs-${teamId}`;
+    const result = await ctx.fetch({ workload: 'team-coaches', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodeCoachs(result.data, { fetchedAtMs });
+    if (decoded.providerErrors !== undefined && decoded.entries === 0) {
+      return failed(1, 1, `provider errors ${decoded.providerErrors}`, decoded.dropped);
+    }
+    if (decoded.rows.length === 0) {
+      ctx.log({
+        event: 'provider_enrichment.empty_response',
+        leagueId: 0,
+        season: 0,
+        reason: `no coaches for team ${teamId}; stored profiles kept`,
+      });
+      return complete(1, 1, 0, decoded.dropped);
+    }
+    try {
+      const accepted = await ingestInBatches(decoded.rows, async (batch, start) =>
+        ctx.ingest.ingestCoachProfiles!(
+          create(IngestCoachProfilesRequestSchema, {
+            metadata: metadata('team-coaches', `team-${teamId}`, path, fetchedAtMs, start),
+            rows: batch as CoachProfileRow[],
           })
         )
       );

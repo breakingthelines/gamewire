@@ -5,6 +5,7 @@ import {
   GameService,
   type IngestAvailabilityRequest,
   type IngestBatchResponse,
+  type IngestCoachProfilesRequest,
   type IngestCurrentSeasonsRequest,
   type IngestFootballLineupsRequest,
   type IngestFootballSquadListsRequest,
@@ -154,6 +155,8 @@ export interface ProviderEnrichmentIngestClient {
   ingestProviderTeamSeasonStats?(
     request: IngestProviderTeamSeasonStatsRequest
   ): Promise<IngestBatchResponse>;
+  /** `team-coaches`. */
+  ingestCoachProfiles?(request: IngestCoachProfilesRequest): Promise<IngestBatchResponse>;
 }
 
 export type FootballGameBridgeClient = FootballGameLookupClient &
@@ -308,6 +311,9 @@ export const createFetchFootballGameLookupClient = (
       request: IngestProviderTeamSeasonStatsRequest
     ): Promise<IngestBatchResponse> {
       return client.ingestProviderTeamSeasonStats(request, { timeoutMs });
+    },
+    ingestCoachProfiles(request: IngestCoachProfilesRequest): Promise<IngestBatchResponse> {
+      return client.ingestCoachProfiles(request, { timeoutMs });
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });
