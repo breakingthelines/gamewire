@@ -5,7 +5,8 @@
  * dataset and writes it straight to the GS-2 ingest RPC. This file runs
  * `player-season-stats` (`/players?league&season&page`, GW-6a) and hands the
  * GW-6b datasets (`injuries-league`, `player-sidelined`, `team-transfers`,
- * `trophies`) and GW-6c `team-season-stats` (`/teams/statistics`) to the unit
+ * `trophies`), GW-6c `team-season-stats` (`/teams/statistics`) and
+ * `team-coaches` (`/coachs?team=`) to the unit
  * runner below, whose units and decoders live in
  * `provider-enrichment-units.ts`. Leaders and the GW-7/8 datasets arrive later
  * under the same endpoint.

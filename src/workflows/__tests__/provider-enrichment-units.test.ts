@@ -9,6 +9,7 @@
 import { timestampMs } from '@bufbuild/protobuf/wkt';
 import type {
   IngestAvailabilityRequest,
+  IngestCoachProfilesRequest,
   IngestBatchResponse,
   IngestProviderTeamSeasonStatsRequest,
   IngestTransfersRequest,
@@ -207,6 +208,34 @@ const teamStatisticsEnvelope = (league: number, season: number, team: string) =>
   },
 });
 
+/** `/coachs?team=T`: a former coach and the current one, each with a career. */
+const coachsEnvelope = (teamId: string) => ({
+  errors: [],
+  response: [
+    {
+      id: Number(teamId) * 10 + 1,
+      name: `Former ${teamId}`,
+      team: { id: Number(teamId) },
+      career: [
+        {
+          team: { id: Number(teamId), name: `Team ${teamId}` },
+          start: '2022-06-01',
+          end: '2025-06-01',
+        },
+      ],
+    },
+    {
+      id: Number(teamId) * 10 + 2,
+      name: `Current ${teamId}`,
+      team: { id: Number(teamId) },
+      career: [
+        { team: { id: 9, name: 'Elsewhere' }, start: '2020-01-01', end: '2025-06-01' },
+        { team: { id: Number(teamId), name: `Team ${teamId}` }, start: '2025-07-01', end: null },
+      ],
+    },
+  ],
+});
+
 /** A cached season fixture list with kickoff times and statuses. */
 const datedFixtureList = (
   fixtures: readonly { home: number; away: number; kickoffMs: number; status: string }[]
@@ -265,6 +294,8 @@ const harness = (options: HarnessOptions = {}) => {
         return trophiesEnvelope(list('players').length ? list('players') : list('coachs'));
       case '/players/squads':
         return squadEnvelope(req.params.get('team') ?? '', options.squadSize ?? 25);
+      case '/coachs':
+        return coachsEnvelope(req.params.get('team') ?? '');
       case '/teams/statistics':
         return teamStatisticsEnvelope(
           Number(req.params.get('league')),
@@ -323,6 +354,7 @@ const harness = (options: HarnessOptions = {}) => {
   const transfers: IngestTransfersRequest[] = [];
   const trophies: IngestTrophiesRequest[] = [];
   const teamStats: IngestProviderTeamSeasonStatsRequest[] = [];
+  const coaches: IngestCoachProfilesRequest[] = [];
   const accepted = (rows: readonly unknown[]) =>
     ({ acceptedCount: rows.length }) as IngestBatchResponse;
   const ingest: ProviderEnrichmentIngestClient = {
@@ -343,6 +375,10 @@ const harness = (options: HarnessOptions = {}) => {
       teamStats.push(r);
       return accepted(r.rows);
     }),
+    ingestCoachProfiles: vi.fn(async (r: IngestCoachProfilesRequest) => {
+      coaches.push(r);
+      return accepted(r.rows);
+    }),
     ...options.ingest,
   };
   const enrichment: ProviderEnrichmentDeps | undefined =
@@ -355,6 +391,7 @@ const harness = (options: HarnessOptions = {}) => {
             'team-transfers',
             'trophies',
             'team-season-stats',
+            'team-coaches',
           ],
           ingest,
           limiter: new ProviderMinuteLimiter({
@@ -405,6 +442,7 @@ const harness = (options: HarnessOptions = {}) => {
     transfers,
     trophies,
     teamStats,
+    coaches,
     advance,
     seedFixtureLists,
     now: () => now,
@@ -418,6 +456,7 @@ describe('kill switch', () => {
     'team-transfers',
     'trophies',
     'team-season-stats',
+    'team-coaches',
   ] as const)('%s makes no call unless it is listed', async (dataset) => {
     const h = harness({ enabled: ['player-season-stats'] });
     const out = await h.run(dataset, { playerIds: ['1'], teamIds: ['2'] });
@@ -1159,6 +1198,104 @@ describe('team-season-stats', () => {
     const out = await h.run('team-season-stats');
     expect(out.status).toBe('skipped');
     expect(out.reason).toContain('ingestProviderTeamSeasonStats');
+    expect(h.fetchFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('team-coaches', () => {
+  it('fetches every team in the domestic scope once and writes each coach with its career', async () => {
+    const h = harness();
+    await h.seedFixtureLists({ 39: [33, 40], 88: [194], 144: [194], 2: [541] });
+    const out = await h.run('team-coaches');
+    expect(out.status).toBe('completed');
+    // The Champions League list (2) is not domestic: 541 is not fetched.
+    expect(h.paths()).toEqual(['/coachs?team=33', '/coachs?team=40', '/coachs?team=194']);
+    expect(h.coaches).toHaveLength(3);
+    const rows = h.coaches[0]!.rows;
+    expect(rows.map((r) => [r.providerCoachId, r.currentProviderTeamId])).toEqual([
+      ['331', ''],
+      ['332', '33'],
+    ]);
+    expect(rows[1]!.career.map((c) => c.providerTeamId)).toEqual(['33', '9']);
+    expect(h.coaches[0]!.metadata?.normalizedBatchId).toBe('api-football:team-coaches:team-33:0');
+  });
+
+  it('is fresh for 20 hours, then fetches every team again', async () => {
+    const h = harness();
+    await h.run('team-coaches', { teamIds: ['33'] });
+    h.advance(19 * HOUR);
+    await h.run('team-coaches', { teamIds: ['33'] });
+    expect(h.paths()).toEqual(['/coachs?team=33']);
+    h.advance(2 * HOUR);
+    await h.run('team-coaches', { teamIds: ['33'] });
+    expect(h.paths()).toEqual(['/coachs?team=33', '/coachs?team=33']);
+  });
+
+  it('takes named teams and refuses player and coach ids', async () => {
+    const h = harness();
+    expect((await h.run('team-coaches', { teamIds: ['50', '7'] })).status).toBe('completed');
+    expect(h.paths()).toEqual(['/coachs?team=7', '/coachs?team=50']);
+    expect(parseProviderEnrichmentInput({ dataset: 'team-coaches', teamIds: [7] }).ok).toBe(true);
+    expect(parseProviderEnrichmentInput({ dataset: 'team-coaches', coachIds: [7] })).toEqual({
+      ok: false,
+      reason: 'ids_not_used_by_dataset',
+    });
+  });
+
+  it('writes a vacant team: every coach, none current, with the fetch time', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/coachs'
+          ? {
+              errors: [],
+              response: [
+                {
+                  id: 25762,
+                  name: 'M. Carrick',
+                  career: [
+                    {
+                      team: { id: 33, name: 'Manchester United' },
+                      start: '2025-08-01',
+                      end: '2026-11-01',
+                    },
+                  ],
+                },
+              ],
+            }
+          : undefined,
+    });
+    const out = await h.run('team-coaches', { teamIds: ['33'] });
+    expect(out.status).toBe('completed');
+    expect(h.coaches).toHaveLength(1);
+    const [row] = h.coaches[0]!.rows;
+    expect(row).toMatchObject({ providerCoachId: '25762', currentProviderTeamId: '' });
+    expect(row!.career[0]).toMatchObject({ endDate: '2026-11-01' });
+    expect(row!.fetchedAt).toBeDefined();
+  });
+
+  it('keeps stored profiles on an empty answer, and fails a provider error', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/coachs'
+          ? req.params.get('team') === '1'
+            ? { errors: [], response: [] }
+            : { errors: { requests: 'limit' }, response: [] }
+          : undefined,
+    });
+    const out = await h.run('team-coaches', { teamIds: ['1', '2'] });
+    expect(out.status).toBe('incomplete');
+    expect(out.targets.map((t) => `${t.unit}:${t.status}`)).toEqual([
+      'team-1:complete',
+      'team-2:failed',
+    ]);
+    expect(h.coaches).toEqual([]);
+  });
+
+  it('skips without a provider call when the ingest method is missing', async () => {
+    const h = harness({ ingest: { ingestCoachProfiles: undefined } });
+    const out = await h.run('team-coaches', { teamIds: ['5'] });
+    expect(out.status).toBe('skipped');
+    expect(out.reason).toContain('ingestCoachProfiles');
     expect(h.fetchFn).not.toHaveBeenCalled();
   });
 });

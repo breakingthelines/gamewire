@@ -1,0 +1,156 @@
+{
+  "get": "coachs",
+  "parameters": { "team": "33" },
+  "errors": [],
+  "results": 3,
+  "paging": { "current": 1, "total": 1 },
+  "response": [
+    {
+      "id": 1993,
+      "name": "E. ten Hag",
+      "firstname": "Erik",
+      "lastname": "ten Hag",
+      "age": 55,
+      "birth": { "date": "1970-02-02", "place": "Haaksbergen", "country": "Netherlands" },
+      "nationality": "Netherlands",
+      "height": null,
+      "weight": null,
+      "photo": "https:\/\/media.api-sports.io\/football\/coachs\/1993.png",
+      "team": {
+        "id": 33,
+        "name": "Manchester United",
+        "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+      },
+      "career": [
+        {
+          "team": {
+            "id": 33,
+            "name": "Manchester United",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+          },
+          "start": "2022-06-01",
+          "end": "2024-10-01"
+        },
+        {
+          "team": {
+            "id": 194,
+            "name": "Ajax",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/194.png"
+          },
+          "start": "2018-01-01",
+          "end": "2022-05-01"
+        },
+        {
+          "team": {
+            "id": 207,
+            "name": "Utrecht",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/207.png"
+          },
+          "start": "2015-07-01",
+          "end": "2017-12-01"
+        },
+        {
+          "team": {
+            "id": 4674,
+            "name": "Bayern M\u00fcnchen II",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/4674.png"
+          },
+          "start": "2013-06-01",
+          "end": "2015-07-01"
+        },
+        {
+          "team": {
+            "id": 410,
+            "name": "Go Ahead Eagles",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/410.png"
+          },
+          "start": "2012-07-01",
+          "end": "2013-06-01"
+        }
+      ]
+    },
+    {
+      "id": 4720,
+      "name": "Ruben Amorim",
+      "firstname": "Ruben Filipe",
+      "lastname": "Marques Diogo Amorim",
+      "age": 40,
+      "birth": { "date": "1985-01-27", "place": "Lisboa", "country": "Portugal" },
+      "nationality": "Portugal",
+      "height": "182 cm",
+      "weight": "72 kg",
+      "photo": "https:\/\/media.api-sports.io\/football\/coachs\/4720.png",
+      "team": {
+        "id": 33,
+        "name": "Manchester United",
+        "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+      },
+      "career": [
+        {
+          "team": {
+            "id": 33,
+            "name": "Manchester United",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+          },
+          "start": "2024-11-01",
+          "end": null
+        },
+        {
+          "team": {
+            "id": 228,
+            "name": "Sporting Lisbon",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/228.png"
+          },
+          "start": "2020-03-01",
+          "end": "2024-11-01"
+        },
+        {
+          "team": {
+            "id": 217,
+            "name": "Sporting Braga",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/217.png"
+          },
+          "start": "2019-12-01",
+          "end": "2020-03-01"
+        },
+        {
+          "team": {
+            "id": 246,
+            "name": "Sporting Braga II",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/246.png"
+          },
+          "start": "2019-09-01",
+          "end": "2019-12-01"
+        }
+      ]
+    },
+    {
+      "id": 25762,
+      "name": "Michael Carrick",
+      "firstname": null,
+      "lastname": null,
+      "age": null,
+      "birth": { "date": null, "place": null, "country": null },
+      "nationality": null,
+      "height": null,
+      "weight": null,
+      "photo": "https:\/\/media.api-sports.io\/football\/coachs\/25762.png",
+      "team": {
+        "id": 33,
+        "name": "Manchester United",
+        "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+      },
+      "career": [
+        {
+          "team": {
+            "id": 33,
+            "name": "Manchester United",
+            "logo": "https:\/\/media.api-sports.io\/football\/teams\/33.png"
+          },
+          "start": "2025-08-01",
+          "end": null
+        }
+      ]
+    }
+  ]
+}

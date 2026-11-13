@@ -410,3 +410,38 @@ describe('team-season-stats (GW-6c)', () => {
     expect(estimate.warnings).toEqual([]);
   });
 });
+
+describe('team-coaches', () => {
+  const line = (a = MEGA_LOAD_ASSUMPTIONS) => {
+    const found = estimateCallBudget('api-football', a).lines.filter(
+      (l) => l.workload === 'team-coaches'
+    );
+    // Exactly one line: the planned weekly placeholder is gone.
+    expect(found).toHaveLength(1);
+    return found[0]!;
+  };
+
+  it('is a built background line: every domestic team every night', () => {
+    expect(line()).toMatchObject({
+      priority: 'background',
+      planned: false,
+      peakMinute: 0,
+      avgPerDay: 414,
+      peakDay: 414,
+    });
+  });
+
+  it('fits every domestic team in one default run of under five minutes', () => {
+    const calls = MEGA_LOAD_ASSUMPTIONS.domesticTeams;
+    const limit = DEFAULT_UNIT_MAX_CALLS_PER_RUN['team-coaches'];
+    expect(limit).toBeGreaterThanOrEqual(calls);
+    expect(planEnrichmentRuns(calls, limit).runs).toBe(1);
+    expect(planEnrichmentRuns(calls, limit).minutesPerFullRun).toBeLessThan(5);
+  });
+
+  it('keeps the Mega peak day under the soft cap with the line included', () => {
+    const estimate = estimateCallBudget('api-football', MEGA_LOAD_ASSUMPTIONS);
+    expect(estimate.totals.peakDay).toBeLessThan(MEGA_BUDGET_CAPS.softCap);
+    expect(estimate.warnings).toEqual([]);
+  });
+});

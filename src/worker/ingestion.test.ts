@@ -94,6 +94,7 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
       'team-transfers': 0,
       trophies: 0,
       'team-season-stats': 0,
+      'team-coaches': 0,
     });
     expect(INGESTION_TICK_INTERVAL_MS['fixture-detail-live']).toBe(30_000);
     // Enrichment runs only from /workflows/provider-enrichment.

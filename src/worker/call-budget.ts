@@ -23,7 +23,8 @@
  * league-season, per 20 players, per team, and per squad plus per 20 squad
  * players. `team-season-stats` (GW-6c) is built and modelled as one call per
  * team: every domestic team on Monday, and on other nights the teams with a
- * final whistle in the last 36 hours.
+ * final whistle in the last 36 hours. `team-coaches` is built and modelled
+ * as one `/coachs?team=` call per domestic team a day.
  *
  * `provider-fixture-results` (PF-GW1) is modelled as its steady-state
  * `nightly` mode only (a 3-day `from`/`to` window for reference-set leagues
@@ -320,6 +321,7 @@ export function estimateCallBudget(
     playerSeasonStatsLine(a),
     ...availabilityTransfersTrophiesLines(a),
     teamSeasonStatsLine(a),
+    teamCoachesLine(a),
     {
       workload: 'kernel weekly sweeps',
       priority: 'background',
@@ -536,6 +538,23 @@ export function teamSeasonStatsLine(a: CallBudgetAssumptions): CallBudgetLine {
   };
 }
 
+/**
+ * `team-coaches`: one `/coachs?team=` call per domestic team every night, so a
+ * manager change reaches game-service within a day of the provider recording
+ * it. It runs at 04:20 UTC, so the Saturday peak day carries one full run.
+ */
+export function teamCoachesLine(a: CallBudgetAssumptions): CallBudgetLine {
+  return {
+    workload: 'team-coaches',
+    priority: 'background',
+    strategy: `nightly, ${a.domesticTeams} domestic teams, one call each`,
+    avgPerDay: a.domesticTeams,
+    peakDay: a.domesticTeams,
+    peakMinute: 0,
+    planned: false,
+  };
+}
+
 function discoveryLine(a: CallBudgetAssumptions): CallBudgetLine {
   const tickHours = INGESTION_TICK_INTERVAL_MS['fixtures-next-7d'] / 3_600_000;
   const ttlHours = INGESTION_TTL_SECONDS['fixtures-next-7d'] / 3_600;
@@ -596,7 +615,6 @@ function plannedLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     fixtureLine('head-to-head', 1, 10, 'T-48h, pair cached 7d'),
     background('league-coverage', 1, 1, 'daily, one call'),
     background('competition-leaders', 70, 40, 'daily for leagues played in 36h; full on Monday'),
-    background('team-coaches', 90, 0, 'weekly'),
     background('venue-detail', 10, 10, 'new venues plus a 90-day refresh'),
   ];
 }

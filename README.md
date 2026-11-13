@@ -133,6 +133,7 @@ A provider null is left out of the row's `values`; it is never written as 0.
 | `team-transfers`      | `/transfers?team=T`                                               | teams in the fixture lists of the catalogue domestic leagues              | 500           | `IngestTransfers`                 |
 | `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | teams whose id mod 4 is the week counter mod 4 (or `partition` 0 to 3)    | 600           | `IngestTrophies`                  |
 | `team-season-stats`   | `/teams/statistics?league&season&team`                            | domestic teams with a final whistle in 36h; every domestic team on Monday | 500           | `IngestProviderTeamSeasonStats`   |
+| `team-coaches`        | `/coachs?team=T`                                                  | teams in the fixture lists of the catalogue domestic leagues, every night | 500           | `IngestCoachProfiles`             |
 
 The GW-6b datasets keep only a small marker per finished unit (a league-season,
 a team, or a batch of ids) so a stopped run resumes, and `injuries-league` keeps
@@ -168,6 +169,17 @@ trophies run only for `coachIds` named in the request.
   `goals_for`, `goals_against`) plus `clean_sheets`, `failed_to_score`,
   `penalties_scored` and `penalties_missed`; `form` is copied as sent. A
   completed team keeps a 20h marker.
+- `team-coaches` writes every coach the provider links to the team, former and
+  current, with the whole career. The coach's current team is the spell that
+  started last, when it is still open (provider careers keep stale open
+  spells, so an older open spell never counts); a coach whose latest spell
+  has ended has none. Dates are month-granular. game-service serves the
+  team's manager from these rows (`coach_profiles`), team by team: the spell
+  at the team that started last wins, and when it has ended the post is
+  vacant. A vacancy still writes every coach, so the fresh `fetched_at` tells
+  game-service the team was fetched. An empty answer writes nothing and keeps
+  the stored profiles. A completed team keeps a 20h marker, so the nightly run
+  refetches every team: about 414 calls a day.
 
 ```jsonc
 // history backfill: leagues and seasons are explicit, nothing is gated on a season's end
@@ -185,6 +197,9 @@ trophies run only for `coachIds` named in the request.
 // GW-6c: the K-2 body (Monday covers every team), and a full run
 {"dataset": "team-season-stats"}
 {"dataset": "team-season-stats", "mode": "full", "leagueIds": [39]}
+// team coaches: the nightly body, and one team
+{"dataset": "team-coaches"}
+{"dataset": "team-coaches", "teamIds": [33]}
 ```
 
 `mode` is `nightly` (the default) or `full`. The spec's `auto` and `dirty`, which
