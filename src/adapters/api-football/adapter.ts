@@ -571,8 +571,9 @@ export function apiFootballIngestPlayerMatchStatsRequestFromPlayers(options: {
 }): IngestPlayerMatchStatsRequest {
   const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
   const fetchedAtMs = options.fetchedAtMs ?? Date.now();
-  const playerStats = apiFootballPlayersFromEnvelope(options.envelope).flatMap((teamEntry) =>
-    teamEntry.players
+  const playerStats = apiFootballPlayersFromEnvelope(options.envelope).flatMap((teamEntry) => {
+    const substituteFlagTrusted = substituteFlagIsTrusted(teamEntry.players);
+    return teamEntry.players
       .map((playerEntry) =>
         playerMatchStatsFromEntry(playerEntry, teamEntry.team, {
           providerId,
@@ -580,10 +581,11 @@ export function apiFootballIngestPlayerMatchStatsRequestFromPlayers(options: {
           providerFixtureId: options.resourceId,
           entityResolutions: options.entityResolutions,
           fetchedAtMs,
+          substituteFlagTrusted,
         })
       )
-      .filter((line): line is NonNullable<typeof line> => line !== null)
-  );
+      .filter((line): line is NonNullable<typeof line> => line !== null);
+  });
 
   return create(IngestPlayerMatchStatsRequestSchema, {
     metadata: metadata(
@@ -1600,10 +1602,32 @@ function teamMatchStatsFromStatistics(
   });
 }
 
+/** Most players one team can start a match with. */
+const MAX_STARTERS = 11;
+
+/**
+ * Whether a team block's `games.substitute` flags can be believed. For some
+ * fixtures API-Football sends `substitute: false` for the whole squad,
+ * unused substitutes included (minutes 0, rating "0"): fixture 1557450
+ * (Chelsea, Premier League 2026-27) lists 20 Chelsea players, every one a
+ * "starter". More than eleven starters on one team means the flag is wrong
+ * for that block, and no line in it claims a start. game-service takes the
+ * starts from the lineup when it has one.
+ */
+function substituteFlagIsTrusted(players: readonly ApiFootballPlayerStatsEntry[]): boolean {
+  let starters = 0;
+  for (const entry of players) {
+    if (entry.statistics[0]?.games?.substitute === false) {
+      starters += 1;
+    }
+  }
+  return starters <= MAX_STARTERS;
+}
+
 function playerMatchStatsFromEntry(
   entry: ApiFootballPlayerStatsEntry,
   team: ApiFootballTeamRef,
-  options: StatsMappingOptions
+  options: StatsMappingOptions & { readonly substituteFlagTrusted?: boolean }
 ) {
   const stat = entry.statistics[0];
   if (!stat) {
@@ -1681,7 +1705,8 @@ function playerMatchStatsFromEntry(
   setStat('penaltiesCommitted', integerStat(stat.penalty?.commited ?? stat.penalty?.committed));
   setStat('penaltiesSaved', integerStat(stat.penalty?.saved));
 
-  const isStarter = stat.games?.substitute === false;
+  const substituteFlagTrusted = options.substituteFlagTrusted ?? true;
+  const isStarter = substituteFlagTrusted && stat.games?.substitute === false;
   const captain = stat.games?.captain;
   if (typeof captain === 'boolean') {
     provenance.push(fieldProvenance('isCaptain', options.providerId, options.fetchedAtMs));
@@ -1691,7 +1716,7 @@ function playerMatchStatsFromEntry(
     gameId: options.gameId,
     player: playerSubject.subject,
     team: teamSubject.subject,
-    role: playerRole(stat),
+    role: playerRole(stat, substituteFlagTrusted),
     minutes: fields.minutes ?? 0,
     goals: fields.goals ?? 0,
     assists: fields.assists ?? 0,
@@ -1929,13 +1954,18 @@ function playerPassing(passes: ApiFootballPlayerStatistics['passes']): {
  * Map the API-Football per-player `games.substitute` flag to the canonical
  * free-text `PlayerMatchStats.role`. `substitute === false` ⇒ STARTER,
  * `true` ⇒ SUB, missing minutes ⇒ UNUSED, otherwise unset (game-service
- * keeps its own taxonomy where the provider is silent).
+ * keeps its own taxonomy where the provider is silent). When the team's
+ * flags are not trusted (substituteFlagIsTrusted) no player is a STARTER:
+ * SUB with minutes, UNUSED without.
  */
-function playerRole(stat: ApiFootballPlayerStatistics): string {
+function playerRole(stat: ApiFootballPlayerStatistics, substituteFlagTrusted: boolean): string {
+  const minutes = integerStat(stat.games?.minutes) ?? 0;
+  if (!substituteFlagTrusted && stat.games?.substitute === false) {
+    return minutes > 0 ? 'SUB' : 'UNUSED';
+  }
   if (stat.games?.substitute === false) {
     return 'STARTER';
   }
-  const minutes = integerStat(stat.games?.minutes) ?? 0;
   if (stat.games?.substitute === true) {
     return minutes > 0 ? 'SUB' : 'UNUSED';
   }
