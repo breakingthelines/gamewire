@@ -5,7 +5,8 @@
  * GW-7: `fixture-predictions` (`/predictions?fixture=`, two shots per fixture,
  * storing the pair's meetings from the same response when `head-to-head` is
  * on) and `head-to-head` (`/fixtures/headtohead`, one call per pair a week).
- * GW-8: `venue-detail` (`/venues?id=`, each venue once per 90 days) and coach
+ * GW-8: `venue-detail` (`/venues?id=`, each venue once per 90 days, and
+ * `/teams?id=`, each team's own record of its home ground) and coach
  * trophies (`coach-trophies`, inside the trophies run). The pre-match three
  * also run after every discovery sweep (`runPreMatchEnrichment`).
  *
@@ -60,6 +61,7 @@ import {
   apiFootballHeadToHeadPath,
   apiFootballPredictionsPath,
   apiFootballVenuePath,
+  apiFootballTeamPath,
   apiFootballInjuriesLeaguePath,
   apiFootballSidelinedPath,
   apiFootballSquadPath,
@@ -71,6 +73,7 @@ import {
   decodeInjuries,
   decodePrediction,
   decodeVenue,
+  decodeTeamVenue,
   orderedTeamPair,
   decodeSidelined,
   decodeSquadPlayerIds,
@@ -144,12 +147,24 @@ const TEAM_SCOPE_TIERS: ReadonlySet<CompetitionEntry['tier']> = new Set([
 ]);
 
 /**
+ * The coaches scope adds the national teams of the international
+ * competitions. A national team's page needs its own `/coachs?team=` list:
+ * without it the only evidence is club coaches' careers, whose latest spell
+ * there can be years old (England read "vacant since Sept 2016" from
+ * Allardyce's career), and game-service answers only for a pulled team.
+ */
+const COACH_SCOPE_TIERS: ReadonlySet<CompetitionEntry['tier']> = new Set([
+  ...TEAM_SCOPE_TIERS,
+  'international',
+]);
+
+/**
  * Default provider calls per run, sized to one scheduled run of each dataset
  * at the Mega catalogue (see `call-budget.ts`): injuries 15 league-seasons,
  * sidelined about 60 batches, transfers about 415 teams, trophies a quarter
  * of the teams (about 104 squads plus about 160 trophy batches), team season
- * stats every team on a Monday (about 415), coaches every team daily (about
- * 415).
+ * stats every team on a Monday (about 415), coaches every club and national
+ * team daily (about 415 plus about 210).
  */
 export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDataset, number>> = {
   'injuries-league': 60,
@@ -157,15 +172,16 @@ export const DEFAULT_UNIT_MAX_CALLS_PER_RUN: Readonly<Record<UnitEnrichmentDatas
   'team-transfers': 500,
   trophies: 600,
   'team-season-stats': 500,
-  'team-coaches': 500,
+  'team-coaches': 700,
   // One shot per fixture inside 48h of kickoff; the busiest 48h holds about
   // 150 catalogue fixtures, which the first run after a deploy all plans.
   'fixture-predictions': 200,
   // One call per team pair a week, and none for a pair the predictions run
   // already stored.
   'head-to-head': 200,
-  // New venues and the 90-day refresh. The first runs after a deploy work
-  // through the catalogue's venues (about 300) 150 at a time.
+  // New venues and teams, and the 90-day refresh. The first runs after a
+  // deploy work through the catalogue's teams (about 700) and venues (about
+  // 300) 150 at a time, teams first.
   'venue-detail': 150,
 };
 
@@ -452,12 +468,13 @@ export interface TeamScope {
 export const resolveTeamScope = async (
   input: Pick<ProviderEnrichmentInput, 'teamIds' | 'leagueIds'>,
   deps: WorkflowDeps,
-  loadFixtureList?: FixtureListLoader
+  loadFixtureList?: FixtureListLoader,
+  scope: 'domestic' | 'coaches' | 'enriched' = 'domestic'
 ): Promise<TeamScope> => {
   if (input.teamIds && input.teamIds.length > 0) {
     return { teamIds: sortIds(input.teamIds), gaps: [] };
   }
-  const { lists, gaps } = await readLeagueFixtureLists(input, deps, loadFixtureList);
+  const { lists, gaps } = await readLeagueFixtureLists(input, deps, loadFixtureList, scope);
   const seen = new Set<string>();
   for (const { teams } of lists) {
     for (const id of teams) {
@@ -483,21 +500,24 @@ export const readLeagueFixtureLists = async (
   input: Pick<ProviderEnrichmentInput, 'leagueIds'>,
   deps: WorkflowDeps,
   loadFixtureList?: FixtureListLoader,
-  scope: 'domestic' | 'enriched' = 'domestic'
+  scope: 'domestic' | 'coaches' | 'enriched' = 'domestic'
 ): Promise<{
   readonly lists: readonly LeagueFixtureList[];
   readonly gaps: readonly ScopeGap[];
 }> => {
   const leagueFilter = new Set(uniquePositiveInts(input.leagueIds ?? []));
   // `enriched` (the pre-match datasets) is every catalogue competition whose
-  // enrichment class is not `none`; `domestic` is the team scope's tiers.
+  // enrichment class is not `none`; `domestic` is the team scope's tiers;
+  // `coaches` adds the international tier (class not `none`).
   const entries = deps.competitions.filter((entry) =>
     scope === 'enriched'
       ? competitionEnrichmentClass(entry) !== 'none' &&
         (leagueFilter.size === 0 || leagueFilter.has(entry.apiFootballLeagueId))
       : leagueFilter.size > 0
         ? leagueFilter.has(entry.apiFootballLeagueId)
-        : TEAM_SCOPE_TIERS.has(entry.tier)
+        : scope === 'coaches'
+          ? COACH_SCOPE_TIERS.has(entry.tier) && competitionEnrichmentClass(entry) !== 'none'
+          : TEAM_SCOPE_TIERS.has(entry.tier)
   );
   const lists: LeagueFixtureList[] = [];
   const gaps: ScopeGap[] = [];
@@ -767,7 +787,7 @@ const planCoaches = async (
   deps: WorkflowDeps,
   options: PlanOptions
 ): Promise<UnitPlan> => {
-  const scope = await resolveTeamScope(input, deps, options.loadFixtureList);
+  const scope = await resolveTeamScope(input, deps, options.loadFixtureList, 'coaches');
   return {
     needs: 'ingestCoachProfiles',
     units: scope.teamIds.map((teamId) => coachesUnit(teamId)),
@@ -1050,6 +1070,9 @@ const coachesUnit = (teamId: string): EnrichmentUnit => ({
           create(IngestCoachProfilesRequestSchema, {
             metadata: metadata('team-coaches', `team-${teamId}`, path, fetchedAtMs, start),
             rows: batch as CoachProfileRow[],
+            // The rows are this team's whole list: game-service records the
+            // pull and answers the team's manager only from a recent one.
+            providerTeamId: teamId,
           })
         )
       );
@@ -1381,17 +1404,26 @@ const planHeadToHead = async (
 };
 
 /**
- * Venues: `venueIds` when given, else every venue in the catalogue fixture
- * lists (enrichment class not `none`), past and upcoming. A venue's 90-day
- * marker makes this "each new venue once, then every 90 days".
+ * Venues: `venueIds` and `teamIds` when given, else every team and every
+ * venue in the catalogue fixture lists (enrichment class not `none`), past
+ * and upcoming. A team unit reads the team's own record (`/teams?id=`) for
+ * the home ground it names; a venue unit reads one venue record. Teams come
+ * first: their records are the home venues team pages show, and carry the
+ * venue record too. The 90-day marker makes this "each new team and venue
+ * once, then every 90 days".
  */
 const planVenues = async (
   input: ProviderEnrichmentInput,
   deps: WorkflowDeps,
   options: PlanOptions
 ): Promise<UnitPlan> => {
-  if (input.venueIds && input.venueIds.length > 0) {
-    return { needs: 'ingestVenues', units: sortIds(input.venueIds).map(venueUnit) };
+  const namedVenues = input.venueIds ?? [];
+  const namedTeams = input.teamIds ?? [];
+  if (namedVenues.length > 0 || namedTeams.length > 0) {
+    return {
+      needs: 'ingestVenues',
+      units: [...sortIds(namedTeams).map(teamVenueUnit), ...sortIds(namedVenues).map(venueUnit)],
+    };
   }
   const { lists, gaps } = await readLeagueFixtureLists(
     input,
@@ -1400,7 +1432,11 @@ const planVenues = async (
     'enriched'
   );
   const ids = new Set<string>();
-  for (const { list } of lists) {
+  const teams = new Set<string>();
+  for (const { list, teams: listTeams } of lists) {
+    for (const team of listTeams) {
+      teams.add(team);
+    }
     for (const fixture of fixturesFromListEnvelope(list)) {
       if (fixture.venueId !== undefined) {
         ids.add(fixture.venueId);
@@ -1409,9 +1445,9 @@ const planVenues = async (
   }
   return {
     needs: 'ingestVenues',
-    units: sortIds([...ids]).map(venueUnit),
+    units: [...sortIds([...teams]).map(teamVenueUnit), ...sortIds([...ids]).map(venueUnit)],
     gaps,
-    emptyReason: 'no venue ids in the catalogue fixture lists',
+    emptyReason: 'no teams or venue ids in the catalogue fixture lists',
   };
 };
 
@@ -1541,6 +1577,51 @@ const venueUnit = (venueId: string): EnrichmentUnit => ({
         leagueId: 0,
         season: 0,
         reason: `no venue record for ${venueId}`,
+      });
+      return complete(1, 1, 0, 0);
+    }
+    try {
+      const response = await ctx.ingest.ingestVenues!(
+        create(IngestVenuesRequestSchema, {
+          metadata: metadata('venue-detail', resource, path, fetchedAtMs, 0),
+          rows: [decoded.row],
+        })
+      );
+      return complete(1, 1, response.acceptedCount, 0);
+    } catch (error) {
+      return failed(1, 1, `ingest failed: ${errorMessage(error)}`, 0);
+    }
+  },
+});
+
+/**
+ * One team's own record (`/teams?id=`): the venue it names as the team's home
+ * ground, written as a venue row linked to the team. A record with no venue
+ * id writes nothing, and the marker keeps the team from being asked again
+ * for 90 days.
+ */
+const teamVenueUnit = (teamId: string): EnrichmentUnit => ({
+  key: `team-${teamId}`,
+  leagueId: 0,
+  season: 0,
+  run: async (ctx) => {
+    const path = apiFootballTeamPath(teamId);
+    const resource = `team-${teamId}`;
+    const result = await ctx.fetch({ workload: 'venue-detail', resourceId: resource, path });
+    if (!result.ok) {
+      return fetchFailure(result, 1);
+    }
+    const fetchedAtMs = ctx.clockMs();
+    const decoded = decodeTeamVenue(result.data, { teamId, fetchedAtMs });
+    if (!decoded.row) {
+      if (decoded.providerErrors !== undefined) {
+        return failed(1, 1, `provider errors ${decoded.providerErrors}`, 0);
+      }
+      ctx.log({
+        event: 'provider_enrichment.empty_response',
+        leagueId: 0,
+        season: 0,
+        reason: `no home venue in the record of team ${teamId}`,
       });
       return complete(1, 1, 0, 0);
     }

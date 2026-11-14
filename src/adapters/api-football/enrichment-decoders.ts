@@ -970,6 +970,10 @@ export const apiFootballHeadToHeadPath = (teamA: string, teamB: string): string 
 export const apiFootballVenuePath = (venueId: string): string =>
   `/venues?id=${encodeURIComponent(venueId)}`;
 
+/** `/teams?id=`: one team's record, with the venue the provider names as its home ground. */
+export const apiFootballTeamPath = (teamId: string): string =>
+  `/teams?id=${encodeURIComponent(teamId)}`;
+
 /** Two provider team ids in numeric order. */
 export const orderedTeamPair = (a: string, b: string): [string, string] =>
   Number(a) <= Number(b) ? [a, b] : [b, a];
@@ -1204,6 +1208,54 @@ export const decodeVenue = (
       surface: text(entry.surface),
       imageUrl: text(entry.image),
       fetchedAt: timestampFromMs(options.fetchedAtMs),
+    }),
+    entries: envelope.response.length,
+    providerErrors,
+  };
+};
+
+/**
+ * The home ground a team's own record names (`/teams?id=` `venue`), as a
+ * venue row linked to the team through `homeProviderTeamId`. game-service
+ * serves it as the team page's home venue. A fixture's venue is not a
+ * substitute: finals are played at neutral grounds, and the provider keys
+ * some fixtures to the wrong venue id (England's 2026 Nations League home
+ * games carry 566, The City Ground, under the name "Wembley Stadium").
+ * The record has no venue country, so the team's is used. No row when the
+ * record names no venue id.
+ */
+export const decodeTeamVenue = (
+  envelope: unknown,
+  options: { readonly teamId: string; readonly fetchedAtMs: number }
+): { readonly row?: VenueRow; readonly entries: number; readonly providerErrors?: string } => {
+  const providerErrors = decodeProviderErrors(envelope);
+  if (!isRecord(envelope) || !Array.isArray(envelope.response)) {
+    return { entries: 0, providerErrors };
+  }
+  const entry = envelope.response.find(
+    (item) => isRecord(item) && isRecord(item.team) && providerId(item.team.id) === options.teamId
+  );
+  if (!isRecord(entry) || !isRecord(entry.venue)) {
+    return { entries: envelope.response.length, providerErrors };
+  }
+  const venue = entry.venue;
+  const venueId = providerId(venue.id);
+  if (venueId === undefined) {
+    return { entries: envelope.response.length, providerErrors };
+  }
+  const capacity = parseProviderNumber(venue.capacity);
+  return {
+    row: create(VenueRowSchema, {
+      providerVenueId: venueId,
+      name: text(venue.name),
+      address: text(venue.address),
+      city: text(venue.city),
+      country: isRecord(entry.team) ? text(entry.team.country) : '',
+      ...(capacity !== undefined && Number.isInteger(capacity) && capacity > 0 ? { capacity } : {}),
+      surface: text(venue.surface),
+      imageUrl: text(venue.image),
+      fetchedAt: timestampFromMs(options.fetchedAtMs),
+      homeProviderTeamId: options.teamId,
     }),
     entries: envelope.response.length,
     providerErrors,

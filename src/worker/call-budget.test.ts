@@ -421,22 +421,22 @@ describe('team-coaches', () => {
     return found[0]!;
   };
 
-  it('is a built background line: every domestic team every night', () => {
+  it('is a built background line: every domestic and national team every night', () => {
     expect(line()).toMatchObject({
       priority: 'background',
       planned: false,
       peakMinute: 0,
-      avgPerDay: 414,
-      peakDay: 414,
+      avgPerDay: 414 + 210,
+      peakDay: 414 + 210,
     });
   });
 
-  it('fits every domestic team in one default run of under five minutes', () => {
-    const calls = MEGA_LOAD_ASSUMPTIONS.domesticTeams;
+  it('fits every domestic and national team in one default run of under ten minutes', () => {
+    const calls = MEGA_LOAD_ASSUMPTIONS.domesticTeams + MEGA_LOAD_ASSUMPTIONS.nationalTeams;
     const limit = DEFAULT_UNIT_MAX_CALLS_PER_RUN['team-coaches'];
     expect(limit).toBeGreaterThanOrEqual(calls);
     expect(planEnrichmentRuns(calls, limit).runs).toBe(1);
-    expect(planEnrichmentRuns(calls, limit).minutesPerFullRun).toBeLessThan(5);
+    expect(planEnrichmentRuns(calls, limit).minutesPerFullRun).toBeLessThan(10);
   });
 
   it('keeps the Mega peak day under the soft cap with the line included', () => {

@@ -92,6 +92,17 @@ export interface CallBudgetAssumptions {
   readonly sidelinedPlayers: number;
   /** Teams in the catalogue's domestic leagues (the transfers and trophies scope). */
   readonly domesticTeams: number;
+  /**
+   * National teams in the catalogue's international competitions' fixture
+   * lists, which the `team-coaches` scope adds to the domestic teams.
+   */
+  readonly nationalTeams: number;
+  /**
+   * Distinct teams in the fixture lists of every enriched competition (cups
+   * and European ties add lower-league and foreign clubs): the `venue-detail`
+   * team-record scope.
+   */
+  readonly catalogueTeams: number;
   /** Players per current squad (`/players/squads`), for the trophies batches. */
   readonly squadPlayersPerTeam: number;
   /**
@@ -184,6 +195,10 @@ export const CURRENT_LOAD_ASSUMPTIONS: CallBudgetAssumptions = {
   // PL 20, Championship, L1, L2 24 each, La Liga 20, Bundesliga 18, Serie A 20,
   // Ligue 1 18, Eredivisie 18, Brasileirao 20, Jupiler 16, Primeira 18.
   domesticTeams: 240,
+  // World Cup 48 plus the five qualifier lists, about the 211 FIFA members.
+  nationalTeams: 210,
+  // 661 distinct teams on prod games in the 120 days to 2026-11-14, rounded up.
+  catalogueTeams: 700,
   squadPlayersPerTeam: 30,
   domesticMatchesPerTeamPerWeek: 1.15,
 };
@@ -540,17 +555,19 @@ export function teamSeasonStatsLine(a: CallBudgetAssumptions): CallBudgetLine {
 }
 
 /**
- * `team-coaches`: one `/coachs?team=` call per domestic team every night, so a
- * manager change reaches game-service within a day of the provider recording
- * it. It runs at 04:20 UTC, so the Saturday peak day carries one full run.
+ * `team-coaches`: one `/coachs?team=` call per domestic and national team
+ * every night, so a manager change reaches game-service within a day of the
+ * provider recording it. It runs at 04:20 UTC, so the Saturday peak day
+ * carries one full run.
  */
 export function teamCoachesLine(a: CallBudgetAssumptions): CallBudgetLine {
+  const teams = a.domesticTeams + a.nationalTeams;
   return {
     workload: 'team-coaches',
     priority: 'background',
-    strategy: `nightly, ${a.domesticTeams} domestic teams, one call each`,
-    avgPerDay: a.domesticTeams,
-    peakDay: a.domesticTeams,
+    strategy: `nightly, ${a.domesticTeams} domestic and ${a.nationalTeams} national teams, one call each`,
+    avgPerDay: teams,
+    peakDay: teams,
     peakMinute: 0,
     planned: false,
   };
@@ -634,8 +651,9 @@ const NEW_VENUES_PER_DAY = 2;
  * - `head-to-head`: no call when predictions is on, because `/predictions`
  *   carries the same last-10 meetings and the predictions run stores them; a
  *   standalone pull is one call per pair a week, at most one per fixture;
- * - `venue-detail`: each venue once, then every 90 days, plus new venues. The
- *   first runs after switch-on take the catalogue's venues 150 an hour;
+ * - `venue-detail`: each venue and each team's own record (its home ground)
+ *   once, then every 90 days, plus new ones. The first runs after a deploy
+ *   take them 150 a run;
  * - coach trophies (`coach-trophies`, inside the weekly trophies run): one
  *   `/trophies?coachs=` call per team in the week's quarter.
  */
@@ -664,9 +682,11 @@ export function preMatchLines(a: CallBudgetAssumptions): CallBudgetLine[] {
     {
       workload: 'venue-detail',
       priority: 'background',
-      strategy: `${CATALOGUE_VENUES} catalogue venues every 90 days plus about ${NEW_VENUES_PER_DAY} new a day`,
-      avgPerDay: CATALOGUE_VENUES / 90 + NEW_VENUES_PER_DAY,
-      peakDay: CATALOGUE_VENUES / 90 + NEW_VENUES_PER_DAY,
+      strategy:
+        `${CATALOGUE_VENUES} catalogue venues and ${a.catalogueTeams} team records every 90 days, ` +
+        `plus about ${NEW_VENUES_PER_DAY} new venues a day`,
+      avgPerDay: (CATALOGUE_VENUES + a.catalogueTeams) / 90 + NEW_VENUES_PER_DAY,
+      peakDay: (CATALOGUE_VENUES + a.catalogueTeams) / 90 + NEW_VENUES_PER_DAY,
       peakMinute: 0,
       planned: false,
     },
