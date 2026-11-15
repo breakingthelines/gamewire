@@ -59,6 +59,7 @@ import {
   decodePlayerSeasonStatsPage,
 } from '../adapters/api-football/enrichment-decoders.js';
 import type { ProviderEnrichmentIngestClient } from '../worker/clients/game-service.js';
+import { clampCoachPhotoLimit, runCoachPhotos } from './coach-photos.js';
 import type { IngestionFetchResult } from '../worker/ingestion.js';
 import { DEFAULT_ENRICHMENT_MINUTE_CAP, ProviderMinuteLimiter } from '../worker/minute-limiter.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
@@ -96,6 +97,7 @@ import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 export const PROVIDER_ENRICHMENT_DATASETS: readonly ProviderEnrichmentDataset[] = [
   'player-season-stats',
   ...UNIT_ENRICHMENT_DATASETS,
+  'coach-photos',
 ];
 
 export const PROVIDER_ENRICHMENT_MODES: readonly ProviderEnrichmentMode[] = ['nightly', 'full'];
@@ -179,12 +181,16 @@ export const enrichmentCursorKey = (
  * The run's call limit: the request's `limit`, else the dataset's default
  * ({@link DEFAULT_ENRICHMENT_MAX_CALLS_PER_RUN} for player season stats,
  * `DEFAULT_UNIT_MAX_CALLS_PER_RUN` for the unit datasets), never above
- * {@link MAX_ENRICHMENT_CALLS_PER_RUN}.
+ * {@link MAX_ENRICHMENT_CALLS_PER_RUN}. For `coach-photos` it is the image
+ * download cap instead (`clampCoachPhotoLimit`).
  */
 export const clampEnrichmentLimit = (
   limit: number | undefined,
   dataset: ProviderEnrichmentDataset = 'player-season-stats'
 ): number => {
+  if (dataset === 'coach-photos') {
+    return clampCoachPhotoLimit(limit);
+  }
   if (limit === undefined || !Number.isFinite(limit) || limit <= 0) {
     return isUnitEnrichmentDataset(dataset)
       ? DEFAULT_UNIT_MAX_CALLS_PER_RUN[dataset]
@@ -303,6 +309,10 @@ export const providerEnrichmentWorkflow = async (
   const enabled = deps.enrichment?.enabledDatasets ?? [];
   if (!enabled.includes(input.dataset)) {
     return finish('disabled', { reason: `dataset ${input.dataset} is not enabled` });
+  }
+
+  if (input.dataset === 'coach-photos') {
+    return runCoachPhotos(input, deps, { clock, nowMs, limit, dryRun, log, finish });
   }
 
   if (isUnitEnrichmentDataset(input.dataset)) {
@@ -986,6 +996,7 @@ const runUnitDataset = async (
     fetch,
     ingest: ingest!,
     cache,
+    state: deps.stateStore ?? cache,
     clockMs: () => clock().getTime(),
     nowMs,
     log,

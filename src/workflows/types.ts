@@ -25,6 +25,7 @@ import type { FootballIdentityLookupClient } from '../worker/clients/identity.js
 import type { OnFixtureFetched } from '../worker/match-concluded-bridge.js';
 import type { MatchConcludedPublisher } from '../worker/match-concluded-publisher.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
+import type { CoachPhotoDeps } from './coach-photos.js';
 
 /**
  * Minimal fetch surface used by the StatsBomb backfill workflow to pull
@@ -248,6 +249,11 @@ export interface WorkflowDeps {
   readonly stateStore?: ProviderCache;
   /** Sleep used by workflows that back off and retry. Tests inject a fake. */
   readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Media store and image fetch for the `coach-photos` dataset. When unset the
+   * dataset completes as `skipped`.
+   */
+  readonly coachPhotos?: CoachPhotoDeps;
 }
 
 /**
@@ -1197,6 +1203,9 @@ export interface ProviderFixtureResultsWireResult {
  *   call per team.
  * - `team-coaches`: `/coachs?team=`, one call per team, daily. Feeds
  *   game-service `coach_profiles`, the team's current manager.
+ * - `coach-photos`: no provider JSON call. Copies the headshot of each coach
+ *   the team-coaches pull listed and identity maps to the CDN
+ *   (`coach-photos.ts`). `limit` caps image downloads.
  * Leaders and the GW-7/GW-8 datasets land later under the same endpoint.
  */
 export type ProviderEnrichmentDataset =
@@ -1207,6 +1216,7 @@ export type ProviderEnrichmentDataset =
   | 'trophies'
   | 'team-season-stats'
   | 'team-coaches'
+  | 'coach-photos'
   | 'fixture-predictions'
   | 'head-to-head'
   | 'venue-detail';
@@ -1251,10 +1261,13 @@ export interface ProviderEnrichmentInput {
    * default player scope.
    */
   readonly playerIds?: readonly string[];
-  /** `trophies`: API-Football coach ids. Coaches are fetched only when named. */
+  /**
+   * `trophies`: API-Football coach ids. Coaches are fetched only when named.
+   * `coach-photos`: the coaches to check, replacing the team digests.
+   */
   readonly coachIds?: readonly string[];
   /**
-   * `team-transfers`, `team-coaches` and `trophies`: API-Football team ids. Replaces the
+   * `team-transfers`, `team-coaches`, `coach-photos` and `trophies`: API-Football team ids. Replaces the
    * default team scope (the domestic catalogue teams; for `team-coaches`, also
    * the national teams of the international competitions).
    * `venue-detail`: teams whose own record (`/teams?id=`) to read for their

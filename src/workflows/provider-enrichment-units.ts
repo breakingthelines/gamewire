@@ -98,7 +98,10 @@ import {
 } from './types.js';
 
 /** The datasets this module runs. */
-export type UnitEnrichmentDataset = Exclude<ProviderEnrichmentDataset, 'player-season-stats'>;
+export type UnitEnrichmentDataset = Exclude<
+  ProviderEnrichmentDataset,
+  'player-season-stats' | 'coach-photos'
+>;
 
 export const UNIT_ENRICHMENT_DATASETS: readonly UnitEnrichmentDataset[] = [
   'injuries-league',
@@ -221,7 +224,7 @@ export const PRE_MATCH_WINDOW_MS = 48 * 60 * 60 * 1_000;
 export const PREDICTION_FINAL_SHOT_MS = 3 * 60 * 60 * 1_000;
 /** Provider statuses of a fixture that has not kicked off and is not called off. */
 const PRE_MATCH_STATUSES: ReadonlySet<string> = new Set(['NS', 'TBD']);
-/** The team-coaches run's list of a team's coach ids, read by coach trophies. */
+/** The team-coaches run's list of a team's coach ids, read by coach trophies and coach-photos. */
 const TEAM_COACHS_DIGEST_TTL_SECONDS = 8 * 24 * 60 * 60;
 
 export const teamCoachsDigestKey = (teamId: string): string =>
@@ -294,6 +297,12 @@ export interface UnitContext {
   }) => Promise<UnitFetch>;
   readonly ingest: ProviderEnrichmentIngestClient;
   readonly cache: ProviderCache;
+  /**
+   * State that must outlive the pod: the workflow state store (Redis in
+   * production), else `cache`. Holds the team coach lists, which coach
+   * trophies and `coach-photos` read on later runs.
+   */
+  readonly state?: ProviderCache;
   readonly clockMs: () => number;
   readonly nowMs: number;
   readonly log: (entry: Omit<WorkflowLogEntry, 'workflow'>) => void;
@@ -1058,8 +1067,9 @@ const coachesUnit = (teamId: string): EnrichmentUnit => ({
       return complete(1, 1, 0, decoded.dropped);
     }
     // The coach trophies pull (`coach-trophies`) reads this list, so it asks
-    // for exactly the coaches game-service holds profiles for.
-    await ctx.cache.set<TeamCoachsDigest>(
+    // for exactly the coaches game-service holds profiles for; `coach-photos`
+    // reads it for the coaches whose headshots to copy.
+    await (ctx.state ?? ctx.cache).set<TeamCoachsDigest>(
       teamCoachsDigestKey(teamId),
       { coachIds: sortIds(decoded.rows.map((row) => row.providerCoachId)) },
       TEAM_COACHS_DIGEST_TTL_SECONDS
@@ -1178,7 +1188,9 @@ const squadTrophiesUnit = (teamId: string, withCoaches = false): EnrichmentUnit 
         ids,
       }));
     if (withCoaches) {
-      const digest = await ctx.cache.get<TeamCoachsDigest>(teamCoachsDigestKey(teamId));
+      const digest = await (ctx.state ?? ctx.cache).get<TeamCoachsDigest>(
+        teamCoachsDigestKey(teamId)
+      );
       for (const ids of chunk(sortIds(digest?.coachIds ?? []), PROVIDER_MULTI_ID_MAX)) {
         batches.push({ subject: 'coach', ids });
       }

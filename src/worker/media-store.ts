@@ -88,6 +88,32 @@ export const createBunMediaObjectStore = (client: BunS3ClientLike): MediaObjectS
   },
 });
 
+/**
+ * A Bun S3 store over the content bucket, or `undefined` when the bucket, the
+ * endpoint or a credential is missing, or Bun's `S3Client` is unavailable.
+ * Shared by the asset-mirror bridge and the `coach-photos` dataset.
+ */
+export const createMediaObjectStoreFromConfig = (
+  cfg: AssetMirrorConfig
+): MediaObjectStore | undefined => {
+  if (!cfg.bucket || !cfg.endpoint || !cfg.accessKeyId || !cfg.secretAccessKey) {
+    return undefined;
+  }
+  const S3Client = (globalThis as { Bun?: BunGlobalLike }).Bun?.S3Client;
+  if (!S3Client) {
+    return undefined;
+  }
+  return createBunMediaObjectStore(
+    new S3Client({
+      accessKeyId: cfg.accessKeyId,
+      secretAccessKey: cfg.secretAccessKey,
+      bucket: cfg.bucket,
+      region: cfg.region,
+      endpoint: cfg.endpoint,
+    })
+  );
+};
+
 export interface AssetMirrorBridgeDeps {
   readonly config: AssetMirrorConfig;
   readonly identity: FootballIdentityLookupClient;
@@ -122,25 +148,10 @@ export const createAssetMirrorBridge = (
     return undefined;
   }
 
-  let store = deps.store;
+  // NO-CREDS GUARD: the shared R2 credentials/endpoint must all be present.
+  const store = deps.store ?? createMediaObjectStoreFromConfig(cfg);
   if (!store) {
-    // NO-CREDS GUARD: the shared R2 credentials/endpoint must all be present.
-    if (!cfg.endpoint || !cfg.accessKeyId || !cfg.secretAccessKey) {
-      return undefined;
-    }
-    const bunGlobal = (globalThis as { Bun?: BunGlobalLike }).Bun;
-    const S3Client = bunGlobal?.S3Client;
-    if (!S3Client) {
-      return undefined;
-    }
-    const client = new S3Client({
-      accessKeyId: cfg.accessKeyId,
-      secretAccessKey: cfg.secretAccessKey,
-      bucket: cfg.bucket,
-      region: cfg.region,
-      endpoint: cfg.endpoint,
-    });
-    store = createBunMediaObjectStore(client);
+    return undefined;
   }
 
   return createAssetMirror({
