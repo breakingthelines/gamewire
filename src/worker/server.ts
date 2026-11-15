@@ -33,7 +33,7 @@ import {
   type RedisCommandSender,
 } from './minute-limiter.js';
 import { createProviderBudget } from './provider-budget.js';
-import { createAssetMirrorBridge } from './media-store.js';
+import { createAssetMirrorBridge, createMediaObjectStoreFromConfig } from './media-store.js';
 import { createMatchConcludedBridge } from './match-concluded-bridge.js';
 import {
   InMemoryMatchConcludedStreamClient,
@@ -548,6 +548,9 @@ const workerOptions: WorkerHttpHandlerOptions = {
   providerEnrichmentIngest: gameServiceLookupClient,
   enrichmentLimiter,
   workflowStateStore,
+  // The `coach-photos` dataset writes coach headshots to the same content
+  // bucket the asset mirror uses.
+  coachPhotoStore: createMediaObjectStoreFromConfig(config.assetMirror),
   workflowLogger: (entry) => {
     console.log(`[gamewire-worker.workflow] ${JSON.stringify(entry)}`);
   },

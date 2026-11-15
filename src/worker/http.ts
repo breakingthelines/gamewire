@@ -18,6 +18,7 @@ import type {
 import type { ProviderCache } from './cache.js';
 import type { ProviderMinuteLimiter } from './minute-limiter.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
+import type { MediaObjectStore } from './asset-mirror.js';
 import {
   fetchApiFootballJson,
   summarizeProviderJson,
@@ -330,6 +331,11 @@ export interface WorkerHttpHandlerOptions {
   readonly enrichmentLimiter?: ProviderMinuteLimiter;
   /** Sleep used by the provider-enrichment workflow. Tests inject a fake. */
   readonly enrichmentSleep?: (ms: number) => Promise<void>;
+  /**
+   * Content bucket store for the `coach-photos` dataset (the asset mirror's
+   * R2 config). Unset means the dataset completes as `skipped`.
+   */
+  readonly coachPhotoStore?: MediaObjectStore;
   /** Durable workflow state (the season-backfill cursor). Redis in production. */
   readonly workflowStateStore?: ProviderCache;
   /**
@@ -501,6 +507,7 @@ export const buildWorkflowDeps = (
       sleep: options.enrichmentSleep,
     },
     stateStore: options.workflowStateStore,
+    coachPhotos: options.coachPhotoStore ? { store: options.coachPhotoStore } : undefined,
   };
 };
 
@@ -800,10 +807,11 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   }
   if (
     (playerIds && dataset !== 'player-sidelined' && dataset !== 'trophies') ||
-    (coachIds && dataset !== 'trophies') ||
+    (coachIds && dataset !== 'trophies' && dataset !== 'coach-photos') ||
     (teamIds &&
       dataset !== 'team-transfers' &&
       dataset !== 'team-coaches' &&
+      dataset !== 'coach-photos' &&
       dataset !== 'trophies' &&
       dataset !== 'team-season-stats' &&
       dataset !== 'venue-detail') ||

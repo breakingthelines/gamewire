@@ -140,6 +140,7 @@ A provider null is left out of the row's `values`; it is never written as 0.
 | `trophies`            | `/players/squads?team=T`, then `/trophies?players=a-b`, 20 a call | teams whose id mod 4 is the week counter mod 4 (or `partition` 0 to 3)    | 600           | `IngestTrophies`                  |
 | `team-season-stats`   | `/teams/statistics?league&season&team`                            | domestic teams with a final whistle in 36h; every domestic team on Monday | 500           | `IngestProviderTeamSeasonStats`   |
 | `team-coaches`        | `/coachs?team=T`                                                  | teams in the fixture lists of the catalogue domestic leagues, every night | 500           | `IngestCoachProfiles`             |
+| `coach-photos`        | none (image host only)                                            | coaches the last `team-coaches` pull listed for each team                 | 150 downloads | none (R2 object)                  |
 
 The GW-6b datasets keep only a small marker per finished unit (a league-season,
 a team, or a batch of ids) so a stopped run resumes, and `injuries-league` keeps
@@ -186,6 +187,17 @@ trophies run only for `coachIds` named in the request.
   game-service the team was fetched. An empty answer writes nothing and keeps
   the stored profiles. A completed team keeps a 20h marker, so the nightly run
   refetches every team: about 414 calls a day.
+- `coach-photos` copies the headshot of each coach identity maps to
+  `media/apifootball/coach/<btl coach id>.png` in the content bucket, the key
+  platform's coach avatar reads after bespoke art and the Wikimedia portrait.
+  It makes no API-Football JSON call: the coach ids are the lists
+  `team-coaches` keeps per team (in the workflow state store), and the image
+  comes from `media.api-sports.io/football/coachs/<id>.png`, which takes no
+  key. A coach whose object exists costs one HEAD and is never replaced. The
+  provider's "no photo" images (HTTP 200) are skipped by sha256 and the id is
+  not downloaded again for 7 days. `limit` caps image downloads (default 150,
+  at most 1,000), 500 ms apart. `dryRun` downloads and classifies but writes
+  nothing. `coachIds` replaces the team lists.
 
 ```jsonc
 // history backfill: leagues and seasons are explicit, nothing is gated on a season's end
@@ -206,6 +218,10 @@ trophies run only for `coachIds` named in the request.
 // team coaches: the nightly body, and one team
 {"dataset": "team-coaches"}
 {"dataset": "team-coaches", "teamIds": [33]}
+// coach photos: the daily body, a dry run, and named coaches
+{"dataset": "coach-photos"}
+{"dataset": "coach-photos", "dryRun": true}
+{"dataset": "coach-photos", "coachIds": [40], "limit": 5}
 ```
 
 `mode` is `nightly` (the default) or `full`. The spec's `auto` and `dirty`, which

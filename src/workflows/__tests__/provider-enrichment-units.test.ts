@@ -368,6 +368,7 @@ interface HarnessOptions {
   readonly hardCap?: number;
   readonly softCap?: number;
   readonly squadSize?: number;
+  readonly stateStore?: InMemoryProviderCache;
 }
 
 const harness = (options: HarnessOptions = {}) => {
@@ -538,6 +539,7 @@ const harness = (options: HarnessOptions = {}) => {
     competitions: CATALOGUE,
     clock: () => new Date(now),
     enrichment,
+    stateStore: options.stateStore,
   };
   const run = (dataset: ProviderEnrichmentDataset, input: Partial<ProviderEnrichmentInput> = {}) =>
     providerEnrichmentWorkflow(
@@ -1783,6 +1785,20 @@ describe('coach trophies', () => {
       .flatMap((r) => r.rows)
       .filter((r) => r.subjectType === SubjectType.COACH);
     expect(coachRows.map((r) => r.providerSubjectId)).toEqual(['331', '332']);
+  });
+
+  it('keeps the team coach list in the workflow state store when there is one', async () => {
+    const stateStore = new InMemoryProviderCache();
+    const h = harness({
+      enabled: ['team-coaches', 'trophies', 'coach-trophies'] as never,
+      squadSize: 2,
+      stateStore,
+    });
+    await h.run('team-coaches', { teamIds: ['33'] });
+    expect(await stateStore.get(teamCoachsDigestKey('33'))).toEqual({ coachIds: ['331', '332'] });
+    expect(await h.cache.get(teamCoachsDigestKey('33'))).toBeUndefined();
+    await h.run('trophies', { teamIds: ['33'] });
+    expect(h.paths()).toContain('/trophies?coachs=331-332');
   });
 
   it('asks no coach without the switch, or before team-coaches listed any', async () => {
