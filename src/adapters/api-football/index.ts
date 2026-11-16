@@ -38,6 +38,7 @@ export {
   apiFootballStandingPath,
   apiFootballStandingSyncPaths,
   apiFootballStatusPath,
+  kitHex,
   providerGameIdFromFixture,
   providerStorageId,
   type ApiFootballCurrentSeason,
