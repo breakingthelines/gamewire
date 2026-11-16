@@ -371,9 +371,18 @@ export interface UnitPlan {
  */
 export type FixtureListLoader = (entry: CompetitionEntry) => Promise<UnitFetch>;
 
+/**
+ * Fetch a named league-season's `/fixtures?league&season` list outside the
+ * ingest bridge (`provider-fixture-results`, cache bypassed), so reading a
+ * past season's teams mints no games. One call each time.
+ */
+export type SeasonFixtureListLoader = (leagueId: number, season: number) => Promise<UnitFetch>;
+
 export interface PlanOptions {
   /** Absent on a dry run: a missing fixture list is then reported, not fetched. */
   readonly loadFixtureList?: FixtureListLoader;
+  /** `team-season-stats` `full` with `seasons`. Absent on a dry run. */
+  readonly loadSeasonFixtureList?: SeasonFixtureListLoader;
 }
 
 /**
@@ -838,6 +847,54 @@ const planTrophies = async (
   };
 };
 
+/**
+ * `team-season-stats` `full` with `seasons`: the domestic catalogue leagues
+ * (or `leagueIds`, catalogue leagues only) at each named season, each list
+ * read through {@link SeasonFixtureListLoader} (one uncached call, outside the
+ * ingest bridge). Each returned entry carries the named season, so its units
+ * pull `/teams/statistics?league&season&team` for that season.
+ */
+const readNamedSeasonFixtureLists = async (
+  input: Pick<ProviderEnrichmentInput, 'leagueIds'>,
+  deps: WorkflowDeps,
+  seasons: readonly number[],
+  loadSeasonFixtureList?: SeasonFixtureListLoader
+): Promise<{
+  readonly lists: readonly LeagueFixtureList[];
+  readonly gaps: readonly ScopeGap[];
+}> => {
+  const leagueFilter = new Set(uniquePositiveInts(input.leagueIds ?? []));
+  const entries = deps.competitions.filter((entry) =>
+    leagueFilter.size > 0
+      ? leagueFilter.has(entry.apiFootballLeagueId)
+      : TEAM_SCOPE_TIERS.has(entry.tier)
+  );
+  const lists: LeagueFixtureList[] = [];
+  const gaps: ScopeGap[] = [];
+  for (const season of [...seasons].sort((a, b) => b - a)) {
+    for (const catalogueEntry of entries) {
+      const leagueId = catalogueEntry.apiFootballLeagueId;
+      const gap = (reason: string) => gaps.push({ leagueId, season, reason });
+      if (!loadSeasonFixtureList) {
+        gap('fixture list of a named season is fetched by a run, not a dry run');
+        continue;
+      }
+      const fetched = await loadSeasonFixtureList(leagueId, season);
+      if (!fetched.ok) {
+        gap(fetched.stopped ? 'fixture list not fetched: run stopped' : fetched.message);
+        continue;
+      }
+      const teams = teamIdsFromFixtureListEnvelope(fetched.data);
+      if (teams.length === 0) {
+        gap('fixture list has no teams');
+        continue;
+      }
+      lists.push({ entry: { ...catalogueEntry, season }, list: fetched.data, teams });
+    }
+  }
+  return { lists, gaps };
+};
+
 const planTeamSeasonStats = async (
   input: ProviderEnrichmentInput,
   deps: WorkflowDeps,
@@ -846,14 +903,18 @@ const planTeamSeasonStats = async (
 ): Promise<UnitPlan> => {
   const catalogued = new Set(deps.competitions.map((entry) => entry.apiFootballLeagueId));
   const refused = uniquePositiveInts(input.leagueIds ?? []).filter((id) => !catalogued.has(id));
-  const { lists, gaps } = await readLeagueFixtureLists(input, deps, options.loadFixtureList);
-  const named = new Set(sortIds(input.teamIds ?? []));
-  const all = named.size > 0 || teamSeasonStatsCoversAll(input.mode, nowMs);
+  const named = input.mode === 'full' ? uniquePositiveInts(input.seasons ?? []) : [];
+  const { lists, gaps } =
+    named.length > 0
+      ? await readNamedSeasonFixtureLists(input, deps, named, options.loadSeasonFixtureList)
+      : await readLeagueFixtureLists(input, deps, options.loadFixtureList);
+  const namedTeams = new Set(sortIds(input.teamIds ?? []));
+  const all = namedTeams.size > 0 || teamSeasonStatsCoversAll(input.mode, nowMs);
   const units: EnrichmentUnit[] = [];
   for (const { entry, list, teams } of lists) {
     const selected = all ? sortIds(teams) : teamsWithRecentFinalWhistle(list, nowMs);
     for (const teamId of selected) {
-      if (named.size === 0 || named.has(teamId)) {
+      if (namedTeams.size === 0 || namedTeams.has(teamId)) {
         units.push(teamSeasonStatsUnit(entry.apiFootballLeagueId, entry.season, teamId));
       }
     }

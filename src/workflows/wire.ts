@@ -103,6 +103,7 @@ export const seasonBackfillToWire = (output: SeasonBackfillOutput): SeasonBackfi
   targets: output.targets,
   degradeFlags: output.degradeFlags,
   finalQuota: output.finalQuota,
+  ...(output.history ? { history: output.history } : {}),
 });
 
 /**

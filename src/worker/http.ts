@@ -589,6 +589,9 @@ const parseSeasonBackfillInput = (body: unknown): SeasonBackfillInput => {
     skipLineups: asBoolean(body.skipLineups),
     bypassCache: asBoolean(body.bypassCache),
     dryRun: asBoolean(body.dryRun),
+    resultsOnly: asBoolean(body.resultsOnly),
+    standingsOnly: asBoolean(body.standingsOnly),
+    allowUnresolvedTeams: asBoolean(body.allowUnresolvedTeams),
     nowUtc: asString(body.nowUtc),
   };
 };
@@ -820,9 +823,10 @@ export const parseProviderEnrichmentInput = (body: unknown): ProviderEnrichmentP
   ) {
     return { ok: false, reason: 'ids_not_used_by_dataset' };
   }
-  if (seasons && dataset === 'team-season-stats') {
-    // Teams come from the catalogue season's fixture list; another season's
-    // teams are not known, so a named season cannot be honoured.
+  if (seasons && dataset === 'team-season-stats' && mode !== 'full') {
+    // `nightly` reads teams from the catalogue season's cached fixture list,
+    // so a named season cannot be honoured. `full` with `seasons` reads each
+    // named league-season's list (one call each, outside the ingest bridge).
     return { ok: false, reason: 'seasons_not_used_by_dataset' };
   }
   // K-2 sends `partition: "auto"`, which is the default (week counter mod 4).

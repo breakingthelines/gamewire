@@ -950,6 +950,17 @@ const runUnitDataset = async (
             path: apiFootballFixtureSyncPaths([entry])[0] ?? '/fixtures',
             cacheMode: 'use',
           }),
+    // A named past season's list is read outside the ingest bridge, so
+    // planning team season stats for it mints no games.
+    loadSeasonFixtureList: dryRun
+      ? undefined
+      : (leagueId: number, season: number) =>
+          guardedFetch({
+            workload: 'provider-fixture-results',
+            resourceId: `season-teams-${leagueId}-${season}`,
+            path: `/fixtures?league=${leagueId}&season=${season}`,
+            cacheMode: 'bypass',
+          }),
   });
   const gapResults = (plan.gaps ?? []).map(gapResult);
   for (const gap of plan.gaps ?? []) {

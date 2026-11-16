@@ -1,0 +1,855 @@
+{
+  "get": "fixtures",
+  "parameters": {
+    "league": "179",
+    "season": "2014"
+  },
+  "errors": [],
+  "results": 12,
+  "paging": {
+    "current": 1,
+    "total": 1
+  },
+  "response": [
+    {
+      "fixture": {
+        "id": 205882,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-08-09T14:00:00+00:00",
+        "timestamp": 1407592800,
+        "periods": {
+          "first": 1407592800,
+          "second": 1407596400
+        },
+        "venue": {
+          "id": null,
+          "name": "New Douglas Park (Hamilton)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 1",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 248,
+          "name": "Hamilton Academical",
+          "logo": "https://media.api-sports.io/football/teams/248.png",
+          "winner": false
+        },
+        "away": {
+          "id": 903,
+          "name": "Inverness CT",
+          "logo": "https://media.api-sports.io/football/teams/903.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 0,
+        "away": 2
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 2
+        },
+        "fulltime": {
+          "home": 0,
+          "away": 2
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205901,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-08-23T14:00:00+00:00",
+        "timestamp": 1408802400,
+        "periods": {
+          "first": 1408802400,
+          "second": 1408806000
+        },
+        "venue": {
+          "id": null,
+          "name": "McDiarmid Park (Perth)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 4",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 258,
+          "name": "ST Johnstone",
+          "logo": "https://media.api-sports.io/football/teams/258.png",
+          "winner": true
+        },
+        "away": {
+          "id": 252,
+          "name": "Aberdeen",
+          "logo": "https://media.api-sports.io/football/teams/252.png",
+          "winner": false
+        }
+      },
+      "goals": {
+        "home": 1,
+        "away": 0
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 0
+        },
+        "fulltime": {
+          "home": 1,
+          "away": 0
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205922,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-09-21T11:15:00+00:00",
+        "timestamp": 1411298100,
+        "periods": {
+          "first": 1411298100,
+          "second": 1411301700
+        },
+        "venue": {
+          "id": null,
+          "name": "Dens Park (Dundee)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 7",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 253,
+          "name": "Dundee",
+          "logo": "https://media.api-sports.io/football/teams/253.png",
+          "winner": false
+        },
+        "away": {
+          "id": 1386,
+          "name": "Dundee Utd",
+          "logo": "https://media.api-sports.io/football/teams/1386.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 1,
+        "away": 4
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 1,
+          "away": 4
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205940,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-10-18T14:00:00+00:00",
+        "timestamp": 1413640800,
+        "periods": {
+          "first": 1413640800,
+          "second": 1413644400
+        },
+        "venue": {
+          "id": null,
+          "name": "McDiarmid Park (Perth)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 10",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 258,
+          "name": "ST Johnstone",
+          "logo": "https://media.api-sports.io/football/teams/258.png",
+          "winner": false
+        },
+        "away": {
+          "id": 250,
+          "name": "Kilmarnock",
+          "logo": "https://media.api-sports.io/football/teams/250.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 1,
+        "away": 2
+      },
+      "score": {
+        "halftime": {
+          "home": 1,
+          "away": 2
+        },
+        "fulltime": {
+          "home": 1,
+          "away": 2
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205959,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-11-09T12:30:00+00:00",
+        "timestamp": 1415536200,
+        "periods": {
+          "first": 1415536200,
+          "second": 1415539800
+        },
+        "venue": {
+          "id": null,
+          "name": "Pittodrie Stadium (Aberdeen)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 13",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 252,
+          "name": "Aberdeen",
+          "logo": "https://media.api-sports.io/football/teams/252.png",
+          "winner": false
+        },
+        "away": {
+          "id": 247,
+          "name": "Celtic",
+          "logo": "https://media.api-sports.io/football/teams/247.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 1,
+        "away": 2
+      },
+      "score": {
+        "halftime": {
+          "home": 1,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 1,
+          "away": 2
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205977,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2014-12-14T13:00:00+00:00",
+        "timestamp": 1418562000,
+        "periods": {
+          "first": 1418562000,
+          "second": 1418565600
+        },
+        "venue": {
+          "id": null,
+          "name": "Celtic Park (Glasgow)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 16",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 247,
+          "name": "Celtic",
+          "logo": "https://media.api-sports.io/football/teams/247.png",
+          "winner": true
+        },
+        "away": {
+          "id": 251,
+          "name": "ST Mirren",
+          "logo": "https://media.api-sports.io/football/teams/251.png",
+          "winner": false
+        }
+      },
+      "goals": {
+        "home": 4,
+        "away": 1
+      },
+      "score": {
+        "halftime": {
+          "home": 3,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 4,
+          "away": 1
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 205997,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-01-04T15:00:00+00:00",
+        "timestamp": 1420383600,
+        "periods": {
+          "first": 1420383600,
+          "second": 1420387200
+        },
+        "venue": {
+          "id": null,
+          "name": "McDiarmid Park (Perth)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 20",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 258,
+          "name": "ST Johnstone",
+          "logo": "https://media.api-sports.io/football/teams/258.png",
+          "winner": false
+        },
+        "away": {
+          "id": 248,
+          "name": "Hamilton Academical",
+          "logo": "https://media.api-sports.io/football/teams/248.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 0,
+        "away": 1
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 0,
+          "away": 1
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 206021,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-01-24T12:45:00+00:00",
+        "timestamp": 1422103500,
+        "periods": {
+          "first": 1422103500,
+          "second": 1422107100
+        },
+        "venue": {
+          "id": null,
+          "name": "Global Energy Stadium (Dingwall)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 24",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 902,
+          "name": "Ross County",
+          "logo": "https://media.api-sports.io/football/teams/902.png",
+          "winner": false
+        },
+        "away": {
+          "id": 247,
+          "name": "Celtic",
+          "logo": "https://media.api-sports.io/football/teams/247.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 0,
+        "away": 1
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 0
+        },
+        "fulltime": {
+          "home": 0,
+          "away": 1
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 206038,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-02-21T15:00:00+00:00",
+        "timestamp": 1424530800,
+        "periods": {
+          "first": 1424530800,
+          "second": 1424534400
+        },
+        "venue": {
+          "id": null,
+          "name": "Fir Park (Motherwell)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 27",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 256,
+          "name": "Motherwell",
+          "logo": "https://media.api-sports.io/football/teams/256.png",
+          "winner": false
+        },
+        "away": {
+          "id": 253,
+          "name": "Dundee",
+          "logo": "https://media.api-sports.io/football/teams/253.png",
+          "winner": true
+        }
+      },
+      "goals": {
+        "home": 0,
+        "away": 1
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 0,
+          "away": 1
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 206056,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-03-20T19:45:00+00:00",
+        "timestamp": 1426880700,
+        "periods": {
+          "first": 1426880700,
+          "second": 1426884300
+        },
+        "venue": {
+          "id": null,
+          "name": "Fir Park (Motherwell)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 30",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 256,
+          "name": "Motherwell",
+          "logo": "https://media.api-sports.io/football/teams/256.png",
+          "winner": true
+        },
+        "away": {
+          "id": 248,
+          "name": "Hamilton Academical",
+          "logo": "https://media.api-sports.io/football/teams/248.png",
+          "winner": false
+        }
+      },
+      "goals": {
+        "home": 4,
+        "away": 0
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 0
+        },
+        "fulltime": {
+          "home": 4,
+          "away": 0
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 206077,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-04-11T14:00:00+00:00",
+        "timestamp": 1428760800,
+        "periods": {
+          "first": 1428760800,
+          "second": 1428764400
+        },
+        "venue": {
+          "id": null,
+          "name": "Firhill Stadium (Glasgow)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 33",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 901,
+          "name": "Partick",
+          "logo": "https://media.api-sports.io/football/teams/901.png",
+          "winner": true
+        },
+        "away": {
+          "id": 256,
+          "name": "Motherwell",
+          "logo": "https://media.api-sports.io/football/teams/256.png",
+          "winner": false
+        }
+      },
+      "goals": {
+        "home": 2,
+        "away": 0
+      },
+      "score": {
+        "halftime": {
+          "home": 0,
+          "away": 0
+        },
+        "fulltime": {
+          "home": 2,
+          "away": 0
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    },
+    {
+      "fixture": {
+        "id": 206055,
+        "referee": null,
+        "timezone": "UTC",
+        "date": "2015-05-05T18:45:00+00:00",
+        "timestamp": 1430851500,
+        "periods": {
+          "first": 1430851500,
+          "second": 1430855100
+        },
+        "venue": {
+          "id": null,
+          "name": "Tulloch Caledonian Stadium (Inverness)",
+          "city": null
+        },
+        "status": {
+          "long": "Match Finished",
+          "short": "FT",
+          "elapsed": 90,
+          "extra": null
+        }
+      },
+      "league": {
+        "id": 179,
+        "name": "Premiership",
+        "country": "Scotland",
+        "logo": "https://media.api-sports.io/football/leagues/179.png",
+        "flag": "https://media.api-sports.io/flags/gb-sct.svg",
+        "season": 2014,
+        "round": "1st Phase - 29",
+        "standings": true
+      },
+      "teams": {
+        "home": {
+          "id": 903,
+          "name": "Inverness CT",
+          "logo": "https://media.api-sports.io/football/teams/903.png",
+          "winner": true
+        },
+        "away": {
+          "id": 1386,
+          "name": "Dundee Utd",
+          "logo": "https://media.api-sports.io/football/teams/1386.png",
+          "winner": false
+        }
+      },
+      "goals": {
+        "home": 2,
+        "away": 1
+      },
+      "score": {
+        "halftime": {
+          "home": 2,
+          "away": 1
+        },
+        "fulltime": {
+          "home": 2,
+          "away": 1
+        },
+        "extratime": {
+          "home": null,
+          "away": null
+        },
+        "penalty": {
+          "home": null,
+          "away": null
+        }
+      }
+    }
+  ]
+}

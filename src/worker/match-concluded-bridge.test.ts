@@ -41,6 +41,7 @@ import type { FootballGameBridgeClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import {
   createMatchConcludedBridge,
+  ingestFixtureListEnvelope,
   decodeFixtureEnvelope,
   decodeLineupEnvelope,
   isFixtureDetailWorkload,
@@ -1436,6 +1437,53 @@ describe('createMatchConcludedBridge — fixtures list (SCHEDULED game mint)', (
     expect(gameService.lookupCalls).toHaveLength(0);
     expect(stream.published).toHaveLength(0);
     expect(logs.some((e) => e.event === 'bridge_fixtures_list_ingested')).toBe(true);
+  });
+
+  it('keeps the live replay id on the list branch', async () => {
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({});
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: noopLogger,
+    });
+    await bridge({
+      workload: 'fixtures-next-7d',
+      resourceId: 'league-1-season-2026',
+      data: buildFixtureListResponse([{ id: 1489369, status: 'FT' }]),
+    });
+    expect(gameService.ingestCalls[0]?.metadata?.replayId).toBe(
+      'live:fixtures-next-7d:league-1-season-2026'
+    );
+  });
+
+  it('ingestFixtureListEnvelope sends the caller replay id, counts the games, publishes nothing', async () => {
+    const { publisher, stream } = buildPublisher();
+    const observe = vi.spyOn(publisher, 'observe');
+    const gameService = fakeGameService({});
+    const result = await ingestFixtureListEnvelope({
+      workload: 'provider-fixture-results',
+      resourceId: 'history-fixtures-1-2014',
+      replayId: 'history:api-football:1:2014',
+      data: buildFixtureListResponse([
+        { id: 101, status: 'FT' },
+        { id: 102, status: 'AET' },
+      ]),
+      providerId: 'api-football',
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      log: noopLogger,
+      clock: () => Date.parse('2026-11-16T00:00:00Z'),
+    });
+    expect(gameService.ingestCalls).toHaveLength(1);
+    expect(gameService.ingestCalls[0]?.metadata?.replayId).toBe('history:api-football:1:2014');
+    expect(result.gamesSent).toBe(2);
+    expect(result.error).toBeUndefined();
+    expect(gameService.lookupCalls).toHaveLength(0);
+    expect(observe).not.toHaveBeenCalled();
+    expect(stream.published).toHaveLength(0);
   });
 
   it('ingests every fixture in a mixed NS/FT list as a game without FT-gating', async () => {
