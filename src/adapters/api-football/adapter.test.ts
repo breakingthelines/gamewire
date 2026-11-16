@@ -39,6 +39,7 @@ import {
   apiFootballStandingSyncPaths,
   apiFootballSquadPath,
   apiFootballStatusPath,
+  kitHex,
   providerGameIdFromFixture,
 } from './index.js';
 import { LIVE_INGESTION_COMPETITIONS } from '../../workflows/competitions.js';
@@ -680,6 +681,53 @@ describe('API-Football adapter', () => {
     expect(request.lineups[0]?.teamSheets[0]?.coach?.photoUrl).toBe(
       'https://media.api-sports.io/football/coachs/18.png'
     );
+    // The provider's kit colours ride the sheet as reported.
+    expect(request.lineups[0]?.teamSheets[0]?.kitPlayerColor).toBe('e10000');
+    expect(request.lineups[0]?.teamSheets[0]?.kitGoalkeeperColor).toBe('ffd700');
+  });
+
+  it('leaves kit colours empty when the provider reports none', () => {
+    const request = apiFootballIngestLineupsRequestFromLineups({
+      replayId: 'live:lineups-post-confirm:1379264',
+      resourceId: '1379264',
+      gameId: 'btl_football_game_g1379264',
+      envelope: {
+        response: [
+          {
+            team: { id: 33, name: 'Manchester United', colors: null },
+            formation: '4-2-3-1',
+            startXI: [{ player: { id: 882, name: 'D. de Gea', number: 1, pos: 'G', grid: '1:1' } }],
+            substitutes: [],
+          },
+          {
+            team: {
+              id: 40,
+              name: 'Liverpool',
+              colors: { player: { primary: '#E41E2C', number: 'ffffff', border: 'e41e2c' } },
+            },
+            formation: '4-2-3-1',
+            startXI: [{ player: { id: 280, name: 'Alisson', number: 1, pos: 'G', grid: '1:1' } }],
+            substitutes: [],
+          },
+        ],
+      },
+    });
+    const [home, away] = request.lineups[0]?.teamSheets ?? [];
+    expect(home?.kitPlayerColor).toBe('');
+    expect(home?.kitGoalkeeperColor).toBe('');
+    expect(away?.kitPlayerColor).toBe('e41e2c');
+    expect(away?.kitGoalkeeperColor).toBe('');
+  });
+
+  it('reads only 6-digit hex as a kit colour', () => {
+    expect(kitHex('e10000')).toBe('e10000');
+    expect(kitHex(' #ABD1F5 ')).toBe('abd1f5');
+    expect(kitHex('fff')).toBe('');
+    expect(kitHex('red')).toBe('');
+    expect(kitHex('e1000000')).toBe('');
+    expect(kitHex(null)).toBe('');
+    expect(kitHex(undefined)).toBe('');
+    expect(kitHex(16711680)).toBe('');
   });
 
   // Tripwire for the formation-null lineup bug: API-Football returns complete

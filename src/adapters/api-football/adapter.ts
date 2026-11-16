@@ -1399,7 +1399,23 @@ function teamSheetFromLineup(
     // convention — canonicalisation to btl_football_coach_* is an
     // identity/crosswalk concern, never done at this boundary.
     coach: coachRefFromLineup(lineup, options.providerId),
+    // The provider's per-fixture kit colours, kept as reported so coverage
+    // can be counted. Often absent, and sometimes the club's usual colour
+    // rather than the kit worn, so the match page treats them as a hint.
+    kitPlayerColor: kitHex(lineup.team.colors?.player?.primary),
+    kitGoalkeeperColor: kitHex(lineup.team.colors?.goalkeeper?.primary),
   });
+}
+
+/**
+ * A provider kit colour as 6 lowercase hex digits with no '#', the shape
+ * FootballTeamSheet.kit_player_color documents. Anything else (null, a
+ * colour name, a short or long value) is empty: unknown, not a colour.
+ */
+export function kitHex(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const hex = value.trim().replace(/^#/, '').toLowerCase();
+  return /^[0-9a-f]{6}$/.test(hex) ? hex : '';
 }
 
 function coachRefFromLineup(lineup: ApiFootballLineupResponse, providerId: string) {
