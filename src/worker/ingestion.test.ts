@@ -162,6 +162,32 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     expect(onFixtureFetched).not.toHaveBeenCalled();
   });
 
+  it("never notifies onFixtureFetched for the 'competition-standings' workload", async () => {
+    // season-backfill and daily-anchor ingest standings themselves; the
+    // history mode relies on its two workloads (this one and
+    // 'provider-fixture-results') both staying out of BRIDGE_WORKLOADS.
+    const fetchFn = buildFetchMock({ response: [{ league: { id: 179, season: 2014 } }] });
+    const onFixtureFetched = vi.fn();
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+      onFixtureFetched,
+    });
+
+    const result = await loop.fetchWorkload({
+      priority: 'background',
+      workload: 'competition-standings',
+      resourceId: 'standings-179-2014',
+      path: '/standings?league=179&season=2014',
+      cache: 'bypass',
+    });
+
+    expect(result.status).toBe('fetched');
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(onFixtureFetched).not.toHaveBeenCalled();
+  });
+
   it('fetches once on miss and caches under provider:workload:resource', async () => {
     const fetchFn = buildFetchMock({ response: [{ fixture: { id: 1 } }] });
     const cache = new InMemoryProviderCache();

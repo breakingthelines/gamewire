@@ -97,6 +97,10 @@ class MockIngestion {
     this.payloads.set(`season:${leagueId}:${season}`, payload);
   }
 
+  setStandings(leagueId: number, season: number, payload: unknown): void {
+    this.payloads.set(`standings:${leagueId}:${season}`, payload);
+  }
+
   fetchWorkload = vi.fn(async (options: IngestionFetchOptions): Promise<IngestionFetchResult> => {
     const index = this.calls.length;
     this.calls.push(options);
@@ -113,8 +117,11 @@ class MockIngestion {
       if (match) {
         data = this.payloads.get(`season:${match[1]}:${match[2]}`) ?? { response: [] };
       }
-    } else if (options.resourceId.startsWith('backfill-standings-')) {
-      data = { response: [{ league: {} }] };
+    } else if (options.resourceId.startsWith('standings-')) {
+      const match = /standings-(\d+)-(\d+)/.exec(options.resourceId);
+      data = (match && this.payloads.get(`standings:${match[1]}:${match[2]}`)) ?? {
+        response: [{ league: {} }],
+      };
     } else {
       data = { response: [{ fixture: { id: Number(options.resourceId) || 1 } }] };
     }
@@ -293,17 +300,54 @@ describe('seasonBackfillWorkflow — full season walk', () => {
     expect(fixturesCall?.path).not.toContain('from=');
   });
 
-  it('pulls standings once per season', async () => {
+  it('pulls standings once per season and stores them', async () => {
+    // `/standings` used to be fetched under `fixtures-next-7d`, so the bridge
+    // read it as a fixture list and nothing was stored. It is fetched under
+    // `competition-standings` (not a bridge workload) and ingested here.
     const ingestion = new MockIngestion(cache);
     ingestion.setSeasonFixtures(39, 2025, seasonEnvelope([1001]));
-    await run(ingestion, [COMPETITION_A], {
-      targets: [{ competitionKey: 'comp-a', season: 2025 }],
+    ingestion.setStandings(39, 2025, {
+      response: [
+        {
+          league: {
+            id: 39,
+            season: 2025,
+            standings: [
+              [
+                {
+                  rank: 1,
+                  team: { id: 50, name: 'Club Fifty' },
+                  points: 3,
+                  all: { played: 1, win: 1, draw: 0, lose: 0, goals: { for: 2, against: 0 } },
+                },
+              ],
+            ],
+          },
+        },
+      ],
     });
-    const standingsCalls = ingestion.calls.filter(
-      (c) => c.workload === 'fixtures-next-7d' && c.path?.startsWith('/standings')
+    const ingestFootballStandings = vi.fn(async (_request: unknown) => ({
+      acceptedCount: 1,
+      updatedCount: 0,
+      replayId: '',
+    }));
+    const result = await run(
+      ingestion,
+      [COMPETITION_A],
+      { targets: [{ competitionKey: 'comp-a', season: 2025 }] },
+      { gameService: { ingestFootballStandings } as unknown as WorkflowDeps['gameService'] }
     );
+    const standingsCalls = ingestion.calls.filter((c) => c.path?.startsWith('/standings'));
     expect(standingsCalls).toHaveLength(1);
+    expect(standingsCalls[0]?.workload).toBe('competition-standings');
+    expect(standingsCalls[0]?.resourceId).toBe('standings-39-2025');
     expect(standingsCalls[0]?.path).toBe('/standings?league=39&season=2025');
+    expect(ingestFootballStandings).toHaveBeenCalledTimes(1);
+    const request = ingestFootballStandings.mock.calls[0]![0] as {
+      standings: ReadonlyArray<{ seasonId: string }>;
+    };
+    expect(request.standings[0]?.seasonId).toBe('provider:api-football:season:39:2025');
+    expect(result.targets[0]?.errors).toEqual([]);
   });
 
   it('treats a season with zero finalised fixtures as complete (no re-run forever)', async () => {

@@ -67,7 +67,7 @@ import {
   type ApiFootballStatisticsResponse,
   type ApiFootballTeamRef,
 } from '../adapters/api-football/index.js';
-import type { FootballGameBridgeClient } from './clients/game-service.js';
+import type { FootballGameBridgeClient, FootballGameIngestClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import type { IngestionWorkload } from './ingestion.js';
 import type {
@@ -469,6 +469,47 @@ interface ProviderResourceBridgeInput {
  * fixture-detail branch + its emit-once gate.
  */
 const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<void> => {
+  await ingestFixtureListEnvelope({
+    ...input,
+    replayId: `live:${input.workload}:${input.resourceId}`,
+  });
+};
+
+export interface FixtureListIngestInput {
+  /** Workload label for the logs only; the envelope is never re-fetched. */
+  readonly workload: IngestionWorkload;
+  readonly resourceId: string;
+  /**
+   * `IngestMetadata.replay_id`. The live list branch sends
+   * `live:<workload>:<resourceId>`; season-backfill's history mode sends
+   * `history:api-football:<league>:<season>`, which game-service reads as the
+   * historical marker.
+   */
+  readonly replayId: string;
+  readonly data: unknown;
+  readonly providerId: string;
+  readonly gameService: Pick<FootballGameIngestClient, 'ingestGames'>;
+  readonly identity: FootballIdentityLookupClient;
+  readonly log: MatchConcludedBridgeLogger;
+  readonly clock: () => number;
+}
+
+export interface FixtureListIngestResult {
+  /** Games in the `IngestGames` request (0 when nothing was sent). */
+  readonly gamesSent: number;
+  readonly accepted: number;
+  readonly updated: number;
+  /** Set when `IngestGames` failed. */
+  readonly error?: string;
+}
+
+/**
+ * The list branch's mapping and ingest, with the replay id supplied by the
+ * caller. Never throws and never publishes a match-concluded fact.
+ */
+export const ingestFixtureListEnvelope = async (
+  input: FixtureListIngestInput
+): Promise<FixtureListIngestResult> => {
   const fixtures = decodeFixtureResponses(input.data);
   if (fixtures.length === 0) {
     input.log({
@@ -478,7 +519,7 @@ const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<vo
       providerId: input.providerId,
       reason: 'no_fixtures_in_response',
     });
-    return;
+    return { gamesSent: 0, accepted: 0, updated: 0 };
   }
   const entityResolutions = await resolveFixtureListEntities(
     input.identity,
@@ -489,7 +530,7 @@ const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<vo
   );
   const request = apiFootballIngestGamesRequestFromFixtures({
     provider: input.providerId,
-    replayId: `live:${input.workload}:${input.resourceId}`,
+    replayId: input.replayId,
     resourceId: input.resourceId,
     envelope: input.data,
     entityResolutions,
@@ -503,7 +544,7 @@ const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<vo
       providerId: input.providerId,
       reason: 'no_mapped_games',
     });
-    return;
+    return { gamesSent: 0, accepted: 0, updated: 0 };
   }
   try {
     const response = await input.gameService.ingestGames(request);
@@ -515,14 +556,21 @@ const ingestFixtureList = async (input: ProviderResourceBridgeInput): Promise<vo
       acceptedCount: response.acceptedCount,
       updatedCount: response.updatedCount,
     });
+    return {
+      gamesSent: request.games.length,
+      accepted: response.acceptedCount,
+      updated: response.updatedCount,
+    };
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
     input.log({
       event: 'bridge_fixtures_list_ingest_error',
       workload: input.workload,
       resourceId: input.resourceId,
       providerId: input.providerId,
-      message: err instanceof Error ? err.message : String(err),
+      message,
     });
+    return { gamesSent: request.games.length, accepted: 0, updated: 0, error: message };
   }
 };
 

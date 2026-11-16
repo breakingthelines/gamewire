@@ -1288,8 +1288,77 @@ describe('team-season-stats', () => {
     expect(parseProviderEnrichmentInput({ dataset: 'team-season-stats', seasons: [2025] })).toEqual(
       { ok: false, reason: 'seasons_not_used_by_dataset' }
     );
+    expect(
+      parseProviderEnrichmentInput({ dataset: 'team-season-stats', mode: 'full', seasons: [2014] })
+        .ok
+    ).toBe(true);
     const named = parseProviderEnrichmentInput({ dataset: 'team-season-stats', teamIds: [33] });
     expect(named.ok && named.input.teamIds).toEqual(['33']);
+  });
+
+  it('full with seasons reads each named league-season list outside the bridge', async () => {
+    const h = harness({
+      respond: (req) =>
+        req.path === '/fixtures'
+          ? datedFixtureList([
+              {
+                home: Number(req.params.get('league')) * 10,
+                away: Number(req.params.get('season')),
+                kickoffMs: T0 - 400 * DAY,
+                status: 'FT',
+              },
+            ])
+          : undefined,
+    });
+    const fetchWorkload = vi.spyOn(h.deps.ingestion, 'fetchWorkload');
+    const parsed = parseProviderEnrichmentInput({
+      dataset: 'team-season-stats',
+      mode: 'full',
+      leagueIds: [39, 88],
+      seasons: [2013, 2014],
+    });
+    expect(parsed.ok).toBe(true);
+    const out = await h.run('team-season-stats', parsed.ok ? parsed.input : {});
+    expect(out.status).toBe('completed');
+    expect(h.paths().slice(0, 4)).toEqual([
+      '/fixtures?league=39&season=2014',
+      '/fixtures?league=88&season=2014',
+      '/fixtures?league=39&season=2013',
+      '/fixtures?league=88&season=2013',
+    ]);
+    expect(h.paths().slice(4).sort()).toEqual(
+      [
+        '/teams/statistics?league=39&season=2014&team=2014',
+        '/teams/statistics?league=39&season=2014&team=390',
+        '/teams/statistics?league=88&season=2014&team=2014',
+        '/teams/statistics?league=88&season=2014&team=880',
+        '/teams/statistics?league=39&season=2013&team=2013',
+        '/teams/statistics?league=39&season=2013&team=390',
+        '/teams/statistics?league=88&season=2013&team=2013',
+        '/teams/statistics?league=88&season=2013&team=880',
+      ].sort()
+    );
+    // The lists go through a workload the ingest bridge ignores, uncached, so
+    // a past season's games are never minted by this dataset.
+    const listCalls = fetchWorkload.mock.calls
+      .map((call) => call[0])
+      .filter((opts) => opts.path?.startsWith('/fixtures'));
+    expect(listCalls.map((opts) => [opts.workload, opts.cache])).toEqual(
+      Array.from({ length: 4 }, () => ['provider-fixture-results', 'bypass'])
+    );
+    expect(h.teamStats).toHaveLength(8);
+  });
+
+  it('full with seasons on a dry run fetches no list', async () => {
+    const h = harness();
+    const out = await h.run('team-season-stats', {
+      mode: 'full',
+      leagueIds: [39],
+      seasons: [2014],
+      dryRun: true,
+    });
+    expect(h.fetchFn).not.toHaveBeenCalled();
+    expect(out.targets[0]).toMatchObject({ leagueId: 39, season: 2014 });
   });
 
   it('skips with a reason when no team has a recent final whistle', async () => {

@@ -549,8 +549,94 @@ export interface SeasonBackfillInput {
    * count and the teams identity cannot resolve. Defaults to false.
    */
   readonly dryRun?: boolean;
+  /**
+   * History mode (results only). Per target: resolve the season and the
+   * competition through identity (no call; a miss skips the target), read the
+   * season list outside the ingest bridge (1 call), hold the target when a
+   * team is unresolved or BTL already holds one of its games, ingest the list
+   * with replay id `history:api-football:<league>:<season>` (game-service marks
+   * those games historical), then `/standings` (1 call). A finished target is
+   * remembered for 30 days and costs 0 calls on a re-run. No fixture detail,
+   * events, lineups or stats are pulled, and no match-concluded fact is
+   * published. With `dryRun`, makes the list call and writes nothing.
+   */
+  readonly resultsOnly?: boolean;
+  /**
+   * Standings only: the season guard, then `/standings` and its ingest (1 call
+   * a target). No list, no games, nothing marked historical. Works with or
+   * without `resultsOnly`, and wins over it. With `dryRun`, makes no call.
+   */
+  readonly standingsOnly?: boolean;
+  /** History mode: ingest a target even when identity does not know some of its teams. */
+  readonly allowUnresolvedTeams?: boolean;
   /** ISO-8601 instant used as "now" for fetch metadata. Defaults to clock. */
   readonly nowUtc?: string;
+}
+
+/**
+ * Where a history-mode target ended this run.
+ * - `done`: listed and ingested (or standings stored), marked finished.
+ * - `already-done`: finished on an earlier run; no call made.
+ * - `held`: not ingested for a reason a re-run alone will not fix (unresolved
+ *   season, competition or teams, or a season BTL already holds). See `reason`.
+ * - `pending`: not finished this run (budget, quota posture, a refused or
+ *   failed call, an ingest error). A re-run retries it.
+ * - `planned`: dry run.
+ */
+export type SeasonHistoryState = 'done' | 'already-done' | 'held' | 'pending' | 'planned';
+
+export type SeasonHistoryHoldReason =
+  | 'identity-not-wired'
+  | 'season-unresolved'
+  | 'competition-unresolved'
+  | 'identity-error'
+  | 'teams-unresolved'
+  | 'team-lookup-error'
+  | 'season-already-held'
+  | 'game-lookup-error'
+  | 'game-lookup-not-wired'
+  | 'game-service-not-wired';
+
+/** History-mode detail for one target (`resultsOnly` or `standingsOnly`). */
+export interface SeasonHistoryTarget {
+  readonly mode: 'results-only' | 'standings-only';
+  readonly state: SeasonHistoryState;
+  readonly reason?: SeasonHistoryHoldReason;
+  /** Canonical season id identity resolved for `season:<league>:<year>`. */
+  readonly seasonId?: string;
+  /** Canonical competition id identity resolved for the league. */
+  readonly competitionId?: string;
+  /** Provider calls a full run of this target makes: 2, or 1 for standings only. */
+  readonly plannedCalls: number;
+  /** Fixtures in the season list, any status. */
+  readonly fixturesListed?: number;
+  /** Finished fixtures in the list (FT, AET, PEN, WO, AWD). */
+  readonly fixturesFinalised?: number;
+  /** Distinct teams in the list. */
+  readonly teams?: number;
+  /** Teams identity did not resolve, as `<provider id>:<name>`. */
+  readonly unresolvedTeams?: readonly string[];
+  /** Teams whose identity lookup errored. */
+  readonly teamLookupErrors?: number;
+  /** Provider fixture ids BTL already holds a game for (the `season-already-held` sample). */
+  readonly heldFixtureIds?: readonly string[];
+  /** Games in the `IngestGames` request. */
+  readonly gamesSent?: number;
+  readonly gamesAccepted?: number;
+  readonly gamesUpdated?: number;
+  /** Standings tables (groups) ingested. */
+  readonly standingsTables?: number;
+  readonly standingsAccepted?: number;
+  readonly standingsUpdated?: number;
+}
+
+/** Run totals of a history-mode run, by target state. */
+export interface SeasonHistoryRunSummary {
+  readonly done: number;
+  readonly alreadyDone: number;
+  readonly held: number;
+  readonly pending: number;
+  readonly planned: number;
 }
 
 /** What a dry run found for one target. */
@@ -590,6 +676,8 @@ export interface SeasonBackfillTargetResult {
   readonly rateLimitRetries?: number;
   /** Set on a dry run only. */
   readonly dryRun?: SeasonBackfillDryRunTarget;
+  /** Set in history mode (`resultsOnly` or `standingsOnly`). */
+  readonly history?: SeasonHistoryTarget;
 }
 
 export interface SeasonBackfillOutput {
@@ -603,6 +691,8 @@ export interface SeasonBackfillOutput {
   readonly targets: readonly SeasonBackfillTargetResult[];
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  /** History mode only: targets by state. A loop stops when `pending` is 0. */
+  readonly history?: SeasonHistoryRunSummary;
 }
 
 /**
@@ -625,6 +715,8 @@ export interface SeasonBackfillWireResult {
   readonly targets: readonly SeasonBackfillTargetResult[];
   readonly degradeFlags: readonly DegradeFlag[];
   readonly finalQuota: ProviderQuotaSnapshot | undefined;
+  /** History mode only: targets by state. A loop stops when `pending` is 0. */
+  readonly history?: SeasonHistoryRunSummary;
 }
 
 /**

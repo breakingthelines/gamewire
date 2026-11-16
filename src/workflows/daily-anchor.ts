@@ -20,10 +20,8 @@
  * burn the singleflight key collisions and double the call budget
  * with no schedule benefit at this cadence.
  */
-import { create } from '@bufbuild/protobuf';
 
 import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
-import { ResolveRequestSchema } from '@breakingthelines/protos/btl/identity/v1/identity_service_pb';
 
 import {
   API_FOOTBALL_PROVIDER_ID,
@@ -31,17 +29,20 @@ import {
   apiFootballCurrentSeasonLabel,
   apiFootballFixturePath,
   apiFootballIngestCurrentSeasonRequest,
-  apiFootballIngestStandingsRequestFromStandings,
   apiFootballSeasonProviderId,
   providerStorageId,
-  type ApiFootballEntityResolutionMap,
-  type ApiFootballResolvedEntity,
 } from '../adapters/api-football/index.js';
-import type { FootballIdentityLookupClient } from '../worker/clients/identity.js';
 import type { IngestionFetchResult, IngestionWorkload } from '../worker/ingestion.js';
 import type { ProviderQuotaSnapshot } from '../worker/quota.js';
 import { isMatchdayWindow } from './competitions.js';
 import { handleProviderOutage, handleQuotaPosture, mostRestrictive } from './degrade.js';
+import {
+  ingestStandingsEnvelope,
+  resolveApiFootballEntity,
+  STANDINGS_WORKLOAD,
+  standingsPath,
+  standingsResourceId,
+} from './standings-ingest.js';
 import type {
   CompetitionEntry,
   CompetitionRunResult,
@@ -68,7 +69,7 @@ const FIXTURES_ANCHOR_WINDOW_PATH = (competition: CompetitionEntry, anchorAt: Da
 };
 
 const STANDINGS_PATH = (competition: CompetitionEntry): string =>
-  `/standings?league=${competition.apiFootballLeagueId}&season=${competition.season}`;
+  standingsPath(competition.apiFootballLeagueId, competition.season);
 
 const CURRENT_SEASON_PATH = (competition: CompetitionEntry): string =>
   `/leagues?id=${competition.apiFootballLeagueId}`;
@@ -79,7 +80,6 @@ const TEAM_METADATA_RESOURCE = (competition: CompetitionEntry, teamId: number): 
 const TEAM_METADATA_PATH = (teamId: number): string => `/teams?id=${teamId}`;
 
 const TEAM_METADATA_WORKLOAD: IngestionWorkload = 'team-metadata';
-const STANDINGS_WORKLOAD: IngestionWorkload = 'competition-standings';
 const CURRENT_SEASON_WORKLOAD: IngestionWorkload = 'competition-current-season';
 const FIXTURES_WORKLOAD: IngestionWorkload = 'fixtures-next-7d';
 const EVENTS_WORKLOAD: IngestionWorkload = 'events-post-final';
@@ -268,7 +268,10 @@ const sweepCompetition = async (
   // component); only the canonical mapping + `IngestFootballStandings` ingest
   // happen in the workflow. This is the table that backs the First Touch club
   // picker (`GetCompetitionStandings` reads `football_standings`).
-  const standingsResource = `standings-${competition.apiFootballLeagueId}-${competition.season}`;
+  const standingsResource = standingsResourceId(
+    competition.apiFootballLeagueId,
+    competition.season
+  );
   const standingsResult = await deps.ingestion.fetchWorkload({
     priority: WORKFLOW_PROVIDER_PRIORITY,
     workload: STANDINGS_WORKLOAD,
@@ -512,48 +515,46 @@ const ingestStandings = async (input: StandingsIngestInput): Promise<void> => {
   if (result.data === undefined) {
     return;
   }
-  if (!deps.gameService) {
-    log({
-      event: 'daily_anchor.standings_skipped',
-      workflow: 'daily-anchor',
-      competition: competition.key,
-      reason: 'game_service_not_wired',
-    });
-    return;
-  }
-
-  const entityResolutions = await resolveStandingsEntities(deps.identity, competition, result.data);
-  const request = apiFootballIngestStandingsRequestFromStandings({
-    replayId: `live:${STANDINGS_WORKLOAD}:${resourceId}`,
+  const outcome = await ingestStandingsEnvelope({
+    leagueId: competition.apiFootballLeagueId,
     resourceId,
-    envelope: result.data,
-    entityResolutions,
-    fetchedAtMs: Date.now(),
+    data: result.data,
+    gameService: deps.gameService,
+    identity: deps.identity,
   });
-  if (request.standings.length === 0) {
-    log({
-      event: 'daily_anchor.standings_empty',
-      workflow: 'daily-anchor',
-      competition: competition.key,
-      reason: 'no_mapped_standings',
-    });
-    return;
-  }
-  try {
-    const response = await deps.gameService.ingestFootballStandings(request);
-    log({
-      event: 'daily_anchor.standings_ingested',
-      workflow: 'daily-anchor',
-      competition: competition.key,
-      reason: `accepted=${response.acceptedCount} updated=${response.updatedCount} tables=${request.standings.length}`,
-    });
-  } catch (err) {
-    log({
-      event: 'daily_anchor.standings_ingest_error',
-      workflow: 'daily-anchor',
-      competition: competition.key,
-      reason: err instanceof Error ? err.message : String(err),
-    });
+  switch (outcome.status) {
+    case 'not-wired':
+      log({
+        event: 'daily_anchor.standings_skipped',
+        workflow: 'daily-anchor',
+        competition: competition.key,
+        reason: 'game_service_not_wired',
+      });
+      return;
+    case 'empty':
+      log({
+        event: 'daily_anchor.standings_empty',
+        workflow: 'daily-anchor',
+        competition: competition.key,
+        reason: 'no_mapped_standings',
+      });
+      return;
+    case 'ingested':
+      log({
+        event: 'daily_anchor.standings_ingested',
+        workflow: 'daily-anchor',
+        competition: competition.key,
+        reason: `accepted=${outcome.accepted} updated=${outcome.updated} tables=${outcome.tables}`,
+      });
+      return;
+    case 'error':
+      log({
+        event: 'daily_anchor.standings_ingest_error',
+        workflow: 'daily-anchor',
+        competition: competition.key,
+        reason: outcome.message,
+      });
+      return;
   }
 };
 
@@ -626,7 +627,7 @@ const ingestCurrentSeason = async (input: CurrentSeasonIngestInput): Promise<voi
 
   const leagueId = String(competition.apiFootballLeagueId);
   const competitionResolved = deps.identity
-    ? await resolveOne(deps.identity, EntityType.COMPETITION, leagueId)
+    ? await resolveApiFootballEntity(deps.identity, EntityType.COMPETITION, leagueId)
     : undefined;
   if (!competitionResolved?.entityId) {
     // A provider-scoped competition id would write a current_seasons row keyed
@@ -677,115 +678,6 @@ const ingestCurrentSeason = async (input: CurrentSeasonIngestInput): Promise<voi
       reason: err instanceof Error ? err.message : String(err),
     });
   }
-};
-
-/**
- * Build an {@link ApiFootballEntityResolutionMap} for a `/standings` envelope:
- * the competition is resolved once from the catalogue entry's provider league
- * id, and every team appearing in any standings group is resolved by its
- * provider team id. Seasons are never resolved (game-service binds them;
- * see below). `resolve` short-circuits per provider id, so one call per
- * distinct competition / team is issued regardless of the group count.
- * Identity misses leave the bucket empty and the mapper falls back to
- * provider-storage ids (game-service re-resolves at read time). Returns an
- * empty map when no identity client is wired.
- */
-const resolveStandingsEntities = async (
-  identity: FootballIdentityLookupClient | undefined,
-  competition: CompetitionEntry,
-  data: unknown
-): Promise<ApiFootballEntityResolutionMap> => {
-  const competitions: Record<string, ApiFootballResolvedEntity | undefined> = {};
-  const seasons: Record<string, ApiFootballResolvedEntity | undefined> = {};
-  const teams: Record<string, ApiFootballResolvedEntity | undefined> = {};
-  if (!identity) {
-    return { competitions, seasons, teams, players: {} };
-  }
-
-  const leagueId = String(competition.apiFootballLeagueId);
-  const competitionResolved = await resolveOne(identity, EntityType.COMPETITION, leagueId);
-  if (competitionResolved) {
-    competitions[leagueId] = competitionResolved;
-  }
-
-  // Seasons are deliberately NOT resolved: they are bound by game-service
-  // (season_id_bindings, forward-only) and the connector must not pre-resolve
-  // them. The `seasons` bucket stays empty so the standings mapper always keys
-  // rows by the provider-storage season id.
-
-  for (const providerTeamId of standingsTeamProviderIds(data)) {
-    if (teams[providerTeamId] !== undefined) {
-      continue;
-    }
-    const resolved = await resolveOne(identity, EntityType.TEAM, providerTeamId);
-    teams[providerTeamId] = resolved;
-  }
-
-  return { competitions, seasons, teams, players: {} };
-};
-
-const resolveOne = async (
-  identity: FootballIdentityLookupClient,
-  entityType: EntityType,
-  providerId: string
-): Promise<ApiFootballResolvedEntity | undefined> => {
-  if (providerId === '') {
-    return undefined;
-  }
-  try {
-    const response = await identity.resolve(
-      create(ResolveRequestSchema, {
-        entityType,
-        provider: API_FOOTBALL_PROVIDER_ID,
-        providerId,
-      })
-    );
-    if (response.found && response.entityId) {
-      return { entityId: response.entityId };
-    }
-  } catch {
-    // Identity outage / miss: leave unresolved so the mapper falls back to a
-    // provider-storage id. A standings ingest must not be blocked by identity.
-  }
-  return undefined;
-};
-
-/**
- * Collect the distinct provider team ids appearing across every group of a
- * `/standings` envelope (`response[].league.standings[][].team.id`).
- */
-const standingsTeamProviderIds = (data: unknown): readonly string[] => {
-  if (!isRecord(data) || !Array.isArray(data.response)) {
-    return [];
-  }
-  const ids = new Set<string>();
-  for (const item of data.response) {
-    if (!isRecord(item) || !isRecord(item.league)) {
-      continue;
-    }
-    const groups = (item.league as { standings?: unknown }).standings;
-    if (!Array.isArray(groups)) {
-      continue;
-    }
-    for (const group of groups) {
-      if (!Array.isArray(group)) {
-        continue;
-      }
-      for (const entry of group) {
-        if (!isRecord(entry) || !isRecord(entry.team)) {
-          continue;
-        }
-        const id = (entry.team as { id?: unknown }).id;
-        if ((typeof id === 'number' && Number.isFinite(id)) || typeof id === 'string') {
-          const str = String(id).trim();
-          if (str !== '' && str !== '0') {
-            ids.add(str);
-          }
-        }
-      }
-    }
-  }
-  return [...ids];
 };
 
 /**
