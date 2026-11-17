@@ -12,9 +12,9 @@
  *
  * # Wire contract (LOAD-BEARING — must match the consumer on game-service)
  *
- * The contract mirrors the game-service publisher documented in
- * `redis-stream-consumer.ts`. Any change here is a breaking change for
- * the sibling lane.
+ * The contract mirrors game-service's own fact publisher
+ * (internal/adapter/redisstream/publisher.go). Any change here is a
+ * breaking change for game-service's settle consumer.
  *
  * - **Stream name:** `btl:facts:game.match.concluded`
  * - **MAXLEN:** `MAXLEN ~ 10000` (approximate cap, not exact). The bus
@@ -283,9 +283,8 @@ export class InMemoryEmittedFixtureStore implements EmittedFixtureStore {
 }
 
 /**
- * Minimal Bun.redis shape we depend on. Mirrors the BunRedisLike type
- * exposed by the consumer module so the same client can be passed to
- * both — no need to construct a second Redis connection.
+ * Minimal Bun RedisClient shape we depend on: `Bun.redis` or a
+ * `new RedisClient(url)` on the events database.
  */
 export interface BunRedisStreamPublisher {
   // Bun.redis.send transmits a Uint8Array arg as a raw RESP bulk string

@@ -41,6 +41,15 @@ export interface GamewireWorkerConfig {
   redisUrl?: string;
   /** Redis key prefix used by gamewire-worker (defaults to "gamewire"). */
   redisNamespace: string;
+  /**
+   * Redis URL for the shared event streams (the `btl:facts:*` fact bus):
+   * `redisUrl` with its database swapped for `GAMEWIRE_EVENTS_REDIS_DB`.
+   * Every BTL service's streams share one database (0 in prod); the cache,
+   * quota counters and emit-once keys stay on `redisUrl`'s database.
+   * Undefined when the variable or `redisUrl` is unset: the streams then
+   * use `redisUrl` too.
+   */
+  eventsRedisUrl?: string;
   /** Hard daily provider call cap. Default 140,000 (10k headroom under the 150k Mega plan). */
   providerHardCap: number;
   /** Soft daily cap that flips the worker into cached-only mode. Default 130,000. */
@@ -247,6 +256,33 @@ const parseProviderMode = (value: string | undefined): GamewireProviderMode => {
   }
 };
 
+/**
+ * Returns `url` with its Redis database (the path) set to `db`. Bun's
+ * RedisClient selects the database from the URL path.
+ */
+export const withRedisDb = (url: string, db: number): string => {
+  const parsed = new URL(url);
+  parsed.pathname = `/${db}`;
+  return parsed.toString();
+};
+
+const resolveEventsRedisUrl = (
+  redisUrl: string | undefined,
+  rawDb: string | undefined
+): string | undefined => {
+  const raw = rawDb?.trim();
+  if (!raw) {
+    return undefined;
+  }
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`Invalid gamewire events redis db: ${rawDb}`);
+  }
+  if (!redisUrl) {
+    return undefined;
+  }
+  return withRedisDb(redisUrl, Number.parseInt(raw, 10));
+};
+
 const resolveProviderApiKey = (env: GamewireWorkerEnv): string | undefined =>
   env.API_FOOTBALL_KEY ?? env.APISPORTS_KEY ?? env.API_SPORTS_KEY ?? env.GAMEWIRE_PROVIDER_API_KEY;
 
@@ -362,6 +398,7 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     ),
     minuteCaps.background
   );
+  const redisUrl = env.GAMEWIRE_REDIS_URL ?? env.REDIS_URL;
   return {
     port: parsePort(env.GAMEWIRE_WORKER_PORT ?? env.PORT, 8095),
     gameServiceUrl: env.GAME_SERVICE_URL ?? 'http://game-service:9090',
@@ -375,8 +412,9 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     identityProviderId: env.IDENTITY_PROVIDER_ID ?? 'identity-data-football',
     webhookPath: env.GAMEWIRE_WEBHOOK_PATH ?? '/webhooks/gamewire',
     logLevel: parseLogLevel(env.LOG_LEVEL),
-    redisUrl: env.GAMEWIRE_REDIS_URL ?? env.REDIS_URL,
+    redisUrl,
     redisNamespace: env.GAMEWIRE_REDIS_NAMESPACE ?? 'gamewire',
+    eventsRedisUrl: resolveEventsRedisUrl(redisUrl, env.GAMEWIRE_EVENTS_REDIS_DB),
     providerHardCap: hardCap,
     providerSoftCap: softCap,
     providerPlanCeiling: planCeiling,
