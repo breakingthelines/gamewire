@@ -1,11 +1,6 @@
 import { createServer } from 'node:http';
 import type { IncomingMessage } from 'node:http';
 
-import type {
-  RecordRatingRequest,
-  RecordRatingResponse,
-} from '@breakingthelines/protos/btl/game/v1/game_service_pb';
-
 import {
   createFetchFootballIdentityLookupClient,
   type FootballIdentityLookupClient,
@@ -17,7 +12,6 @@ import {
   type FootballGameBridgeClient,
   type GameServiceProfileJobsClient,
   type ProviderEnrichmentIngestClient,
-  type GameServiceRecordRatingClient,
 } from './clients/game-service.js';
 import { createAuthContextVerifier } from './auth-context.js';
 import { config } from './config.js';
@@ -40,15 +34,9 @@ import {
   MATCH_CONCLUDED_STREAM_NAME,
   MatchConcludedPublisher,
   createBunMatchConcludedStreamClient,
+  type BunRedisStreamPublisher,
 } from './match-concluded-publisher.js';
-import { RATING_SUBMITTED_FACT_TYPE, RatingConsumer } from './rating-consumer.js';
 import { RedisEmittedFixtureStore } from './redis-emitted-fixture-store.js';
-import {
-  RedisStreamConsumer,
-  RedisStreamConsumerMetrics,
-  createBunRedisStreamClient,
-  type BunRedisLike,
-} from './redis-stream-consumer.js';
 import {
   STEADY_STATE_COMPETITIONS,
   collectVerifiedFixtureIds,
@@ -139,117 +127,88 @@ if (config.redisUrl) {
   );
 }
 
-// Redis Streams consumer for PlatformFact envelopes from game-service.
-// Wired only when GAMEWIRE_REDIS_URL is set; in the unset case we log a
-// degraded-mode marker and skip the consumer so local dev without Redis
-// stays runnable. Both the publisher (game-service) and consumer
-// (gamewire-worker) treat Redis as optional infrastructure with a
-// graceful no-op fallback.
-//
-// Until a real Connect transport for GameService.RecordRating is
-// installed (follow-up task: src/worker/clients/game-service-connect.ts),
-// the rating consumer is constructed with a stub client that surfaces
-// the missing wiring as a clear error per-event. The bus plumbing
-// itself is fully exercised and the stub records each call so an
-// operator can see facts flowing through the consumer in metrics.
-const recordRatingNotImplemented: GameServiceRecordRatingClient = {
-  async recordRating(_request: RecordRatingRequest): Promise<RecordRatingResponse> {
-    throw new Error(
-      'gamewire-worker: GameService.RecordRating transport not yet wired ' +
-        '(see clients/game-service.ts boundary). The Redis Streams bus is live but ' +
-        'rating facts will be retried until a real Connect client is installed.'
-    );
-  },
-};
-
-let stopFactConsumer: (() => void) | undefined;
+let closeEventsRedis: (() => void) | undefined;
 // The match-concluded publisher is constructed once and held at module
 // scope so the ingestion bridge can call `.observe(fixture)` without
 // re-creating the Redis client per fixture. We expose it via the
 // `matchConcludedPublisher` export below. When Redis is unavailable
 // the value stays undefined; callers must null-check.
+//
+// gamewire publishes on the fact bus and consumes nothing from it. It used
+// to subscribe a `gamewire-rating` group to `btl:facts:game.rating.submitted`,
+// but its GameService.RecordRating client was a stub that threw, so on a
+// live bus every rating fact would have been dead-lettered. game-service
+// already folds each rating into its aggregates inside RecordRating, so the
+// subscription and its consumer were removed.
 let matchConcludedPublisher: MatchConcludedPublisher | undefined;
 if (config.redisUrl) {
   try {
-    // Bun exposes a global `Bun.redis` connected to BUN_REDIS_URL or the
-    // url passed at import. We accept any client that exposes `.send(cmd, args)`
-    // so node-redis or ioredis adapters can be slotted in later.
-    const bunGlobal = (globalThis as { Bun?: { redis?: BunRedisLike } }).Bun;
+    // Bun exposes a global `Bun.redis` connected to REDIS_URL (the cache
+    // database). It carries the emit-once keys below. `Bun.RedisClient`
+    // opens a further connection; it selects the database from the URL path.
+    const bunGlobal = (
+      globalThis as {
+        Bun?: {
+          redis?: BunRedisStreamPublisher;
+          RedisClient?: new (url: string) => BunRedisStreamPublisher & { close(): void };
+        };
+      }
+    ).Bun;
     const bunRedis = bunGlobal?.redis;
     if (!bunRedis) {
       console.log(
         '[gamewire-worker] GAMEWIRE_REDIS_URL set but Bun.redis is unavailable; ' +
-          'fact bus consumer NOT started'
+          'match-concluded publisher NOT started'
       );
     } else {
-      const ratingConsumer = new RatingConsumer({ client: recordRatingNotImplemented });
-      const streamConsumer = new RedisStreamConsumer({
-        client: createBunRedisStreamClient(bunRedis),
-        metrics: new RedisStreamConsumerMetrics(),
-      });
-      streamConsumer.subscribe({
-        factType: RATING_SUBMITTED_FACT_TYPE,
-        group: 'gamewire-rating',
-        handler: async (fact) => {
-          // RatingConsumer.handle() owns its own retry + dead-letter
-          // budget and never throws — every outcome (applied, duplicate,
-          // ignored, dead_letter_permanent, dead_letter_exhausted) is
-          // terminal for the bus layer. Always ACK so the entry doesn't
-          // cycle. If a future requirement reintroduces transient errors
-          // here, return `false` to leave the entry in the PEL.
-          await ratingConsumer.handle(fact);
-          return true;
-        },
-      });
+      // The fact bus lives on GAMEWIRE_EVENTS_REDIS_DB when it is set: the
+      // database every BTL service's streams share (0 in prod), where
+      // game-service's settle consumer reads. Unset, the stream stays on the
+      // cache database.
+      let streamRedis: BunRedisStreamPublisher = bunRedis;
+      if (config.eventsRedisUrl) {
+        if (!bunGlobal?.RedisClient) {
+          throw new Error('GAMEWIRE_EVENTS_REDIS_DB set but Bun.RedisClient is unavailable');
+        }
+        const eventsRedis = new bunGlobal.RedisClient(config.eventsRedisUrl);
+        streamRedis = eventsRedis;
+        closeEventsRedis = () => eventsRedis.close();
+      }
+      const streamDb = config.eventsRedisUrl
+        ? new URL(config.eventsRedisUrl).pathname.slice(1)
+        : 'cache';
 
-      const controller = new AbortController();
-      streamConsumer.run(controller.signal).catch((err: unknown) => {
-        console.log(
-          `[gamewire-worker] fact bus consumer crashed: ${
-            err instanceof Error ? err.message : String(err)
-          }`
-        );
-      });
-      stopFactConsumer = () => controller.abort();
-      console.log(
-        '[gamewire-worker] fact bus consumer started ' +
-          `(consumer=${streamConsumer.consumerName} stream=btl:facts:${RATING_SUBMITTED_FACT_TYPE} group=gamewire-rating)`
-      );
-
-      // Match-concluded publisher boot. Shares the same Bun.redis client
-      // as the consumer; the stream-publish boundary issues a single
-      // `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
-      // event_id ... fact_type ...` call per terminal fixture. The
-      // bridge below pipes fixture-detail ingestion results into `observe()`
-      // so terminal fixtures emit one fact each; event and lineup payloads
-      // use the same bridge to call game-service ingest RPCs.
+      // One `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
+      // event_id ... fact_type ...` per terminal fixture. The bridge below
+      // pipes fixture-detail ingestion results into `observe()` so terminal
+      // fixtures emit one fact each; event and lineup payloads use the same
+      // bridge to call game-service ingest RPCs.
       //
       // The emit-once gate is backed by Redis (`SET NX EX 30d` under
       // `btl:fact:emitted:`) so a worker restart between two terminal
-      // observations of the same fixture no longer re-emits. The
-      // in-memory store remains the default inside the publisher
-      // constructor and is used implicitly when Redis is unavailable
-      // (the entire `if (bunRedis)` branch below is skipped in that
-      // case, falling through to the "fact bus consumer disabled" log).
+      // observations of the same fixture does not re-emit. Those keys stay
+      // on the cache database even when the stream moves: they are this
+      // worker's own state, and keeping them means a bus move never
+      // re-emits the last 30 days of concluded fixtures.
       const emittedStore = new RedisEmittedFixtureStore({ client: bunRedis });
       matchConcludedPublisher = new MatchConcludedPublisher({
-        stream: createBunMatchConcludedStreamClient(bunRedis),
+        stream: createBunMatchConcludedStreamClient(streamRedis),
         emitted: emittedStore,
       });
       console.log(
         '[gamewire-worker] match-concluded publisher ready ' +
-          `(stream=${MATCH_CONCLUDED_STREAM_NAME} emitted-store=${emittedStore.backend})`
+          `(stream=${MATCH_CONCLUDED_STREAM_NAME} stream-db=${streamDb} emitted-store=${emittedStore.backend})`
       );
     }
   } catch (err) {
     console.log(
-      `[gamewire-worker] failed to start fact bus consumer: ${
+      `[gamewire-worker] failed to start match-concluded publisher: ${
         err instanceof Error ? err.message : String(err)
       }`
     );
   }
 } else {
-  console.log('[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus consumer disabled');
+  console.log('[gamewire-worker] GAMEWIRE_REDIS_URL unset; fact bus disabled');
   matchConcludedPublisher = new MatchConcludedPublisher({
     stream: new InMemoryMatchConcludedStreamClient(),
   });
@@ -633,8 +592,8 @@ const shutdown = (signal: NodeJS.Signals): void => {
   if (stopIngestion) {
     stopIngestion();
   }
-  if (stopFactConsumer) {
-    stopFactConsumer();
+  if (closeEventsRedis) {
+    closeEventsRedis();
   }
   server.close(() => process.exit(0));
 };

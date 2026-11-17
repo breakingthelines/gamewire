@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { DEFAULT_MEDIA_CDN_BASE_URL, loadConfig } from './config.js';
+import { DEFAULT_MEDIA_CDN_BASE_URL, loadConfig, withRedisDb } from './config.js';
 
 const authEnv = (overrides: Record<string, string | undefined> = {}) => ({
   GAMEWIRE_AUTH_CONTEXT_JWKS_URL: 'https://auth.test/.well-known/jwks.json',
@@ -285,6 +285,47 @@ describe('gamewire-worker config', () => {
       expect(() => loadConfig(authEnv({ GAMEWIRE_PROVIDER_QUOTA_SOURCE: 'remote' }))).toThrow(
         /quota source/
       );
+    });
+  });
+
+  describe('events redis', () => {
+    it('is unset unless GAMEWIRE_EVENTS_REDIS_DB is set', () => {
+      const config = loadConfig(authEnv({ GAMEWIRE_REDIS_URL: 'redis://:pw@redis:6379/3' }));
+      expect(config.eventsRedisUrl).toBeUndefined();
+    });
+
+    it('swaps the database on the cache url, keeping host and password', () => {
+      const config = loadConfig(
+        authEnv({
+          GAMEWIRE_REDIS_URL: 'redis://:p%40ss@redis:6379/3',
+          GAMEWIRE_EVENTS_REDIS_DB: '0',
+        })
+      );
+      expect(config.redisUrl).toBe('redis://:p%40ss@redis:6379/3');
+      expect(config.eventsRedisUrl).toBe('redis://:p%40ss@redis:6379/0');
+    });
+
+    it('falls back to REDIS_URL like the cache does', () => {
+      const config = loadConfig(
+        authEnv({ REDIS_URL: 'redis://:pw@redis:6379/3', GAMEWIRE_EVENTS_REDIS_DB: '0' })
+      );
+      expect(config.eventsRedisUrl).toBe('redis://:pw@redis:6379/0');
+    });
+
+    it('is unset without a redis url', () => {
+      expect(loadConfig(authEnv({ GAMEWIRE_EVENTS_REDIS_DB: '0' })).eventsRedisUrl).toBeUndefined();
+    });
+
+    it('rejects a database that is not a number', () => {
+      expect(() =>
+        loadConfig(
+          authEnv({ GAMEWIRE_REDIS_URL: 'redis://redis:6379/3', GAMEWIRE_EVENTS_REDIS_DB: '-1' })
+        )
+      ).toThrow(/events redis db/);
+    });
+
+    it('withRedisDb sets the path on a url without one', () => {
+      expect(withRedisDb('redis://redis:6379', 0)).toBe('redis://redis:6379/0');
     });
   });
 });
