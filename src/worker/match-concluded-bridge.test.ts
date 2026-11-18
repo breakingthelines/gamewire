@@ -655,6 +655,9 @@ describe('createMatchConcludedBridge', () => {
     expect(request?.occurrences).toHaveLength(1);
     expect(request?.occurrences[0]?.payload.case).toBe('timeline');
     expect(request?.occurrences[0]?.actors[0]?.providerRef?.providerId).toBe('49');
+    // `/fixtures/events` is the fixture's whole events list, so game-service
+    // may retract stored occurrences that are absent from it.
+    expect(request?.completeSnapshot).toBe(true);
     expect(stream.published).toHaveLength(0);
     expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
   });
@@ -700,6 +703,8 @@ describe('createMatchConcludedBridge', () => {
     // accumulating events on the next 30s tick upserts in place rather
     // than duplicating (game-service uses ON CONFLICT (id) DO UPDATE).
     expect(occurrenceRequest?.occurrences[0]?.id).toBe('api-football:fixture:1489369:event:1');
+    // The inline events array is the whole current list too.
+    expect(occurrenceRequest?.completeSnapshot).toBe(true);
     // Live status (1H) is non-terminal — emit-once gate must NOT publish a
     // match-concluded fact. The Timeline ingest is independent of the
     // terminal-fact path.

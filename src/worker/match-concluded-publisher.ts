@@ -12,15 +12,17 @@
  *
  * # Wire contract (LOAD-BEARING — must match the consumer on game-service)
  *
- * The contract mirrors game-service's own fact publisher
- * (internal/adapter/redisstream/publisher.go). Any change here is a
- * breaking change for game-service's settle consumer.
+ * The envelope is the shared events-bus one, written by `publishFact` from
+ * `@breakingthelines/protos/sdk/eventbus` (the Go twin is
+ * `sdk/go/eventbus`), so gamewire and every Go publisher encode facts the
+ * same way. Any change here is a breaking change for game-service's settle
+ * consumer.
  *
- * - **Stream name:** `btl:facts:game.match.concluded`
+ * - **Stream name:** `btl:facts:game.match.concluded` (`factStream(type)`)
  * - **MAXLEN:** `MAXLEN ~ 10000` (approximate cap, not exact). The bus
  *   is a fan-out window; backfills come from gamewire's own state +
  *   game-service's source-of-truth tables, not from the stream.
- * - **XADD fields per entry:**
+ * - **Fields per entry:**
  *   - `data` — `toBinary(PlatformFactSchema, fact)` raw bytes.
  *   - `event_id` — `fact.id` (string) for retry / dedupe accounting
  *     without parsing the proto.
@@ -67,16 +69,24 @@
  * fixture envelope (status + BTL game_id + provider id + concluded_at).
  */
 
-import { create, toBinary, type JsonObject } from '@bufbuild/protobuf';
+import { create, type JsonObject } from '@bufbuild/protobuf';
 import { TimestampSchema, timestampFromMs } from '@bufbuild/protobuf/wkt';
 
 import {
   type PlatformFact,
   PlatformFactSchema,
 } from '@breakingthelines/protos/btl/context/v1/context_pb';
+import {
+  FACT_STREAM_MAXLEN,
+  FactType,
+  type RedisSendClient,
+  encodeFactFields,
+  factStream,
+  publishFact,
+} from '@breakingthelines/protos/sdk/eventbus';
 
 /** Fact type emitted onto `btl:facts:game.match.concluded`. */
-export const MATCH_CONCLUDED_FACT_TYPE = 'game.match.concluded';
+export const MATCH_CONCLUDED_FACT_TYPE = FactType.MatchConcluded;
 
 /** Source service identifier carried inside the PlatformFact envelope. */
 export const MATCH_CONCLUDED_SOURCE_SERVICE = 'gamewire-worker';
@@ -85,14 +95,14 @@ export const MATCH_CONCLUDED_SOURCE_SERVICE = 'gamewire-worker';
  * Stream name — load-bearing constant shared with the consumer lane.
  * Do NOT change without coordinating with game-service.
  */
-export const MATCH_CONCLUDED_STREAM_NAME = `btl:facts:${MATCH_CONCLUDED_FACT_TYPE}`;
+export const MATCH_CONCLUDED_STREAM_NAME = factStream(MATCH_CONCLUDED_FACT_TYPE);
 
 /**
  * Approximate stream length cap. `~` makes Redis pick an efficient
  * trim boundary near 10k entries — the bus is a fan-out window, not a
  * historical archive.
  */
-export const MATCH_CONCLUDED_STREAM_MAXLEN = 10_000;
+export const MATCH_CONCLUDED_STREAM_MAXLEN = FACT_STREAM_MAXLEN;
 
 /**
  * Classification of an API-Football fixture status code.
@@ -284,29 +294,42 @@ export class InMemoryEmittedFixtureStore implements EmittedFixtureStore {
 
 /**
  * Minimal Bun RedisClient shape we depend on: `Bun.redis` or a
- * `new RedisClient(url)` on the events database.
+ * `new RedisClient(url)` on the events database. The same shape as the
+ * SDK's `RedisSendClient`.
+ *
+ * Bun.redis.send transmits a Uint8Array arg as a raw RESP bulk string
+ * (byte-for-byte). A JS string arg is sent UTF-8-encoded, which inflates
+ * binary proto bytes >= 0x80, so the SDK passes the proto `data` field as a
+ * Uint8Array.
  */
-export interface BunRedisStreamPublisher {
-  // Bun.redis.send transmits a Uint8Array arg as a raw RESP bulk string
-  // (byte-for-byte). A JS string arg is sent UTF-8-encoded, which inflates
-  // binary proto bytes >= 0x80 — so binary payloads MUST be passed as
-  // Uint8Array, never latin1-stringified first.
-  send(command: string, args: (string | Uint8Array)[]): Promise<unknown>;
+export type BunRedisStreamPublisher = RedisSendClient;
+
+/** One recorded publish: the stream, the MAXLEN and the encoded fields. */
+export interface PublishedStreamEntry {
+  readonly stream: string;
+  readonly maxLen: number;
+  readonly fields: Record<string, string | Uint8Array>;
 }
 
 /**
- * Stream-publish boundary. The default implementation issues a single
- * `XADD <stream> MAXLEN ~ <maxlen> * field value ...` call against Bun.redis.
- * Tests inject a stub that records the args and returns a synthetic
- * stream id.
+ * Stream-publish boundary. The Redis implementation hands the fact to the
+ * SDK's `publishFact`; tests inject the in-memory client, which records the
+ * same fields.
  */
 export interface MatchConcludedStreamClient {
-  publish(
-    fields: Record<string, string | Uint8Array>,
-    options: { readonly stream: string; readonly maxLen: number }
-  ): Promise<string>;
+  publish(fact: PlatformFact, options: { readonly maxLen: number }): Promise<string>;
   readonly backend: 'redis' | 'memory';
 }
+
+/** The fields `publishFact` writes for a fact, as a record. */
+export const factStreamFields = (fact: PlatformFact): Record<string, string | Uint8Array> => {
+  const flat = encodeFactFields(fact);
+  const fields: Record<string, string | Uint8Array> = {};
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    fields[String(flat[i])] = flat[i + 1];
+  }
+  return fields;
+};
 
 /**
  * In-memory stream client. Records every publish call so tests can
@@ -315,23 +338,19 @@ export interface MatchConcludedStreamClient {
  */
 export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamClient {
   readonly backend = 'memory' as const;
-  readonly #published: {
-    stream: string;
-    maxLen: number;
-    fields: Record<string, string | Uint8Array>;
-  }[] = [];
+  readonly #published: PublishedStreamEntry[] = [];
   #nextId = 1;
   #failNext = false;
 
-  async publish(
-    fields: Record<string, string | Uint8Array>,
-    options: { readonly stream: string; readonly maxLen: number }
-  ): Promise<string> {
+  async publish(fact: PlatformFact, options: { readonly maxLen: number }): Promise<string> {
     if (this.#failNext) {
       this.#failNext = false;
       throw new Error('in-memory stream client: forced failure');
     }
-    this.#published.push({ stream: options.stream, maxLen: options.maxLen, fields: { ...fields } });
+    // Encoded exactly as the Redis client would, so an envelope the SDK
+    // rejects fails here too.
+    const fields = factStreamFields(fact);
+    this.#published.push({ stream: factStream(fact.type), maxLen: options.maxLen, fields });
     const id = `${Date.now()}-${this.#nextId}`;
     this.#nextId += 1;
     return id;
@@ -341,11 +360,7 @@ export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamC
     this.#failNext = true;
   }
 
-  get published(): readonly {
-    stream: string;
-    maxLen: number;
-    fields: Record<string, string | Uint8Array>;
-  }[] {
+  get published(): readonly PublishedStreamEntry[] {
     return this.#published;
   }
 
@@ -357,41 +372,14 @@ export class InMemoryMatchConcludedStreamClient implements MatchConcludedStreamC
 }
 
 /**
- * Bun-backed implementation. Single `XADD` per fact with `MAXLEN ~`
- * trimming approximate (matches the wire contract documented in the
- * sibling lane handoff).
- *
- * Field encoding: the binary `data` payload (proto bytes) is passed to
- * `Bun.redis.send()` as a raw `Uint8Array`, which Bun transmits as a RESP
- * bulk string byte-for-byte. We MUST NOT latin1-stringify it first: a JS
- * string arg is sent UTF-8-encoded, so every proto byte >= 0x80 inflates to
- * two bytes on the wire. The Go consumer (go-redis) then reads the raw,
- * inflated bytes and proto.Unmarshal fails with "invalid wire-format data"
- * — which silently killed prediction settlement (gamewire publishes here,
- * game-service's settle consumer reads). A raw Uint8Array round-trips
- * byte-identically across both the Bun writer and the go-redis reader.
+ * Redis implementation: the SDK's `publishFact`, one append per fact to
+ * `btl:facts:<type>` with `MAXLEN ~ <maxLen>`.
  */
 export const createBunMatchConcludedStreamClient = (
-  client: BunRedisStreamPublisher
+  client: RedisSendClient
 ): MatchConcludedStreamClient => ({
   backend: 'redis' as const,
-  async publish(fields, options) {
-    const args: (string | Uint8Array)[] = [
-      options.stream,
-      'MAXLEN',
-      '~',
-      String(options.maxLen),
-      '*',
-    ];
-    for (const [key, value] of Object.entries(fields)) {
-      args.push(key);
-      // String values stay strings; binary values (the proto `data` field)
-      // are passed as raw bytes so they are NOT UTF-8 inflated on the wire.
-      args.push(value);
-    }
-    const raw = await client.send('XADD', args);
-    return typeof raw === 'string' ? raw : String(raw ?? '');
-  },
+  publish: (fact, options) => publishFact(client, fact, { maxLen: options.maxLen }),
 });
 
 /**
@@ -470,8 +458,6 @@ export interface MatchConcludedPublisherOptions {
   readonly now?: () => number;
   /** Override MAXLEN for tests. Production should use the default. */
   readonly maxLen?: number;
-  /** Override stream name for tests. Production should use the default. */
-  readonly streamName?: string;
 }
 
 /**
@@ -494,7 +480,6 @@ export class MatchConcludedPublisher {
   readonly #log: MatchConcludedPublisherLogger;
   readonly #now: () => number;
   readonly #maxLen: number;
-  readonly #streamName: string;
 
   constructor(options: MatchConcludedPublisherOptions) {
     this.#stream = options.stream;
@@ -503,7 +488,6 @@ export class MatchConcludedPublisher {
     this.#log = options.logger ?? defaultLogger;
     this.#now = options.now ?? Date.now;
     this.#maxLen = options.maxLen ?? MATCH_CONCLUDED_STREAM_MAXLEN;
-    this.#streamName = options.streamName ?? MATCH_CONCLUDED_STREAM_NAME;
   }
 
   get metrics(): MatchConcludedPublisherMetrics {
@@ -511,7 +495,7 @@ export class MatchConcludedPublisher {
   }
 
   get streamName(): string {
-    return this.#streamName;
+    return MATCH_CONCLUDED_STREAM_NAME;
   }
 
   get maxLen(): number {
@@ -559,17 +543,8 @@ export class MatchConcludedPublisher {
       emittedAtMs: this.#now(),
     });
 
-    const fields: Record<string, string | Uint8Array> = {
-      data: toBinary(PlatformFactSchema, fact),
-      event_id: fact.id,
-      fact_type: fact.type,
-    };
-
     try {
-      const streamId = await this.#stream.publish(fields, {
-        stream: this.#streamName,
-        maxLen: this.#maxLen,
-      });
+      const streamId = await this.#stream.publish(fact, { maxLen: this.#maxLen });
       this.#metrics.recordPublished();
       this.#log({
         event: 'match_concluded_published',
@@ -660,17 +635,4 @@ export const buildMatchConcludedFact = (input: {
     emittedAt: create(TimestampSchema, timestampFromMs(input.emittedAtMs)),
     idempotencyKey,
   });
-};
-
-const uint8ArrayToBinaryString = (bytes: Uint8Array): string => {
-  let out = '';
-  for (let i = 0; i < bytes.length; i += 1) {
-    out += String.fromCharCode(bytes[i]);
-  }
-  return out;
-};
-
-/** Test-only exports for the internal helpers. */
-export const __test = {
-  uint8ArrayToBinaryString,
 };

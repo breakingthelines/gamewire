@@ -388,6 +388,13 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
   // extra time, which the event minute alone cannot. Omit (or pass empty) when
   // the status is unknown and the minute-only heuristic should stand.
   readonly status?: string;
+  // Whether the envelope holds the fixture's whole current events list, which
+  // is true for both API-Football sources gamewire ingests (the inline
+  // `/fixtures?id` events array and `/fixtures/events`). game-service then
+  // retracts stored occurrences of this provider that are absent from it
+  // (a VAR-cancelled goal, or the trailing id left by a positional shift).
+  // Default true; pass false only for a partial list.
+  readonly completeSnapshot?: boolean;
 }): IngestGameOccurrencesRequest {
   const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
   const events = apiFootballEventsFromEnvelope(options.envelope);
@@ -413,6 +420,7 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
     ),
     gameId: options.gameId,
     occurrences,
+    completeSnapshot: options.completeSnapshot ?? true,
   });
 }
 

@@ -1,4 +1,4 @@
-import { fromBinary, toBinary } from '@bufbuild/protobuf';
+import { create, fromBinary, toBinary } from '@bufbuild/protobuf';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -21,7 +21,7 @@ import {
   buildMatchConcludedIdempotencyKey,
   classifyApiFootballStatus,
   createBunMatchConcludedStreamClient,
-  __test,
+  factStreamFields,
 } from './match-concluded-publisher.js';
 
 const decodeBinary = (bytes: Uint8Array): PlatformFact => fromBinary(PlatformFactSchema, bytes);
@@ -476,74 +476,82 @@ describe('MatchConcludedPublisher.observe', () => {
 });
 
 describe('createBunMatchConcludedStreamClient', () => {
-  it('issues XADD <stream> MAXLEN ~ <maxLen> * field value ... against Bun.redis', async () => {
-    const calls: { command: string; args: string[] }[] = [];
-    const bun = {
-      async send(command: string, args: string[]): Promise<unknown> {
-        calls.push({ command, args });
-        return '1700000000000-0';
+  const fact = buildMatchConcludedFact({
+    providerFixtureId: '1917',
+    providerId: 'api-football',
+    providerStatus: 'FT',
+    classification: 'terminal-result',
+    gameId: 'btl_football_game_g1917',
+    concludedAtMs: 1_700_000_000_000,
+    emittedAtMs: 1_700_000_000_500,
+  });
+
+  const recordingClient = () => {
+    const calls: { command: string; args: (string | Uint8Array)[] }[] = [];
+    return {
+      calls,
+      bun: {
+        async send(command: string, args: (string | Uint8Array)[]): Promise<unknown> {
+          calls.push({ command, args });
+          return '1700000000000-0';
+        },
       },
     };
+  };
 
+  it('appends <stream> MAXLEN ~ <maxLen> * data event_id fact_type through the SDK', async () => {
+    const { calls, bun } = recordingClient();
     const client = createBunMatchConcludedStreamClient(bun);
     expect(client.backend).toBe('redis');
-    const id = await client.publish(
-      {
-        data: new Uint8Array([0x0a, 0x05, 0x68, 0x65, 0x6c, 0x6c, 0x6f]),
-        event_id: 'match-concluded:1917:FT',
-        fact_type: 'game.match.concluded',
-      },
-      { stream: MATCH_CONCLUDED_STREAM_NAME, maxLen: 10_000 }
-    );
+
+    const id = await client.publish(fact, { maxLen: MATCH_CONCLUDED_STREAM_MAXLEN });
 
     expect(id).toBe('1700000000000-0');
     expect(calls).toHaveLength(1);
     expect(calls[0].command).toBe('XADD');
-    expect(calls[0].args[0]).toBe(MATCH_CONCLUDED_STREAM_NAME);
-    expect(calls[0].args[1]).toBe('MAXLEN');
-    expect(calls[0].args[2]).toBe('~');
-    expect(calls[0].args[3]).toBe('10000');
-    expect(calls[0].args[4]).toBe('*');
-    // Subsequent args are the field/value pairs.
+    expect(calls[0].args.slice(0, 5)).toEqual([
+      MATCH_CONCLUDED_STREAM_NAME,
+      'MAXLEN',
+      '~',
+      '10000',
+      '*',
+    ]);
     const trailing = calls[0].args.slice(5);
-    expect(trailing).toContain('event_id');
-    expect(trailing).toContain('fact_type');
-    expect(trailing).toContain('data');
-    expect(trailing).toContain('match-concluded:1917:FT');
-    expect(trailing).toContain('game.match.concluded');
+    expect(trailing.filter((_, i) => i % 2 === 0)).toEqual(['data', 'event_id', 'fact_type']);
+    expect(trailing[3]).toBe('match-concluded:1917:FT');
+    expect(trailing[5]).toBe('game.match.concluded');
   });
 
-  it('passes binary fields to send as a raw Uint8Array (NOT latin1-stringified)', async () => {
+  it('passes the proto data field as raw bytes that decode back to the fact', async () => {
     // Regression guard: a JS string arg is sent UTF-8-encoded by Bun.redis,
     // which inflates proto bytes >= 0x80 and makes the payload undecodable by
     // the go-redis consumer (proto.Unmarshal "invalid wire-format data").
-    // The binary `data` field MUST be handed to send() as raw bytes so it
-    // round-trips byte-identically to the Go reader. This silently killed
-    // prediction settlement before the fix.
-    const calls: { command: string; args: (string | Uint8Array)[] }[] = [];
-    const bun = {
-      async send(command: string, args: (string | Uint8Array)[]): Promise<unknown> {
-        calls.push({ command, args });
-        return '1-0';
-      },
-    };
-    const client = createBunMatchConcludedStreamClient(bun);
-    // Byte sequence with high bits set — the exact case latin1->UTF-8 broke.
-    const bytes = new Uint8Array([0x00, 0xff, 0x7f, 0x80, 0x01]);
-    await client.publish({ data: bytes }, { stream: 'x', maxLen: 1 });
-    const dataIndex = calls[0].args.indexOf('data');
-    expect(dataIndex).toBeGreaterThan(-1);
-    const encoded = calls[0].args[dataIndex + 1];
-    // Raw bytes, not a string: the value handed to send() is the Uint8Array
-    // itself, preserving the exact byte sequence.
+    // This silently killed prediction settlement once.
+    const { calls, bun } = recordingClient();
+    await createBunMatchConcludedStreamClient(bun).publish(fact, { maxLen: 10_000 });
+    const encoded = calls[0].args[6];
+    expect(calls[0].args[5]).toBe('data');
     expect(encoded).toBeInstanceOf(Uint8Array);
-    expect(Array.from(encoded as Uint8Array)).toEqual(Array.from(bytes));
-    // String fields stay strings (only binary is passed as bytes).
-    expect(typeof calls[0].args[0]).toBe('string');
+    expect(Array.from(encoded as Uint8Array)).toEqual(
+      Array.from(toBinary(PlatformFactSchema, fact))
+    );
+    expect(decodeBinary(encoded as Uint8Array).idempotencyKey).toBe('match-concluded:1917:FT');
   });
 
-  it('exports a uint8ArrayToBinaryString helper that matches the consumer implementation', () => {
-    const bytes = new Uint8Array([0x68, 0x69, 0xfe]);
-    expect(__test.uint8ArrayToBinaryString(bytes)).toBe('hiþ');
+  it('records the same fields in memory as the Redis client sends', async () => {
+    const stream = new InMemoryMatchConcludedStreamClient();
+    await stream.publish(fact, { maxLen: 10_000 });
+    expect(stream.published[0].stream).toBe(MATCH_CONCLUDED_STREAM_NAME);
+    expect(stream.published[0].fields).toEqual(factStreamFields(fact));
+    expect(stream.published[0].fields.event_id).toBe('match-concluded:1917:FT');
+  });
+
+  it('refuses a fact without an idempotency key instead of writing it', async () => {
+    const { calls, bun } = recordingClient();
+    const keyless = create(PlatformFactSchema, { ...fact, idempotencyKey: '' });
+    await expect(
+      createBunMatchConcludedStreamClient(bun).publish(keyless, { maxLen: 10_000 })
+    ).rejects.toThrow(/idempotency key/);
+    expect(calls).toHaveLength(0);
   });
 });

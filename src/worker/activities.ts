@@ -242,6 +242,8 @@ export async function FetchOccurrences(
         metadata: createIngestMetadata('FetchOccurrences', provider, replayId, input.gameId),
         gameId: input.gameId,
         occurrences: [],
+        // An empty scaffold list must never retract stored occurrences.
+        completeSnapshot: false,
       });
 
   return activityResult(
