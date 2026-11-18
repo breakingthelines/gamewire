@@ -37,6 +37,10 @@ import {
   type BunRedisStreamPublisher,
 } from './match-concluded-publisher.js';
 import { RedisEmittedFixtureStore } from './redis-emitted-fixture-store.js';
+import { createRedisRunStore, InMemoryRunStore, RunRegistry } from './run-registry.js';
+
+/** How long SIGTERM waits for interrupted runs to settle before closing the server. */
+const RUN_SHUTDOWN_WAIT_MS = 20_000;
 import { describeEventsRedis, SOURCE_SERVICE_URL } from '@breakingthelines/protos/sdk/eventbus';
 import {
   STEADY_STATE_COMPETITIONS,
@@ -392,6 +396,16 @@ console.log(
   `[gamewire-worker] workflow state store=${workflowStateStore?.backend ?? 'memory (ingestion cache)'}`
 );
 
+// Workflow runs (`/runs/*`, `/workflows/*`): run records, idempotency keys
+// and scope leases. Short, non-blocking commands only, on the shared client.
+const runRegistry = new RunRegistry({
+  store: sharedRedis ? createRedisRunStore(sharedRedis) : new InMemoryRunStore(),
+  namespace: config.redisNamespace,
+  pod: process.env.HOSTNAME ?? 'gamewire-worker',
+  log: (message) => console.log(`[gamewire-worker.run] ${message}`),
+});
+console.log(`[gamewire-worker] run registry=${sharedRedis ? 'redis' : 'memory'}`);
+
 // The caps come from env through the factory (see provider-budget.test.ts).
 // Before GW-1 they were logged but never reached the tracker.
 const {
@@ -521,6 +535,7 @@ const workerOptions: WorkerHttpHandlerOptions = {
   providerEnrichmentIngest: gameServiceLookupClient,
   enrichmentLimiter,
   workflowStateStore,
+  runRegistry,
   // The `coach-photos` dataset writes coach headshots to the same content
   // bucket the asset mirror uses.
   coachPhotoStore: createMediaObjectStoreFromConfig(config.assetMirror),
@@ -565,11 +580,10 @@ const server = createServer(async (request, response) => {
     // HCM stream_idle_timeout (default 5m), letting long-running workflows
     // run to completion without the mesh tearing the connection down.
     //
-    // The async iterator is owned by the handler (see startWorkflowStream
-    // in http.ts) and is guaranteed to terminate — either via a workflow
-    // resolve/reject pushing a final `completed` line, or via the heartbeat
-    // continuing to fire if the workflow is somehow stuck (in which case
-    // the kernel-side HTTP client deadline cuts first).
+    // The async iterator is owned by the handler (see streamRegistryRun in
+    // http.ts) and ends when the run settles, with a final `completed` line.
+    // The run does not depend on this connection: a client that goes away
+    // leaves it running in the registry.
     try {
       for await (const line of workerResponse.stream) {
         if (!response.writableEnded) {
@@ -609,7 +623,21 @@ const shutdown = (signal: NodeJS.Signals): void => {
   if (closeEventsRedis) {
     closeEventsRedis();
   }
-  server.close(() => process.exit(0));
+  // Mark this pod's runs interrupted so pollers retry now (resuming from the
+  // cursors) instead of waiting for the leases to go stale, ask each run to
+  // stop at its next checkpoint, and give them up to 20 s (of the pod's 30 s
+  // grace) to write their final record and release their scope lock.
+  void runRegistry
+    .interruptAll()
+    .then(() => runRegistry.waitForLocalRuns(RUN_SHUTDOWN_WAIT_MS))
+    .catch((err: unknown) => {
+      console.log(
+        `[gamewire-worker] run shutdown failed: ${err instanceof Error ? err.message : String(err)}`
+      );
+    })
+    .finally(() => {
+      server.close(() => process.exit(0));
+    });
 };
 
 process.once('SIGINT', shutdown);

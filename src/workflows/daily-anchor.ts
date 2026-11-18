@@ -120,7 +120,7 @@ export const dailyAnchorWorkflow = async (
   log({ event: 'daily_anchor.started', workflow: 'daily-anchor' });
 
   for (const competition of competitions) {
-    if (aborted) {
+    if (aborted || deps.signal?.aborted) {
       break;
     }
     const result = await sweepCompetition(competition, startedAt, deps);

@@ -343,6 +343,10 @@ export const runCoachPhotos = async (
       targets.push(target(coach.entityId, 'failed', [`head ${key}: ${errorMessage(error)}`]));
       continue;
     }
+    // The run registry asked the run to stop: defer the rest like the cap does.
+    if (deps.signal?.aborted) {
+      capped = true;
+    }
     if (capped) {
       counts.deferred += 1;
       continue;

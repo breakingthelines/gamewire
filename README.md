@@ -117,6 +117,26 @@ The per-minute buckets live in each worker process. Prod and staging share one
 API-Football key, so each gets its own full set of minute ceilings; staging needs
 its own lower minute caps before the live tick gets faster.
 
+Workflow runs go through a run registry (`src/worker/run-registry.ts`), kept in
+Redis next to the limiters. Kernel starts a run with
+`POST /runs/{workflow}` and an `Idempotency-Key` header (202 with a `runId`),
+polls `GET /runs/{runId}` every 15 s and cancels with
+`POST /runs/{runId}/cancel`. The `/workflows/{workflow}` endpoints run through
+the same registry and stream NDJSON progress for operators. One run holds each
+scope at a time (a workflow, or a workflow plus its dataset, kind or mode)
+under a 120 s lease renewed every 15 s:
+
+- A request with the same idempotency key, or the same input while the scope
+  is running, attaches to the running run.
+- Different input gets 409 `busy`.
+- A run whose pod stops renewing reads as `lost`.
+- A SIGTERM marks the pod's runs `interrupted`.
+- Each workflow has a maximum runtime (`RUN_MAX_RUNTIME_MS`).
+
+Long workflows check `deps.signal` between pages, units or fixtures and stop
+there, after their last checkpoint. Run records keep the result (capped at
+about 1 MB) for 7 days.
+
 The competition catalogue is `src/workflows/competitions.ts`. An entry marked
 `gated: true` is off until its key is listed in `GAMEWIRE_GATED_COMPETITIONS`
 (comma list, default empty). Off, it is missing from every list the live loop,

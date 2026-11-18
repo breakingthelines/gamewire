@@ -6,6 +6,7 @@ import { MESH_AUTH_CONTEXT_HEADER, Verifier } from './auth-context.js';
 import { InMemoryProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
 import { activityNames, handleWorkerRequest, type WorkerHttpResponse } from './http.js';
+import { InMemoryRunStore, RunRegistry } from './run-registry.js';
 import type {
   ApiFootballIngestionLoop,
   IngestionFetchOptions,
@@ -1558,6 +1559,204 @@ describe('gamewire-worker workflow endpoints (btl-auth-context)', () => {
       expect(await finalCompleted(response)).toMatchObject({
         result: { mode: 'nightly', status: 'disabled' },
       });
+    });
+  });
+
+  describe('run endpoints (/runs)', () => {
+    const KEY = 'a'.repeat(64);
+    const BODY = { nowUtc: '2026-05-23T02:00:00Z', competitions: ['unit-test'] };
+
+    /** An ingestion whose provider calls wait until `release()`. */
+    const blockingIngestion = () => {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const ingestion = {
+        fetchWorkload: vi.fn(async (options: IngestionFetchOptions) => {
+          await gate;
+          return buildResult(options);
+        }),
+        cache: new InMemoryProviderCache(),
+      } as unknown as ApiFootballIngestionLoop;
+      return { ingestion, release };
+    };
+
+    const harness = (ingestion: ApiFootballIngestionLoop = buildIngestion()) => {
+      const { verifier, privateKey } = makeVerifier();
+      const token = signToken(privateKey, defaultServicePayload());
+      const runRegistry = new RunRegistry({ store: new InMemoryRunStore(), timers: false });
+      const options = {
+        ingestion,
+        competitions: [COMPETITION],
+        authContextVerifier: verifier,
+        runRegistry,
+      };
+      const call = (
+        method: string,
+        pathname: string,
+        body?: unknown,
+        headers: Record<string, string> = {}
+      ) =>
+        handleWorkerRequest(
+          {
+            method,
+            pathname,
+            body,
+            rawBody: body === undefined ? undefined : JSON.stringify(body),
+            headers: { 'btl-auth-context': token, ...headers },
+          },
+          config,
+          options
+        );
+      const waitFor = async (runId: string, status: string) => {
+        for (let i = 0; i < 50; i += 1) {
+          const response = await call('GET', `/runs/${runId}`);
+          if (response.body.status === status) {
+            return response;
+          }
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        throw new Error(`run ${runId} never reached ${status}`);
+      };
+      return { call, waitFor, runRegistry };
+    };
+
+    it('starts a run, reports it running, then completed with the wire result', async () => {
+      const { ingestion, release } = blockingIngestion();
+      const h = harness(ingestion);
+      const started = await h.call('POST', '/runs/daily-anchor', BODY, { 'idempotency-key': KEY });
+      expect(started.status).toBe(202);
+      expect(started.body).toMatchObject({
+        workflow: 'daily-anchor',
+        scopeKey: 'daily-anchor',
+        status: 'running',
+        attached: false,
+      });
+      const runId = String(started.body.runId);
+      expect((await h.call('GET', `/runs/${runId}`)).body).toMatchObject({ status: 'running' });
+
+      release();
+      const done = await h.waitFor(runId, 'completed');
+      expect(done.status).toBe(200);
+      expect(done.body.result).toMatchObject({ callsUsed: expect.any(Number) });
+      expect(JSON.stringify(done.body.result)).not.toContain('"fetches"');
+    });
+
+    it('attaches a retry with the same idempotency key instead of starting a second run', async () => {
+      const { ingestion, release } = blockingIngestion();
+      const h = harness(ingestion);
+      const first = await h.call('POST', '/runs/daily-anchor', BODY, { 'idempotency-key': KEY });
+      const retry = await h.call('POST', '/runs/daily-anchor', BODY, { 'idempotency-key': KEY });
+      expect(retry.status).toBe(202);
+      expect(retry.body).toMatchObject({ runId: first.body.runId, attached: true });
+      release();
+      await h.waitFor(String(first.body.runId), 'completed');
+    });
+
+    it('answers 409 busy when another input holds the scope', async () => {
+      const { ingestion, release } = blockingIngestion();
+      const h = harness(ingestion);
+      const first = await h.call('POST', '/runs/daily-anchor', BODY, { 'idempotency-key': KEY });
+      const other = await h.call(
+        'POST',
+        '/runs/daily-anchor',
+        { ...BODY, nowUtc: '2026-05-24T02:00:00Z' },
+        { 'idempotency-key': 'b'.repeat(64) }
+      );
+      expect(other.status).toBe(409);
+      expect(other.body).toMatchObject({
+        status: 'busy',
+        holderRunId: first.body.runId,
+        retryable: false,
+      });
+      // The streaming endpoint shares the registry and gets the same answer.
+      const stream = await h.call('POST', '/workflows/daily-anchor', {
+        ...BODY,
+        nowUtc: '2026-05-24T02:00:00Z',
+      });
+      expect(stream.status).toBe(409);
+      release();
+      await h.waitFor(String(first.body.runId), 'completed');
+    });
+
+    it('lets a stream with the same input follow the running run to its end', async () => {
+      const { ingestion, release } = blockingIngestion();
+      const h = harness(ingestion);
+      const first = await h.call('POST', '/runs/daily-anchor', BODY, { 'idempotency-key': KEY });
+      const stream = await h.call('POST', '/workflows/daily-anchor', BODY);
+      expect(stream.status).toBe(200);
+      release();
+      const lines = await collectStream(stream);
+      expect(lines[0]).toMatchObject({ event: 'run.attached', runId: first.body.runId });
+      expect(lines[lines.length - 1]).toMatchObject({
+        event: 'completed',
+        runId: first.body.runId,
+        status: 'ok',
+      });
+      expect(lines.some((line) => line.event === 'run.started')).toBe(false);
+    });
+
+    it('cancels a run, which ends cancelled and streams as an error', async () => {
+      const { ingestion, release } = blockingIngestion();
+      const h = harness(ingestion);
+      const stream = await h.call('POST', '/workflows/daily-anchor', BODY);
+      const lines: Record<string, unknown>[] = [];
+      const reading = (async () => {
+        for await (const line of stream.stream!) {
+          lines.push(line);
+        }
+      })();
+      await new Promise((resolve) => setImmediate(resolve));
+      const runId = String(lines[0]?.runId);
+      expect(lines[0]).toMatchObject({ event: 'run.started' });
+
+      const cancelled = await h.call('POST', `/runs/${runId}/cancel`);
+      expect(cancelled.status).toBe(202);
+      expect(cancelled.body).toMatchObject({ stopRequested: 'cancelled' });
+      release();
+      await reading;
+      expect((await h.call('GET', `/runs/${runId}`)).body).toMatchObject({ status: 'cancelled' });
+      expect(lines[lines.length - 1]).toMatchObject({
+        event: 'completed',
+        status: 'error',
+        reason: 'cancelled: cancelled',
+      });
+    });
+
+    it('rejects unknown runs, bad keys, missing auth and a missing registry', async () => {
+      const h = harness();
+      expect((await h.call('GET', '/runs/nope')).status).toBe(404);
+      expect((await h.call('POST', '/runs/nope/cancel')).status).toBe(404);
+      expect((await h.call('DELETE', '/runs/nope')).status).toBe(404);
+      const badKey = await h.call('POST', '/runs/daily-anchor', BODY, {
+        'idempotency-key': 'has spaces',
+      });
+      expect(badKey.status).toBe(400);
+      expect(badKey.body).toMatchObject({ reason: 'invalid_idempotency_key' });
+      const badInput = await h.call('POST', '/runs/provider-enrichment', { dataset: 'nope' });
+      expect(badInput.status).toBe(400);
+
+      const unauthorised = await handleWorkerRequest(
+        { method: 'GET', pathname: '/runs/whatever', headers: {} },
+        config,
+        { ingestion: buildIngestion(), authContextVerifier: makeVerifier().verifier }
+      );
+      expect(unauthorised.status).toBe(401);
+
+      const { verifier, privateKey } = makeVerifier();
+      const noRegistry = await handleWorkerRequest(
+        {
+          method: 'POST',
+          pathname: '/runs/daily-anchor',
+          body: BODY,
+          headers: { 'btl-auth-context': signToken(privateKey, defaultServicePayload()) },
+        },
+        config,
+        { ingestion: buildIngestion(), competitions: [COMPETITION], authContextVerifier: verifier }
+      );
+      expect(noRegistry.status).toBe(503);
+      expect(noRegistry.body).toMatchObject({ reason: 'run_registry_not_configured' });
     });
   });
 });

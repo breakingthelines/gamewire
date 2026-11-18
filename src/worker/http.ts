@@ -16,6 +16,13 @@ import type {
   ProviderEnrichmentIngestClient,
 } from './clients/game-service.js';
 import type { ProviderCache } from './cache.js';
+import {
+  InMemoryRunStore,
+  isValidIdempotencyKey,
+  RunRegistry,
+  type RunView,
+  type StartRunOutcome,
+} from './run-registry.js';
 import type { ProviderMinuteLimiter } from './minute-limiter.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
 import type { MediaObjectStore } from './asset-mirror.js';
@@ -93,7 +100,7 @@ export interface WorkerHttpResponse {
    * line, written via Transfer-Encoding: chunked. Used by `/workflows/*`
    * endpoints so each chunk resets the upstream Envoy HCM
    * `stream_idle_timeout` (default 5m) during long-running workflows. See
-   * {@link startWorkflowStream} for the event shape; the final line always
+   * {@link streamRegistryRun} for the event shape; the final line always
    * has `event: 'completed'` and carries `{status, result?, reason?}`.
    */
   stream?: AsyncIterable<Record<string, unknown>>;
@@ -122,7 +129,7 @@ const jsonResponse = (status: number, body: Record<string, unknown>): WorkerHttp
 const HEARTBEAT_INTERVAL_MS = 30_000;
 
 /**
- * Bounded async queue used by {@link startWorkflowStream} to bridge the
+ * Bounded async queue used by {@link streamRegistryRun} to bridge the
  * synchronous {@link WorkflowLogger} callback (called from inside the
  * workflow) and the asynchronous NDJSON iterator (consumed by the HTTP
  * server). Push never blocks; iterator next() blocks only when the queue
@@ -187,89 +194,316 @@ type WorkflowName =
   | 'provider-fixture-results'
   | 'provider-enrichment';
 
+const WORKFLOW_NAMES: readonly WorkflowName[] = [
+  'daily-anchor',
+  'hourly-matchday',
+  'webhook-completed',
+  'season-backfill',
+  'sweep-missing-payloads',
+  'squad-sweep',
+  'statsbomb-backfill',
+  'identity-gap-scan',
+  'competition-payload-backfill',
+  'provider-fixture-results',
+  'provider-enrichment',
+];
+
+const workflowNameFromSegment = (segment: string): WorkflowName | undefined =>
+  WORKFLOW_NAMES.find((name) => name === segment);
+
 /**
- * Run a workflow in the background and expose its progress as an NDJSON
- * AsyncIterable. Each line on the wire is either:
+ * A parsed workflow request, ready for the run registry: the input (hashed so
+ * equal requests attach to one run), the scope it locks, and the run itself,
+ * which returns the workflow's wire result.
  *
+ * Each workflow declares its own wire projection in `workflows/wire.ts`. The
+ * in-process output may carry provider debug payloads (raw
+ * `IngestionFetchResult` arrays) that must not cross the wire: one oversized
+ * completed line once failed the kernel activity deterministically
+ * (2026-05-25, run 019e57ec-…).
+ */
+interface ResolvedWorkflowRun {
+  readonly ok: true;
+  readonly input: unknown;
+  readonly scopeKey: string;
+  readonly run: (deps: WorkflowDeps) => Promise<Record<string, unknown>>;
+}
+
+type WorkflowResolution =
+  | ResolvedWorkflowRun
+  | { readonly ok: false; readonly response: WorkerHttpResponse };
+
+const wire =
+  <T, W>(
+    run: (deps: WorkflowDeps) => Promise<T>,
+    toWire: (result: T) => W
+  ): ((deps: WorkflowDeps) => Promise<Record<string, unknown>>) =>
+  async (deps) =>
+    toWire(await run(deps)) as Record<string, unknown>;
+
+const badRequest = (reason: string): WorkflowResolution => ({
+  ok: false,
+  response: jsonResponse(400, { status: 'bad_request', reason }),
+});
+
+/**
+ * Parse a workflow request body. The scope key is what one run at a time may
+ * hold: per dataset, payload kind or mode where the workflow has one, else the
+ * workflow itself.
+ */
+const resolveWorkflowRun = (workflow: WorkflowName, body: unknown): WorkflowResolution => {
+  switch (workflow) {
+    case 'webhook-completed': {
+      const input = parseWebhookCompletedInput(body);
+      if (!input) {
+        return badRequest('missing_fixture_id_or_provider_id');
+      }
+      return {
+        ok: true,
+        input,
+        scopeKey: `webhook-completed:${input.providerId}:${input.fixtureId}`,
+        run: wire((deps) => webhookCompletedWorkflow(input, deps), webhookCompletedToWire),
+      };
+    }
+    case 'hourly-matchday': {
+      const input = parseHourlyMatchdayInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => hourlyMatchdayWorkflow(input, deps), hourlyMatchdayToWire),
+      };
+    }
+    case 'sweep-missing-payloads': {
+      const input = parseSweepMissingPayloadsInput(body);
+      if (!input) {
+        return badRequest('missing_or_invalid_provider_kind');
+      }
+      return {
+        ok: true,
+        input,
+        scopeKey: `sweep-missing-payloads:${input.kind}`,
+        run: wire((deps) => sweepMissingPayloadsWorkflow(input, deps), sweepMissingPayloadsToWire),
+      };
+    }
+    case 'season-backfill': {
+      const input = parseSeasonBackfillInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => seasonBackfillWorkflow(input, deps), seasonBackfillToWire),
+      };
+    }
+    case 'squad-sweep': {
+      const input = parseSquadSweepInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => squadSweepWorkflow(input, deps), squadSweepToWire),
+      };
+    }
+    case 'statsbomb-backfill': {
+      const input = parseStatsBombBackfillInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => statsbombBackfillWorkflow(input, deps), statsbombBackfillToWire),
+      };
+    }
+    case 'identity-gap-scan': {
+      const input = parseIdentityGapScanInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => identityGapScanWorkflow(input, deps), identityGapScanToWire),
+      };
+    }
+    case 'competition-payload-backfill': {
+      const input = parseCompetitionPayloadBackfillInput(body);
+      if (!input) {
+        return badRequest('missing_or_invalid_kind');
+      }
+      return {
+        ok: true,
+        input,
+        scopeKey: `competition-payload-backfill:${input.kind}`,
+        run: wire(
+          (deps) => competitionPayloadBackfillWorkflow(input, deps),
+          competitionPayloadBackfillToWire
+        ),
+      };
+    }
+    case 'provider-fixture-results': {
+      const parsed = parseProviderFixtureResultsInput(body, new Date());
+      if (!parsed.ok) {
+        return badRequest(parsed.reason);
+      }
+      const { input } = parsed;
+      return {
+        ok: true,
+        input,
+        scopeKey: `provider-fixture-results:${input.mode}`,
+        run: wire(
+          (deps) => providerFixtureResultsWorkflow(input, deps),
+          providerFixtureResultsToWire
+        ),
+      };
+    }
+    case 'provider-enrichment': {
+      const parsed = parseProviderEnrichmentInput(body);
+      if (!parsed.ok) {
+        return badRequest(parsed.reason);
+      }
+      const { input } = parsed;
+      return {
+        ok: true,
+        input,
+        scopeKey: `provider-enrichment:${input.dataset}`,
+        run: wire((deps) => providerEnrichmentWorkflow(input, deps), providerEnrichmentToWire),
+      };
+    }
+    case 'daily-anchor': {
+      const input = parseDailyAnchorInput(body);
+      return {
+        ok: true,
+        input,
+        scopeKey: workflow,
+        run: wire((deps) => dailyAnchorWorkflow(input, deps), dailyAnchorToWire),
+      };
+    }
+  }
+};
+
+/**
+ * Start a workflow run through the registry and stream its progress as NDJSON
+ * (the `/workflows/*` endpoints, used by operators and by kernel before the
+ * `/runs` endpoints). Each line on the wire is either:
+ *
+ *   - `{event: 'run.started' | 'run.attached', workflow, runId}` first
  *   - a {@link WorkflowLogEntry} forwarded verbatim from the workflow
  *   - a `{event: 'heartbeat', workflow, ts}` keepalive every 30s
- *   - a single `{event: 'completed', workflow, status: 'ok'|'error', result?,
- *     reason?}` line that always closes the stream
+ *   - a single `{event: 'completed', workflow, runId, status: 'ok'|'error',
+ *     result?, reason?}` line that always closes the stream
  *
- * The handler still returns 200 even when the workflow throws; the error is
- * carried in the trailing `completed` line so the HTTP status reflects "the
- * stream was established" rather than "the workflow result". Kernel-side
- * activity logic in `internal/activityimpl/game_backfill.go` reads the
- * trailing line and treats `status: 'error'` as a retryable failure, which
- * matches the pre-streaming 500-with-body behaviour.
+ * The response is 200 even when the workflow throws; the error is carried in
+ * the trailing `completed` line. A cancelled or interrupted run also ends
+ * with `status: 'error'`, so a caller retries instead of recording a partial
+ * result as done. The run itself does not depend on the connection: a client
+ * that disconnects leaves it running, and a retry with the same input
+ * attaches to it. When the scope is held by a run with different input, or by
+ * a run on another pod, the answer is 409 with the holder's run id.
  */
-const startWorkflowStream = <T, W>(args: {
-  workflow: WorkflowName;
-  baseLogger: WorkflowLogger | undefined;
-  run: (logger: WorkflowLogger) => Promise<T>;
-  /**
-   * Project the in-process workflow output to its wire shape. The
-   * workflow's full output type may include provider-specific debug
-   * payloads (raw `IngestionFetchResult` arrays, etc.) that must not
-   * cross the NDJSON wire — a single completed line that includes them
-   * can exceed kernel-side `bufio.Scanner.MaxScanTokenSize` and fail
-   * the activity deterministically (observed 2026-05-25, workflow run
-   * 019e57ec-…). Each workflow declares its own wire projection in
-   * `workflows/wire.ts` so the wire boundary is explicit per workflow
-   * rather than relying on string-keyed stripping, which doesn't scale
-   * as new providers with different result shapes land.
-   */
-  toWire: (result: T) => W;
-}): AsyncIterable<Record<string, unknown>> => {
+const streamRegistryRun = async (
+  registry: RunRegistry,
+  workflow: WorkflowName,
+  resolved: ResolvedWorkflowRun,
+  deps: WorkflowDeps,
+  baseLogger: WorkflowLogger | undefined
+): Promise<WorkerHttpResponse> => {
   const queue = new WorkflowStreamQueue();
-
-  const streamLogger: WorkflowLogger = (entry) => {
-    if (args.baseLogger) {
-      try {
-        args.baseLogger(entry);
-      } catch {
-        // Never let a downstream logger failure break workflow execution.
-      }
-    }
-    queue.push({ ...entry });
-  };
-
   const heartbeat = setInterval(() => {
-    queue.push({
-      event: 'heartbeat',
-      workflow: args.workflow,
-      ts: new Date().toISOString(),
-    });
+    queue.push({ event: 'heartbeat', workflow, ts: new Date().toISOString() });
   }, HEARTBEAT_INTERVAL_MS);
   if (typeof heartbeat.unref === 'function') {
     heartbeat.unref();
   }
+  const close = (record: RunView): void => {
+    clearInterval(heartbeat);
+    queue.push(completedLine(record));
+    queue.close();
+  };
+  const head: Record<string, unknown>[] = [];
 
-  void args
-    .run(streamLogger)
-    .then((result) => {
-      queue.push({
-        event: 'completed',
-        workflow: args.workflow,
-        status: 'ok',
-        result: args.toWire(result) as Record<string, unknown>,
-      });
-    })
-    .catch((err: unknown) => {
-      queue.push({
-        event: 'completed',
-        workflow: args.workflow,
-        status: 'error',
-        reason: err instanceof Error ? err.message : String(err),
-      });
-    })
-    .finally(() => {
-      clearInterval(heartbeat);
-      queue.close();
+  let outcome: StartRunOutcome;
+  try {
+    outcome = await registry.start({
+      workflow,
+      scopeKey: resolved.scopeKey,
+      input: resolved.input,
+      baseLogger,
+      run: ({ logger, signal }) => resolved.run({ ...deps, logger, signal }),
+      observer: {
+        onEvent: (entry) => queue.push({ ...entry }),
+        onDone: (record) => close(record),
+      },
     });
+  } catch (error) {
+    clearInterval(heartbeat);
+    return jsonResponse(503, {
+      status: 'unavailable',
+      reason: 'run_registry_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
 
-  return queue;
+  if (outcome.kind === 'busy') {
+    clearInterval(heartbeat);
+    return jsonResponse(409, busyBody(outcome));
+  }
+  if (outcome.kind === 'attached' && !outcome.observed) {
+    if (outcome.run.status === 'running') {
+      clearInterval(heartbeat);
+      return jsonResponse(409, {
+        status: 'busy',
+        reason: 'running_on_another_pod',
+        holderRunId: outcome.run.runId,
+        retryable: false,
+      });
+    }
+    head.push({ event: 'run.attached', workflow, runId: outcome.run.runId });
+    close(outcome.run);
+    return streamingResponse(prepend(head, queue));
+  }
+  head.push({
+    event: outcome.kind === 'started' ? 'run.started' : 'run.attached',
+    workflow,
+    runId: outcome.run.runId,
+  });
+  return streamingResponse(prepend(head, queue));
 };
+
+/** Yield `head` first, then everything from `rest`. */
+async function* prepend(
+  head: readonly Record<string, unknown>[],
+  rest: AsyncIterable<Record<string, unknown>>
+): AsyncIterable<Record<string, unknown>> {
+  yield* head;
+  yield* rest;
+}
+
+/** The trailing NDJSON line for a settled (or attached, finished) run. */
+const completedLine = (record: RunView): Record<string, unknown> => {
+  const base = { event: 'completed', workflow: record.workflow, runId: record.runId };
+  if (record.status === 'completed') {
+    return {
+      ...base,
+      status: 'ok',
+      result: record.result,
+      ...(record.resultTruncated ? { resultTruncated: true } : {}),
+    };
+  }
+  return {
+    ...base,
+    status: 'error',
+    reason: `${record.status}${record.reason ? `: ${record.reason}` : ''}`,
+  };
+};
+
+const busyBody = (
+  outcome: Extract<StartRunOutcome, { kind: 'busy' }>
+): Record<string, unknown> => ({
+  status: 'busy',
+  reason: outcome.retryable ? 'scope_releasing' : 'scope_held_by_another_run',
+  holderRunId: outcome.holderRunId,
+  holderStatus: outcome.holder?.status,
+  holderWorkflow: outcome.holder?.workflow,
+  holderStartedAt: outcome.holder?.startedAt,
+  retryable: outcome.retryable,
+});
 
 const streamingResponse = (stream: AsyncIterable<Record<string, unknown>>): WorkerHttpResponse => ({
   status: 200,
@@ -338,6 +572,12 @@ export interface WorkerHttpHandlerOptions {
   readonly coachPhotoStore?: MediaObjectStore;
   /** Durable workflow state (the season-backfill cursor). Redis in production. */
   readonly workflowStateStore?: ProviderCache;
+  /**
+   * Run registry for `/runs/*` and `/workflows/*` (Redis-backed in
+   * production). Without one, `/runs/*` answers 503 and each `/workflows/*`
+   * stream gets a private in-memory registry.
+   */
+  readonly runRegistry?: RunRegistry;
   /**
    * btl-auth-context verifier built at boot via
    * {@link createAuthContextVerifier}. Required for `/workflows/*`
@@ -447,40 +687,6 @@ const authoriseWorkflowRequest = (
       reason: 'bad_auth_context',
     }),
   };
-};
-
-const workflowNameFromPath = (pathname: string): WorkflowName => {
-  if (pathname === '/workflows/hourly-matchday') {
-    return 'hourly-matchday';
-  }
-  if (pathname === '/workflows/webhook-completed') {
-    return 'webhook-completed';
-  }
-  if (pathname === '/workflows/season-backfill') {
-    return 'season-backfill';
-  }
-  if (pathname === '/workflows/sweep-missing-payloads') {
-    return 'sweep-missing-payloads';
-  }
-  if (pathname === '/workflows/squad-sweep') {
-    return 'squad-sweep';
-  }
-  if (pathname === '/workflows/statsbomb-backfill') {
-    return 'statsbomb-backfill';
-  }
-  if (pathname === '/workflows/identity-gap-scan') {
-    return 'identity-gap-scan';
-  }
-  if (pathname === '/workflows/competition-payload-backfill') {
-    return 'competition-payload-backfill';
-  }
-  if (pathname === '/workflows/provider-fixture-results') {
-    return 'provider-fixture-results';
-  }
-  if (pathname === '/workflows/provider-enrichment') {
-    return 'provider-enrichment';
-  }
-  return 'daily-anchor';
 };
 
 export const buildWorkflowDeps = (
@@ -980,6 +1186,190 @@ const parseProviderFixtureResultsInput = (
   };
 };
 
+type WorkflowGate =
+  | { readonly ok: true; readonly baseDeps: WorkflowDeps }
+  | { readonly ok: false; readonly response: WorkerHttpResponse };
+
+/**
+ * Auth, ingestion readiness and kill switches shared by `/workflows/*` and
+ * `POST /runs/{workflow}`.
+ */
+const gateWorkflowRequest = (
+  request: WorkerHttpRequest,
+  cfg: GamewireWorkerConfig,
+  options: WorkerHttpHandlerOptions,
+  workflow: WorkflowName
+): WorkflowGate => {
+  const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
+  if (!auth.authorised) {
+    if (options.workflowLogger && auth.reasonForLog) {
+      // Log the verbose reason so ops can debug 401s without leaking
+      // claim-level detail back to the caller.
+      options.workflowLogger({
+        event: 'workflow-auth-rejected',
+        workflow,
+        reason: auth.reasonForLog,
+        message: `gamewire-worker workflow auth rejected: ${auth.reasonForLog}`,
+      });
+    }
+    return { ok: false, response: auth.response ?? jsonResponse(401, { status: 'unauthorized' }) };
+  }
+  if (options.workflowLogger && auth.reasonForLog) {
+    // Audit a successful invocation authorised by a non-JWT credential (a
+    // trusted mesh identity). JWT-authorised calls return no reason and stay
+    // unlogged, matching prior behaviour.
+    options.workflowLogger({
+      event: 'workflow-auth-accepted',
+      workflow,
+      reason: auth.reasonForLog,
+      message: `gamewire-worker workflow auth accepted via ${auth.reasonForLog}`,
+    });
+  }
+  const baseDeps = buildWorkflowDeps(options, cfg);
+  if (!baseDeps) {
+    return {
+      ok: false,
+      response: jsonResponse(503, { status: 'unavailable', reason: 'ingestion_not_started' }),
+    };
+  }
+  if (workflow === 'provider-fixture-results' && !cfg.providerFixtureResultsEnabled) {
+    // Emergency off-switch (PF-GW1): on by default.
+    // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off stops the workflow with an
+    // env flip, not a deploy.
+    return {
+      ok: false,
+      response: jsonResponse(503, {
+        status: 'unavailable',
+        reason: 'feature_disabled',
+        feature: 'GAMEWIRE_PROVIDER_FIXTURE_RESULTS',
+      }),
+    };
+  }
+  return { ok: true, baseDeps };
+};
+
+const IDEMPOTENCY_KEY_HEADER = 'idempotency-key';
+
+/**
+ * The run endpoints. Kernel starts a run, polls its status every 15 s and
+ * cancels it when its Temporal activity is cancelled:
+ *
+ * - `POST /runs/{workflow}` with an `Idempotency-Key` header: 202 with the
+ *   run (`attached: true` when the key or an identical running request
+ *   already owns one), 409 when another run holds the scope, 400 on bad
+ *   input.
+ * - `GET /runs/{runId}`: the run's status, progress and, once finished, its
+ *   wire result. `lost` means the run's pod stopped renewing it.
+ * - `POST /runs/{runId}/cancel`: ask the run to stop at its next checkpoint.
+ */
+const handleRunsRequest = async (
+  request: WorkerHttpRequest,
+  cfg: GamewireWorkerConfig,
+  options: WorkerHttpHandlerOptions
+): Promise<WorkerHttpResponse> => {
+  const parts = request.pathname.slice('/runs/'.length).split('/');
+  const registry = options.runRegistry;
+
+  const startWorkflow =
+    request.method === 'POST' && parts.length === 1
+      ? workflowNameFromSegment(parts[0] ?? '')
+      : undefined;
+  if (startWorkflow) {
+    const gate = gateWorkflowRequest(request, cfg, options, startWorkflow);
+    if (!gate.ok) {
+      return gate.response;
+    }
+    if (!registry) {
+      return jsonResponse(503, { status: 'unavailable', reason: 'run_registry_not_configured' });
+    }
+    const idempotencyKey = readHeader(request.headers, IDEMPOTENCY_KEY_HEADER);
+    if (idempotencyKey !== undefined && !isValidIdempotencyKey(idempotencyKey)) {
+      return jsonResponse(400, { status: 'bad_request', reason: 'invalid_idempotency_key' });
+    }
+    const resolved = resolveWorkflowRun(startWorkflow, request.body);
+    if (!resolved.ok) {
+      return resolved.response;
+    }
+    let outcome: StartRunOutcome;
+    try {
+      outcome = await registry.start({
+        workflow: startWorkflow,
+        scopeKey: resolved.scopeKey,
+        input: resolved.input,
+        idempotencyKey,
+        baseLogger: options.workflowLogger,
+        run: ({ logger, signal }) => resolved.run({ ...gate.baseDeps, logger, signal }),
+      });
+    } catch (error) {
+      return jsonResponse(503, {
+        status: 'unavailable',
+        reason: 'run_registry_unavailable',
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (outcome.kind === 'busy') {
+      return jsonResponse(409, busyBody(outcome));
+    }
+    return jsonResponse(202, {
+      ...runBody(outcome.run),
+      attached: outcome.kind === 'attached',
+    });
+  }
+
+  const runId = parts[0] ?? '';
+  const isStatus = request.method === 'GET' && parts.length === 1;
+  const isCancel = request.method === 'POST' && parts.length === 2 && parts[1] === 'cancel';
+  if (!runId || (!isStatus && !isCancel)) {
+    return jsonResponse(404, { status: 'not_found', service: 'gamewire-worker' });
+  }
+  // Status polls run every 15 s, so they are authorised but not audited.
+  const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
+  if (!auth.authorised) {
+    return auth.response ?? jsonResponse(401, { status: 'unauthorized' });
+  }
+  if (!registry) {
+    return jsonResponse(503, { status: 'unavailable', reason: 'run_registry_not_configured' });
+  }
+  try {
+    const view = isCancel ? await registry.cancel(runId) : await registry.status(runId);
+    if (!view) {
+      return jsonResponse(404, { status: 'not_found', reason: 'unknown_run', runId });
+    }
+    return jsonResponse(isCancel ? 202 : 200, runBody(view));
+  } catch (error) {
+    return jsonResponse(503, {
+      status: 'unavailable',
+      reason: 'run_registry_unavailable',
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+/**
+ * A run on the wire. `status` is the run's lifecycle state (`running`,
+ * `completed`, `failed`, `cancelled`, `interrupted`, `lost`); the workflow's
+ * own outcome (`completed`, `incomplete`, ...) is inside `result`.
+ */
+const runBody = (run: RunView): Record<string, unknown> => ({
+  runId: run.runId,
+  workflow: run.workflow,
+  scopeKey: run.scopeKey,
+  status: run.status,
+  pod: run.pod,
+  startedAt: run.startedAt,
+  heartbeatAt: run.heartbeatAt,
+  deadlineAt: run.deadlineAt,
+  finishedAt: run.finishedAt,
+  events: run.events,
+  lastEvent: run.lastEvent,
+  lastEventStatus: run.lastEventStatus,
+  lastEventAt: run.lastEventAt,
+  stopRequested: run.stopRequested,
+  reason: run.reason,
+  result: run.result,
+  resultTruncated: run.resultTruncated,
+});
+
 export const activityNames = [
   'FetchFixtures',
   'FetchGame',
@@ -1050,223 +1440,34 @@ export const handleWorkerRequest = async (
     });
   }
 
-  if (
-    request.method === 'POST' &&
-    (request.pathname === '/workflows/daily-anchor' ||
-      request.pathname === '/workflows/hourly-matchday' ||
-      request.pathname === '/workflows/webhook-completed' ||
-      request.pathname === '/workflows/season-backfill' ||
-      request.pathname === '/workflows/sweep-missing-payloads' ||
-      request.pathname === '/workflows/squad-sweep' ||
-      request.pathname === '/workflows/statsbomb-backfill' ||
-      request.pathname === '/workflows/identity-gap-scan' ||
-      request.pathname === '/workflows/competition-payload-backfill' ||
-      request.pathname === '/workflows/provider-fixture-results' ||
-      request.pathname === '/workflows/provider-enrichment')
-  ) {
-    const auth = authoriseWorkflowRequest(cfg, request.headers, options.authContextVerifier);
-    if (!auth.authorised) {
-      if (options.workflowLogger && auth.reasonForLog) {
-        // Log the verbose reason so ops can debug 401s without leaking
-        // claim-level detail back to the caller.
-        options.workflowLogger({
-          event: 'workflow-auth-rejected',
-          workflow: workflowNameFromPath(request.pathname),
-          reason: auth.reasonForLog,
-          message: `gamewire-worker workflow auth rejected: ${auth.reasonForLog}`,
-        });
-      }
-      return auth.response ?? jsonResponse(401, { status: 'unauthorized' });
+  const streamWorkflow =
+    request.method === 'POST' && request.pathname.startsWith('/workflows/')
+      ? workflowNameFromSegment(request.pathname.slice('/workflows/'.length))
+      : undefined;
+  if (streamWorkflow) {
+    const gate = gateWorkflowRequest(request, cfg, options, streamWorkflow);
+    if (!gate.ok) {
+      return gate.response;
     }
-    if (options.workflowLogger && auth.reasonForLog) {
-      // Audit a successful invocation authorised by a non-JWT credential (a
-      // trusted mesh identity). JWT-authorised calls return no reason and stay
-      // unlogged, matching prior behaviour.
-      options.workflowLogger({
-        event: 'workflow-auth-accepted',
-        workflow: workflowNameFromPath(request.pathname),
-        reason: auth.reasonForLog,
-        message: `gamewire-worker workflow auth accepted via ${auth.reasonForLog}`,
-      });
+    const resolved = resolveWorkflowRun(streamWorkflow, request.body);
+    if (!resolved.ok) {
+      return resolved.response;
     }
-    const baseDeps = buildWorkflowDeps(options, cfg);
-    if (!baseDeps) {
-      return jsonResponse(503, {
-        status: 'unavailable',
-        reason: 'ingestion_not_started',
-      });
-    }
-    const workflowName = workflowNameFromPath(request.pathname);
-
-    if (
-      request.pathname === '/workflows/provider-fixture-results' &&
-      !cfg.providerFixtureResultsEnabled
-    ) {
-      // Emergency off-switch (PF-GW1): on by default.
-      // GAMEWIRE_PROVIDER_FIXTURE_RESULTS=off stops the workflow with an
-      // env flip, not a deploy.
-      return jsonResponse(503, {
-        status: 'unavailable',
-        reason: 'feature_disabled',
-        feature: 'GAMEWIRE_PROVIDER_FIXTURE_RESULTS',
-      });
-    }
-
-    if (request.pathname === '/workflows/webhook-completed') {
-      const input = parseWebhookCompletedInput(request.body);
-      if (!input) {
-        return jsonResponse(400, {
-          status: 'bad_request',
-          reason: 'missing_fixture_id_or_provider_id',
-        });
-      }
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => webhookCompletedWorkflow(input, { ...baseDeps, logger }),
-          toWire: webhookCompletedToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/hourly-matchday') {
-      const input = parseHourlyMatchdayInput(request.body);
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => hourlyMatchdayWorkflow(input, { ...baseDeps, logger }),
-          toWire: hourlyMatchdayToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/sweep-missing-payloads') {
-      const input = parseSweepMissingPayloadsInput(request.body);
-      if (!input) {
-        return jsonResponse(400, {
-          status: 'bad_request',
-          reason: 'missing_or_invalid_provider_kind',
-        });
-      }
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => sweepMissingPayloadsWorkflow(input, { ...baseDeps, logger }),
-          toWire: sweepMissingPayloadsToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/season-backfill') {
-      const input = parseSeasonBackfillInput(request.body);
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => seasonBackfillWorkflow(input, { ...baseDeps, logger }),
-          toWire: seasonBackfillToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/squad-sweep') {
-      const input = parseSquadSweepInput(request.body);
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => squadSweepWorkflow(input, { ...baseDeps, logger }),
-          toWire: squadSweepToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/statsbomb-backfill') {
-      const input = parseStatsBombBackfillInput(request.body);
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => statsbombBackfillWorkflow(input, { ...baseDeps, logger }),
-          toWire: statsbombBackfillToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/identity-gap-scan') {
-      const input = parseIdentityGapScanInput(request.body);
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => identityGapScanWorkflow(input, { ...baseDeps, logger }),
-          toWire: identityGapScanToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/competition-payload-backfill') {
-      const input = parseCompetitionPayloadBackfillInput(request.body);
-      if (!input) {
-        return jsonResponse(400, {
-          status: 'bad_request',
-          reason: 'missing_or_invalid_kind',
-        });
-      }
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => competitionPayloadBackfillWorkflow(input, { ...baseDeps, logger }),
-          toWire: competitionPayloadBackfillToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/provider-fixture-results') {
-      const parsed = parseProviderFixtureResultsInput(request.body, new Date());
-      if (!parsed.ok) {
-        return jsonResponse(400, { status: 'bad_request', reason: parsed.reason });
-      }
-      const { input } = parsed;
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => providerFixtureResultsWorkflow(input, { ...baseDeps, logger }),
-          toWire: providerFixtureResultsToWire,
-        })
-      );
-    }
-
-    if (request.pathname === '/workflows/provider-enrichment') {
-      const parsed = parseProviderEnrichmentInput(request.body);
-      if (!parsed.ok) {
-        return jsonResponse(400, { status: 'bad_request', reason: parsed.reason });
-      }
-      return streamingResponse(
-        startWorkflowStream({
-          workflow: workflowName,
-          baseLogger: options.workflowLogger,
-          run: (logger) => providerEnrichmentWorkflow(parsed.input, { ...baseDeps, logger }),
-          toWire: providerEnrichmentToWire,
-        })
-      );
-    }
-
-    // daily-anchor
-    const input = parseDailyAnchorInput(request.body);
-    return streamingResponse(
-      startWorkflowStream({
-        workflow: workflowName,
-        baseLogger: options.workflowLogger,
-        run: (logger) => dailyAnchorWorkflow(input, { ...baseDeps, logger }),
-        toWire: dailyAnchorToWire,
-      })
+    // Without a registry (tests, local tools) each stream gets its own, so
+    // the stream still runs through the same lifecycle code.
+    const registry =
+      options.runRegistry ?? new RunRegistry({ store: new InMemoryRunStore(), timers: false });
+    return streamRegistryRun(
+      registry,
+      streamWorkflow,
+      resolved,
+      gate.baseDeps,
+      options.workflowLogger
     );
+  }
+
+  if (request.pathname.startsWith('/runs/')) {
+    return handleRunsRequest(request, cfg, options);
   }
 
   if (request.method === 'POST' && request.pathname === cfg.webhookPath) {

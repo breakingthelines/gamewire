@@ -111,6 +111,7 @@ const SHARED_CLIENT_CONSUMERS = new Set([
   'createRedisMinuteCounterClient',
   'createRedisLikeClient',
   'RedisEmittedFixtureStore',
+  'createRedisRunStore',
 ]);
 
 const calleeName = (call: ts.CallExpression | ts.NewExpression): string | undefined => {
@@ -239,6 +240,17 @@ describe('shared Bun.redis connection: no blocking readers', () => {
     expect(sharedClientMisuse('worker/other.ts', 'const r = Bun.redis;')).toEqual([
       'worker/other.ts:1: shared client read outside server.ts',
     ]);
+  });
+
+  it('the run registry store sends only GET, SET and EVAL of its two lease scripts', () => {
+    // The registry renews leases and writes run records every 15 s per run on
+    // the shared connection, so it must stay on short commands.
+    const text = readFileSync(join(srcRoot, 'worker', 'run-registry.ts'), 'utf8');
+    const commands = [...text.matchAll(/\.send\(\s*'([A-Za-z]+)'/g)].map((m) => m[1]);
+    expect(commands.length).toBeGreaterThanOrEqual(4);
+    expect([...new Set(commands)].sort()).toEqual(['EVAL', 'GET', 'SET']);
+    const scriptCalls = [...text.matchAll(/redis\.call\('([A-Za-z]+)'/g)].map((m) => m[1]);
+    expect([...new Set(scriptCalls)].sort()).toEqual(['DEL', 'GET', 'PEXPIRE']);
   });
 
   it('server.ts hands Bun.redis only to non-blocking adapters', () => {

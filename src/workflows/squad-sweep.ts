@@ -376,6 +376,16 @@ export const squadSweepWorkflow = async (
 
   // 2. Process each team sequentially.
   for (const providerTeamId of providerTeamIds) {
+    if (deps.signal?.aborted) {
+      teamResults.push({
+        providerTeamId,
+        canonicalTeamId: '',
+        status: 'skipped',
+        reason: 'run_stopped',
+      });
+      teamsSkipped++;
+      continue;
+    }
     if (mode === 'abort' || mode === 'circuit-open') {
       teamResults.push({
         providerTeamId,
