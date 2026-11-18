@@ -30,6 +30,8 @@ import {
   type LookupGameByFixtureResponse,
   type ReportProviderHealthRequest,
   type ReportProviderHealthResponse,
+  type ResolvePlayerBindingsRequest,
+  type ResolvePlayerBindingsResponse,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
 
 export interface GameServiceIngestClient {
@@ -72,6 +74,15 @@ export const createGameServiceIngestClientBoundary = (
  */
 export interface FootballGameLookupClient {
   lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse>;
+  /**
+   * GW1: what game-service's binding-aware ingest stores for each
+   * API-Football player id, and the mode its ingest runs in. Optional so a
+   * narrow client or a test stub can leave it out: the bridge then resolves
+   * players through identity, as before (`player-bindings.ts`).
+   */
+  resolvePlayerBindings?(
+    request: ResolvePlayerBindingsRequest
+  ): Promise<ResolvePlayerBindingsResponse>;
 }
 
 /**
@@ -223,6 +234,10 @@ export interface FetchFootballGameLookupClientOptions {
 // channel and froze in-play matches. Successes complete in 1–4s, so a 30s ceiling costs
 // nothing on the happy path and lets queued calls survive the burst.
 const DEFAULT_GAME_SERVICE_TIMEOUT_MS = 30_000;
+// ResolvePlayerBindings is a read on the ingest path of every lineup and
+// event page; a slow answer should fail over (see player-bindings.ts) well
+// before the ingest deadline.
+const RESOLVE_PLAYER_BINDINGS_TIMEOUT_MS = 10_000;
 
 /**
  * Build a `FootballGameLookupClient` backed by a real gRPC transport.
@@ -315,6 +330,13 @@ export const createFetchFootballGameLookupClient = (
     },
     lookupGameByFixture(request: LookupGameByFixtureRequest): Promise<LookupGameByFixtureResponse> {
       return client.lookupGameByFixture(request, { timeoutMs });
+    },
+    resolvePlayerBindings(
+      request: ResolvePlayerBindingsRequest
+    ): Promise<ResolvePlayerBindingsResponse> {
+      return client.resolvePlayerBindings(request, {
+        timeoutMs: Math.min(timeoutMs, RESOLVE_PLAYER_BINDINGS_TIMEOUT_MS),
+      });
     },
     listGamesMissingPayloads(
       request: ListGamesMissingPayloadsRequest

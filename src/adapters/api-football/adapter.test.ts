@@ -540,6 +540,54 @@ describe('API-Football adapter', () => {
     expect(request.completeSnapshot).toBe(true);
   });
 
+  it('carries the provider player ids on the timeline payload, resolved or not (GW1)', () => {
+    const request = apiFootballIngestOccurrencesRequestFromEvents({
+      replayId: 'live:events-post-final:1538961',
+      resourceId: '1538961',
+      gameId: 'btl_football_game_g1538961',
+      fetchedAtMs: Date.parse('2026-05-21T12:00:00Z'),
+      entityResolutions: {
+        players: { '152982': { entityId: 'btl_football_player_p152982', label: 'Cole Palmer' } },
+      },
+      envelope: {
+        response: [
+          {
+            time: { elapsed: 45, extra: 2 },
+            team: { id: 49, name: 'Chelsea' },
+            player: { id: 152982, name: 'Cole Palmer' },
+            assist: { id: 1460, name: 'Bukayo Saka' },
+            type: 'Goal',
+            detail: 'Normal Goal',
+            comments: null,
+          },
+          {
+            time: { elapsed: 50, extra: null },
+            team: { id: 49, name: 'Chelsea' },
+            player: { id: 152982, name: 'Cole Palmer' },
+            assist: { id: null, name: null },
+            type: 'Card',
+            detail: 'Yellow Card',
+            comments: null,
+          },
+        ],
+      },
+    });
+
+    const timeline = (index: number) => {
+      const payload = request.occurrences[index]?.payload;
+      if (payload?.case !== 'timeline' || payload.value.sportTimeline.case !== 'football') {
+        throw new Error('expected a football timeline payload');
+      }
+      return payload.value.sportTimeline.value;
+    };
+    expect(timeline(0).primaryPlayerId).toBe('btl_football_player_p152982');
+    expect(timeline(0).primaryProviderPlayerId).toBe('152982');
+    // The assist is unresolved: no player id, but the provider id is there.
+    expect(timeline(0).secondaryPlayerId).toBe('');
+    expect(timeline(0).secondaryProviderPlayerId).toBe('1460');
+    expect(timeline(1).secondaryProviderPlayerId).toBe('');
+  });
+
   it('marks an events request as a partial list only when asked', () => {
     const request = apiFootballIngestOccurrencesRequestFromEvents({
       replayId: 'live:events-post-final:1538961',
@@ -710,6 +758,9 @@ describe('API-Football adapter', () => {
     expect(request.lineups[0]?.teamSheets[0]?.players[0]?.playerId).toBe(
       'provider:api-football:player:1460'
     );
+    // GW1: the provider id rides next to the entity id, so game-service can
+    // bind the slot by it.
+    expect(request.lineups[0]?.teamSheets[0]?.players[0]?.providerPlayerId).toBe('1460');
     // Coach rides the team sheet with a provider-scheme id (the player id
     // convention); canonicalisation to btl_football_coach_* is identity's
     // concern, never the adapter's.

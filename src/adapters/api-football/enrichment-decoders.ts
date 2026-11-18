@@ -238,7 +238,7 @@ export const decodePlayerSeasonStatsPage = (
           providerTeamId: teamId,
           providerCompetitionId: league,
           seasonYear: options.season,
-          playerSnapshot: playerSnapshot(player, block),
+          playerSnapshot: playerSnapshot(player, block, options.fetchedAtMs),
           teamSnapshot: teamSnapshot(team),
           values: playerSeasonValues(block),
           fetchedAt,
@@ -270,7 +270,8 @@ export const playerSeasonValues = (block: Record<string, unknown>): Record<strin
 
 const playerSnapshot = (
   player: Record<string, unknown>,
-  block: Record<string, unknown>
+  block: Record<string, unknown>,
+  fetchedAtMs: number
 ): ProviderEntitySnapshot => {
   const attributes: Record<string, string> = {};
   const birth = isRecord(player.birth) ? player.birth : {};
@@ -292,6 +293,14 @@ const playerSnapshot = (
   put('shirt_number', games.number);
   if (typeof games.captain === 'boolean') {
     attributes.captain = String(games.captain);
+  }
+  // The provider's age is relative to the day it was fetched. With that date
+  // it gives a birth-year window when the provider has no birth date, which
+  // the player binding gate uses as a veto (GW1).
+  const age = parseProviderNumber(player.age);
+  if (age !== undefined && Number.isInteger(age) && age > 0 && age < 100) {
+    attributes.age = String(age);
+    attributes.age_observed_at = new Date(fetchedAtMs).toISOString().slice(0, 10);
   }
   return create(ProviderEntitySnapshotSchema, {
     label: text(player.name),

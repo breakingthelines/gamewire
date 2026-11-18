@@ -11,7 +11,9 @@
  *      possible, preserving unresolved provider refs when identity misses.
  *      Seasons are never resolved here: game-service binds them
  *      (season_id_bindings, forward-only) and the connector must not
- *      pre-resolve them.
+ *      pre-resolve them. API-Football players resolve through game-service's
+ *      player bindings instead of identity once its ingest is `on`
+ *      (`player-bindings.ts`, GW1).
  *   3. Resolve the provider fixture id → BTL canonical `game_id` via
  *      `game-service.LookupGameByFixture` (the crosswalk lives in
  *      `provider_game_mappings`, populated by `IngestGames`).
@@ -69,6 +71,12 @@ import {
 } from '../adapters/api-football/index.js';
 import type { FootballGameBridgeClient, FootballGameIngestClient } from './clients/game-service.js';
 import type { FootballIdentityLookupClient } from './clients/identity.js';
+import {
+  createPlayerBindingResolver,
+  IDENTITY_PLAYER_SOURCE,
+  type PlayerBindingResolver,
+  type PlayerSource,
+} from './player-bindings.js';
 import type { IngestionWorkload } from './ingestion.js';
 import type {
   MatchConcludedObserveOutcome,
@@ -192,6 +200,13 @@ export const createMatchConcludedBridge = (
   const identity = options.identity;
   const providerId = options.providerId;
   const gameLookupRetryDelaysMs = options.gameLookupRetryDelaysMs ?? GAME_LOOKUP_RETRY_DELAYS_MS;
+  // One resolver per bridge, so the remembered ingest mode is shared by
+  // every workload this worker ingests.
+  const playerBindings = createPlayerBindingResolver({
+    client: gameService,
+    providerId,
+    clock,
+  });
 
   return async ({ workload, resourceId, data, cacheHit }) => {
     if (FIXTURE_LIST_WORKLOADS.has(workload)) {
@@ -205,6 +220,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -221,6 +237,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -236,6 +253,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -251,6 +269,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -266,6 +285,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -281,6 +301,7 @@ export const createMatchConcludedBridge = (
         log,
         clock,
         gameLookupRetryDelaysMs,
+        playerBindings,
       });
       return;
     }
@@ -398,6 +419,7 @@ export const createMatchConcludedBridge = (
       data,
       gameService,
       identity,
+      playerBindings,
       log,
       clock,
     });
@@ -447,6 +469,8 @@ interface ProviderResourceBridgeInput {
   readonly providerId: string;
   readonly gameService: FootballGameBridgeClient;
   readonly identity: FootballIdentityLookupClient;
+  /** Player bindings (GW1); absent means identity, as before. */
+  readonly playerBindings?: PlayerBindingResolver;
   readonly log: MatchConcludedBridgeLogger;
   readonly clock: () => number;
   readonly gameLookupRetryDelaysMs: readonly number[];
@@ -588,6 +612,8 @@ interface FixtureDetailEventIngestInput {
   readonly data: unknown;
   readonly gameService: FootballGameBridgeClient;
   readonly identity: FootballIdentityLookupClient;
+  /** Player bindings (GW1); absent means identity, as before. */
+  readonly playerBindings?: PlayerBindingResolver;
   readonly log: MatchConcludedBridgeLogger;
   readonly clock: () => number;
 }
@@ -626,7 +652,8 @@ const ingestEventsFromFixtureDetail = async (
       resourceId: input.resourceId,
       providerFixtureId: input.providerFixtureId,
       providerStatus: input.providerStatus,
-    }
+    },
+    input.playerBindings
   );
   const request = apiFootballIngestOccurrencesRequestFromEvents({
     provider: input.providerId,
@@ -707,7 +734,8 @@ const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> =
       workload: input.workload,
       resourceId: input.resourceId,
       providerFixtureId: input.resourceId,
-    }
+    },
+    input.playerBindings
   );
   const request = apiFootballIngestOccurrencesRequestFromEvents({
     provider: input.providerId,
@@ -792,7 +820,8 @@ const ingestLineups = async (input: ProviderResourceBridgeInput): Promise<void> 
       workload: input.workload,
       resourceId: input.resourceId,
       providerFixtureId: input.resourceId,
-    }
+    },
+    input.playerBindings
   );
   const request = apiFootballIngestLineupsRequestFromLineups({
     provider: input.providerId,
@@ -876,7 +905,8 @@ const ingestSquadList = async (input: ProviderResourceBridgeInput): Promise<void
       workload: input.workload,
       resourceId: input.resourceId,
       providerFixtureId: resource.fixtureId,
-    }
+    },
+    input.playerBindings
   );
   const request = apiFootballIngestSquadListRequestFromSquads({
     provider: input.providerId,
@@ -1027,7 +1057,8 @@ const ingestPlayerStats = async (input: ProviderResourceBridgeInput): Promise<vo
       workload: input.workload,
       resourceId: input.resourceId,
       providerFixtureId: input.resourceId,
-    }
+    },
+    input.playerBindings
   );
   const request = apiFootballIngestPlayerMatchStatsRequestFromPlayers({
     provider: input.providerId,
@@ -1407,13 +1438,21 @@ const resolveEventEntities = async (
   providerId: string,
   events: readonly ApiFootballEventResponse[],
   log: MatchConcludedBridgeLogger,
-  context: ResolutionLogContext
+  context: ResolutionLogContext,
+  playerBindings?: PlayerBindingResolver
 ): Promise<ApiFootballEntityResolutionMap> => {
   const resolutions = emptyResolutionMap();
+  const players = await playerSource(
+    playerBindings,
+    events.flatMap((event) => [event.player, event.assist]),
+    log,
+    providerId,
+    context
+  );
   for (const event of events) {
     await addResolvedTeam(identity, providerId, resolutions, event.team, log, context);
-    await addResolvedPlayer(identity, providerId, resolutions, event.player, log, context);
-    await addResolvedPlayer(identity, providerId, resolutions, event.assist, log, context);
+    await addResolvedPlayer(identity, providerId, resolutions, event.player, log, context, players);
+    await addResolvedPlayer(identity, providerId, resolutions, event.assist, log, context, players);
   }
   return resolutions;
 };
@@ -1423,13 +1462,31 @@ const resolveLineupEntities = async (
   providerId: string,
   lineups: readonly ApiFootballLineupResponse[],
   log: MatchConcludedBridgeLogger,
-  context: ResolutionLogContext
+  context: ResolutionLogContext,
+  playerBindings?: PlayerBindingResolver
 ): Promise<ApiFootballEntityResolutionMap> => {
   const resolutions = emptyResolutionMap();
+  const players = await playerSource(
+    playerBindings,
+    lineups.flatMap((lineup) =>
+      [...lineup.startXI, ...lineup.substitutes].map((entry) => entry.player)
+    ),
+    log,
+    providerId,
+    context
+  );
   for (const lineup of lineups) {
     await addResolvedTeam(identity, providerId, resolutions, lineup.team, log, context);
     for (const entry of [...lineup.startXI, ...lineup.substitutes]) {
-      await addResolvedPlayer(identity, providerId, resolutions, entry.player, log, context);
+      await addResolvedPlayer(
+        identity,
+        providerId,
+        resolutions,
+        entry.player,
+        log,
+        context,
+        players
+      );
     }
   }
   return resolutions;
@@ -1440,13 +1497,21 @@ const resolveSquadEntities = async (
   providerId: string,
   squads: readonly ApiFootballSquadResponse[],
   log: MatchConcludedBridgeLogger,
-  context: ResolutionLogContext
+  context: ResolutionLogContext,
+  playerBindings?: PlayerBindingResolver
 ): Promise<ApiFootballEntityResolutionMap> => {
   const resolutions = emptyResolutionMap();
+  const players = await playerSource(
+    playerBindings,
+    squads.flatMap((squad) => squad.players),
+    log,
+    providerId,
+    context
+  );
   for (const squad of squads) {
     await addResolvedTeam(identity, providerId, resolutions, squad.team, log, context);
     for (const player of squad.players) {
-      await addResolvedPlayer(identity, providerId, resolutions, player, log, context);
+      await addResolvedPlayer(identity, providerId, resolutions, player, log, context, players);
     }
   }
   return resolutions;
@@ -1471,13 +1536,29 @@ const resolvePlayerStatsEntities = async (
   providerId: string,
   players: readonly ApiFootballPlayersResponse[],
   log: MatchConcludedBridgeLogger,
-  context: ResolutionLogContext
+  context: ResolutionLogContext,
+  playerBindings?: PlayerBindingResolver
 ): Promise<ApiFootballEntityResolutionMap> => {
   const resolutions = emptyResolutionMap();
+  const source = await playerSource(
+    playerBindings,
+    players.flatMap((teamEntry) => teamEntry.players.map((playerEntry) => playerEntry.player)),
+    log,
+    providerId,
+    context
+  );
   for (const teamEntry of players) {
     await addResolvedTeam(identity, providerId, resolutions, teamEntry.team, log, context);
     for (const playerEntry of teamEntry.players) {
-      await addResolvedPlayer(identity, providerId, resolutions, playerEntry.player, log, context);
+      await addResolvedPlayer(
+        identity,
+        providerId,
+        resolutions,
+        playerEntry.player,
+        log,
+        context,
+        source
+      );
     }
   }
   return resolutions;
@@ -1507,15 +1588,64 @@ const addResolvedTeam = async (
   });
 };
 
+/**
+ * Where a page's players resolve from: game-service's bindings once its
+ * ingest is `on`, identity otherwise (see `player-bindings.ts`). Without a
+ * resolver (a caller that predates GW1) it is identity, as before.
+ */
+const playerSource = async (
+  playerBindings: PlayerBindingResolver | undefined,
+  players: readonly ({ readonly id: number } | null | undefined)[],
+  log: MatchConcludedBridgeLogger,
+  providerId: string,
+  context: ResolutionLogContext
+): Promise<PlayerSource> => {
+  if (!playerBindings) {
+    return IDENTITY_PLAYER_SOURCE;
+  }
+  const ids: string[] = [];
+  for (const player of players) {
+    if (player && Number.isFinite(player.id) && player.id !== 0) {
+      ids.push(String(player.id));
+    }
+  }
+  return playerBindings.forPlayers(ids, (entry) =>
+    log({
+      event: entry.event,
+      workload: context.workload,
+      resourceId: context.resourceId,
+      providerFixtureId: context.providerFixtureId,
+      providerStatus: context.providerStatus,
+      providerId,
+      reason: entry.reason,
+      message: entry.message,
+    })
+  );
+};
+
 const addResolvedPlayer = async (
   identity: FootballIdentityLookupClient,
   providerId: string,
   resolutions: MutableResolutionMap,
   player: { readonly id: number; readonly name: string } | null | undefined,
   log: MatchConcludedBridgeLogger,
-  context: ResolutionLogContext
+  context: ResolutionLogContext,
+  source: PlayerSource = IDENTITY_PLAYER_SOURCE
 ): Promise<void> => {
   if (!player) {
+    return;
+  }
+  if (source.kind === 'bindings') {
+    // game-service's answer; identity is not asked. An id bound to no player
+    // is left out, so the mapper sends the provider ref.
+    const providerPlayerId = String(player.id);
+    const bound = source.players.get(providerPlayerId);
+    if (bound && !resolutions.players[providerPlayerId]) {
+      resolutions.players[providerPlayerId] = {
+        entityId: bound.entityId,
+        label: bound.label || player.name,
+      };
+    }
     return;
   }
   await addResolvedEntity({

@@ -177,6 +177,26 @@ describe('decodePlayerSeasonStatsPage', () => {
     expect(row?.teamSnapshot?.imageUrl).toContain('/teams/207.png');
   });
 
+  it('keeps the provider age with the day it was fetched (GW1)', () => {
+    const row = rowFor('232');
+    expect(row?.playerSnapshot?.attributes.age).toBe('36');
+    expect(row?.playerSnapshot?.attributes.age_observed_at).toBe('2026-11-05');
+  });
+
+  it('stores no age when the provider sends none', () => {
+    const page = decode({
+      response: [
+        {
+          player: { id: 777001, name: 'No Age', age: null },
+          statistics: [{ team: { id: 207, name: 'Utrecht' }, league: { id: 88 }, games: {} }],
+        },
+      ],
+    });
+    expect(page.rows).toHaveLength(1);
+    expect(page.rows[0]?.playerSnapshot?.attributes.age).toBeUndefined();
+    expect(page.rows[0]?.playerSnapshot?.attributes.age_observed_at).toBeUndefined();
+  });
+
   it('never writes xG or xA (BTL computes them)', () => {
     const keys = PLAYER_SEASON_STAT_KEYS.map(([key]) => key);
     expect(keys).not.toContain('expected_goals_total');
