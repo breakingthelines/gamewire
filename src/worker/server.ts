@@ -147,6 +147,8 @@ if (config.redisUrl) {
     // Bun exposes a global `Bun.redis` connected to REDIS_URL (the cache
     // database). It carries the emit-once keys below. `Bun.RedisClient`
     // opens a further connection; it selects the database from the URL path.
+    // `Bun.redis` is one shared connection: never give it a blocking reader
+    // (see the rule at `sharedRedis` below).
     const bunGlobal = (
       globalThis as {
         Bun?: {
@@ -365,6 +367,15 @@ const onFixtureFetched: OnFixtureFetchedCallback | undefined = composeFixtureBri
 // enrichment limiter, and the season-backfill cursor must survive a restart:
 // in process memory each deploy dropped every cursor and the next wave run
 // walked its seasons again from fixture 0.
+//
+// Rule: `Bun.redis` is ONE connection, shared by the limiters, the workflow
+// cursors and the emit-once keys. Redis answers a connection's commands in
+// order, so a blocking command on it (XREADGROUP/XREAD with BLOCK, BLPOP,
+// BRPOP, BLMOVE, BZPOP*, WAIT, SUBSCRIBE) stalls every other command behind
+// it. A 5 s XREADGROUP BLOCK consumer here made each limiter step wait 5 s,
+// and a provider-enrichment page took 50 s instead of 0.3 s (2026-11-13 to
+// 2026-11-17). A blocking reader gets its own `new Bun.RedisClient(url)`.
+// no-direct-stream-commands.test.ts enforces this.
 const sharedRedis: RedisCommandSender | undefined = config.redisUrl
   ? (globalThis as { Bun?: { redis?: RedisCommandSender } }).Bun?.redis
   : undefined;

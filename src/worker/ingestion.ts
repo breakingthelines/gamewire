@@ -307,6 +307,11 @@ export interface IngestionFetchResult<TResponse = unknown> {
   readonly throttled?: boolean;
   /** `data` is the last-good payload served because the live call was throttled. */
   readonly stale?: boolean;
+  /**
+   * Milliseconds this call spent in the provider minute limiter, waits
+   * included. Unset on a cache hit or for a caller that joined a merged fetch.
+   */
+  readonly limiterMs?: number;
 }
 
 /**
@@ -544,7 +549,10 @@ export class ApiFootballIngestionLoop {
     // wait and its throttled or denied result. Callers of different classes
     // fetch separately; the cache re-check below still collapses a call that
     // starts after another class has already landed the payload.
-    return this.#singleflight.do(this.mergeKeyFor(priority, cacheKey), async () => {
+    // Time this call spent in the provider minute limiter, waits included.
+    // Only the caller that ran the merged fetch sets it.
+    let limiterMs: number | undefined;
+    const result = await this.#singleflight.do(this.mergeKeyFor(priority, cacheKey), async () => {
       // Re-check cache inside singleflight in case the leader populated it
       // while we waited for the lock; this prevents double provider calls
       // immediately after a slow first request settles.
@@ -568,7 +576,9 @@ export class ApiFootballIngestionLoop {
 
       // Per-minute limiter first: a call that may not leave this minute must
       // not spend daily quota.
+      const limiterStartedAt = performance.now();
       const minute = await this.#acquireMinute(priority, workload, cacheKey);
+      limiterMs = Math.round(performance.now() - limiterStartedAt);
       if (!minute.allowed) {
         return this.#throttled<TResponse>(options, cacheKey, minute);
       }
@@ -738,6 +748,7 @@ export class ApiFootballIngestionLoop {
         fallbackReason: reservation.snapshot.cachedOnlyMode ? 'PROVIDER_OUTAGE' : undefined,
       } satisfies IngestionFetchResult<TResponse>;
     });
+    return limiterMs === undefined ? result : { ...result, limiterMs };
   }
 
   /**

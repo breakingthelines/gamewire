@@ -312,6 +312,15 @@ export interface WorkflowLogEntry {
   /** provider-enrichment: rows written by the logged step. */
   readonly rowsIngested?: number;
   /**
+   * provider-enrichment page: milliseconds in the enrichment and provider
+   * minute limiters (and any rate-limit wait), the provider call, the
+   * game-service ingest, and the cursor write.
+   */
+  readonly limiterMs?: number;
+  readonly fetchMs?: number;
+  readonly ingestMs?: number;
+  readonly cursorMs?: number;
+  /**
    * sweep-missing-payloads: fixtures whose provider call succeeded but whose
    * envelope decoded to zero usable rows for the swept kind. See
    * `SweepMissingPayloadsOutput.fixturesEmpty`.

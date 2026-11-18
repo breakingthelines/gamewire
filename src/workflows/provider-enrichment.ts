@@ -478,12 +478,17 @@ export const providerEnrichmentWorkflow = async (
         }
 
         const page = cursor.nextPage;
+        const timings = { limiterMs: 0, fetchMs: 0, ingestMs: 0, cursorMs: 0 };
         let result: IngestionFetchResult | undefined;
         for (let attempt = 1; attempt <= RATE_LIMITED_ATTEMPTS; attempt += 1) {
-          if (!(await acquireJobToken())) {
+          const limiterStartedAt = performance.now();
+          const admitted = await acquireJobToken();
+          timings.limiterMs += elapsedMs(limiterStartedAt);
+          if (!admitted) {
             stop = { status: 'incomplete', reason: 'enrichment minute limiter stayed full' };
             break pages;
           }
+          const fetchStartedAt = performance.now();
           result = await deps.ingestion.fetchWorkload({
             workload: 'player-season-stats',
             resourceId: `players-${target.leagueId}-${target.season}-${page}`,
@@ -491,6 +496,11 @@ export const providerEnrichmentWorkflow = async (
             priority: WORKFLOW_PROVIDER_PRIORITY,
             cache: 'bypass',
           });
+          // The provider minute limiter runs inside fetchWorkload; count its
+          // wait as limiter time, the rest as the provider fetch.
+          const providerLimiterMs = result.limiterMs ?? 0;
+          timings.limiterMs += providerLimiterMs;
+          timings.fetchMs += Math.max(0, elapsedMs(fetchStartedAt) - providerLimiterMs);
           if (result.fetch !== undefined && result.status !== 'skipped') {
             callsUsed += 1;
           }
@@ -514,7 +524,9 @@ export const providerEnrichmentWorkflow = async (
             // reply did not, so wait for the provider's next minute before the
             // retry rather than spend another call it will refuse.
             const nowMsLocal = clock().getTime();
+            const waitStartedAt = performance.now();
             await sleep(60_000 - (nowMsLocal % 60_000) + PROVIDER_RATE_LIMIT_MARGIN_MS);
+            timings.limiterMs += elapsedMs(waitStartedAt);
           }
         }
         if (!result) {
@@ -607,6 +619,7 @@ export const providerEnrichmentWorkflow = async (
           break;
         }
 
+        const ingestStartedAt = performance.now();
         try {
           rowsIngested += await ingestRows(ingest, decoded.rows, {
             leagueId: target.leagueId,
@@ -614,6 +627,7 @@ export const providerEnrichmentWorkflow = async (
             page,
             fetchedAtMs,
           });
+          timings.ingestMs = elapsedMs(ingestStartedAt);
         } catch (error) {
           const message = `page ${page}: ingest failed: ${error instanceof Error ? error.message : String(error)}`;
           errors.push(message);
@@ -640,7 +654,9 @@ export const providerEnrichmentWorkflow = async (
           cursor = { ...cursor, completedAtMs: clock().getTime() };
           targetStatus = 'complete';
         }
+        const cursorStartedAt = performance.now();
         await writeCursor(target, cursor);
+        timings.cursorMs = elapsedMs(cursorStartedAt);
         log({
           event: 'provider_enrichment.page',
           leagueId: target.leagueId,
@@ -648,6 +664,7 @@ export const providerEnrichmentWorkflow = async (
           status: `page ${page}/${totalPages}`,
           callsUsed,
           rowsIngested: decoded.rows.length,
+          ...timings,
         });
         if (targetStatus === 'complete') {
           break;
@@ -1149,6 +1166,9 @@ const defaultSleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, ms);
   });
+
+/** Whole milliseconds since `startedAt`, a `performance.now()` reading. */
+const elapsedMs = (startedAt: number): number => Math.round(performance.now() - startedAt);
 
 /**
  * The GW-7/GW-8 pre-match datasets the worker runs after each discovery sweep

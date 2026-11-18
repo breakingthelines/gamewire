@@ -11,9 +11,13 @@ import {
 } from './ingestion.js';
 import {
   InMemoryMinuteCounterStore,
+  MINUTE_ACQUIRE_SCRIPT,
   ProviderMinuteLimiter,
+  RedisMinuteCounterStore,
+  createRedisMinuteCounterClient,
   type ProviderMinuteCaps,
 } from './minute-limiter.js';
+import { createProviderBudget } from './provider-budget.js';
 import type { ProviderFetch } from './provider-http.js';
 import { ProviderQuotaTracker } from './quota.js';
 
@@ -840,5 +844,85 @@ describe('background held by the one-second bucket', () => {
     });
     expect(result.status).toBe('fetched');
     expect(h.sleep).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('shared provider limiter on Redis', () => {
+  // The wiring server.ts uses: createProviderBudget over a Redis minute store
+  // on the shared connection. Each provider call must cost one Redis command,
+  // because every command on that connection queues behind the others.
+  const wired = () => {
+    const clock = makeClock(T0 + 20_000);
+    const sent: string[][] = [];
+    const minuteStore = new RedisMinuteCounterStore(
+      createRedisMinuteCounterClient({
+        send: async (command, args) => {
+          sent.push([command, ...args]);
+          return [0, 0, sent.length, 1];
+        },
+      })
+    );
+    const { quota, minuteLimiter } = createProviderBudget(config, {
+      minuteStore,
+      minuteClock: clock.now,
+      clock: () => new Date(clock.now()),
+    });
+    const loop = new ApiFootballIngestionLoop({
+      config,
+      cache: new InMemoryProviderCache({ clock: clock.now }),
+      quota,
+      minuteLimiter,
+      fetchFn: fetchMock(),
+      clock: clock.now,
+      sleep: async () => undefined,
+      logger: quiet,
+    });
+    return { loop, sent, minuteLimiter };
+  };
+
+  it('takes each background token in one EVAL on the shared minute and second buckets', async () => {
+    const { loop, sent, minuteLimiter } = wired();
+    for (const id of ['1', '2', '3']) {
+      const result = await loop.fetchWorkload({
+        workload: 'fixture-detail-live',
+        resourceId: id,
+        priority: 'background',
+        cache: 'bypass',
+      });
+      expect(result.status).toBe('fetched');
+      expect(result.limiterMs).toEqual(expect.any(Number));
+      expect(result.limiterMs).toBeGreaterThanOrEqual(0);
+    }
+    expect(sent.map((args) => args[0])).toEqual(['EVAL', 'EVAL', 'EVAL']);
+    const minute = Math.floor((T0 + 20_000) / MINUTE);
+    for (const args of sent) {
+      expect(args[1]).toBe(MINUTE_ACQUIRE_SCRIPT);
+      expect(args.slice(2, 6)).toEqual([
+        '3',
+        minuteLimiter.keyFor(minute - 1),
+        minuteLimiter.keyFor(minute),
+        minuteLimiter.secondKeyFor(Math.floor((T0 + 20_000) / 1_000)),
+      ]);
+      // Background is held by the second cap; the ceiling is the background one.
+      expect(args.at(-1)).toBe('1');
+      expect(args[7]).toBe(String(minuteLimiter.caps.background));
+    }
+  });
+
+  it('a cache hit skips the limiter and reports no limiter time', async () => {
+    const { loop, sent } = wired();
+    await loop.fetchWorkload({
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      priority: 'live',
+    });
+    const hit = await loop.fetchWorkload({
+      workload: 'fixture-detail-live',
+      resourceId: '1',
+      priority: 'live',
+    });
+    expect(hit.status).toBe('cached');
+    expect(hit.limiterMs).toBeUndefined();
+    expect(sent).toHaveLength(1);
   });
 });
