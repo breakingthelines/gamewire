@@ -4,6 +4,7 @@ import {
   DEFAULT_PROVIDER_MINUTE_CAPS,
   InMemoryMinuteCounterStore,
   MINUTE_ACQUIRE_SCRIPT,
+  MINUTE_REFUND_SCRIPT,
   ProviderMinuteLimiter,
   RedisMinuteCounterStore,
   acquireWithCounters,
@@ -338,15 +339,32 @@ describe('ProviderMinuteLimiter one-second smoothing', () => {
     expect(await store.read(limiter.keyFor(Math.floor(clock.now() / MINUTE)))).toBe(8);
   });
 
-  it('never holds live or near-live, and background yields to them', async () => {
+  it('never holds live; near-live yields to live and background to both', async () => {
     const clock = makeClock(T0 + 5_000);
     const limiter = smoothed(clock);
-    expect(await fill(limiter, 'live', 12)).toBe(12);
-    expect(await fill(limiter, 'near-live', 5)).toBe(5);
+    expect(await fill(limiter, 'live', 6)).toBe(6);
+    // Near-live stops at 11 in the second, live included.
+    expect(await fill(limiter, 'near-live', 10)).toBe(5);
     expect(await limiter.tryAcquire('background')).toMatchObject({
       allowed: false,
       reason: 'second_cap',
     });
+    expect(await fill(limiter, 'live', 10)).toBe(10);
+  });
+
+  it('holds a near-live burst to ceil(near-live / 60) a second and admits it again next second', async () => {
+    const clock = makeClock(T0 + 20_400);
+    const limiter = smoothed(clock);
+    expect(limiter.nearLiveSecondCap).toBe(11);
+    // The boot discovery sweep: ~38 near-live calls in the same instant.
+    expect(await fill(limiter, 'near-live', 38)).toBe(11);
+    expect(await limiter.tryAcquire('near-live')).toMatchObject({
+      allowed: false,
+      reason: 'second_cap',
+      retryAfterMs: 600,
+    });
+    clock.set(T0 + 21_000);
+    expect(await fill(limiter, 'near-live', 38)).toBe(11);
   });
 
   it('release returns the second token too', async () => {
@@ -422,8 +440,16 @@ const evalSender = () => {
         throw new Error(`unexpected ${command}`);
       }
       const [script, numKeys, ...rest] = args;
-      expect(script).toBe(MINUTE_ACQUIRE_SCRIPT);
       const keys = rest.slice(0, Number(numKeys));
+      if (script === MINUTE_REFUND_SCRIPT) {
+        for (const key of keys) {
+          if ((values.get(key) ?? 0) > 0) {
+            values.set(key, values.get(key)! - 1);
+          }
+        }
+        return 0;
+      }
+      expect(script).toBe(MINUTE_ACQUIRE_SCRIPT);
       const [elapsed, ceiling, minuteTtl, secondCap, secondTtl, enforce] = rest.slice(
         Number(numKeys)
       );
@@ -710,5 +736,77 @@ describe('ProviderMinuteLimiter cap edges and rollover (EVAL store)', () => {
         await inMemory.release(b);
       }
     }
+  });
+});
+
+describe('ProviderMinuteLimiter release never leaks a bucket', () => {
+  it('refunds both buckets in one EVAL that only decrements keys still counting', async () => {
+    const clock = makeClock(T0 + 3_000);
+    const { limiter, sent, values } = evalLimiter(clock.now, { smooth: true });
+    const token = await limiter.tryAcquire('background');
+    sent.length = 0;
+    await limiter.release(token);
+    expect(sent).toEqual(['EVAL']);
+    expect(values.get(limiter.keyFor(Math.floor(T0 / MINUTE)))).toBe(0);
+    expect(values.get(limiter.secondKeyFor(token.epochSecond!))).toBe(0);
+  });
+
+  it('a late release after the second bucket expired does not recreate it', async () => {
+    const clock = makeClock(T0 + 3_000);
+    const { limiter, values } = evalLimiter(clock.now, { smooth: true });
+    const token = await limiter.tryAcquire('background');
+    const secondKey = limiter.secondKeyFor(token.epochSecond!);
+    // The provider call outlived the 5 s TTL: Redis dropped the key.
+    values.delete(secondKey);
+    await limiter.release(token);
+    expect(values.has(secondKey)).toBe(false);
+    expect(values.get(limiter.keyFor(Math.floor(T0 / MINUTE)))).toBe(0);
+  });
+
+  it('the refund script decrements only positive counts and never sets a key', () => {
+    expect(MINUTE_REFUND_SCRIPT).toContain("redis.call('DECR', key)");
+    expect(MINUTE_REFUND_SCRIPT).toContain('if value > 0 then');
+    expect(MINUTE_REFUND_SCRIPT).not.toMatch(/INCRBY|SET|EXPIRE/);
+  });
+
+  it('without EVAL, a late release still leaves an expired bucket alone', async () => {
+    const values = new Map<string, number>();
+    const client: RedisMinuteCounterClient = {
+      get: async (key) => (values.has(key) ? String(values.get(key)) : null),
+      incrBy: async (key, by) => {
+        const next = (values.get(key) ?? 0) + by;
+        values.set(key, next);
+        return next;
+      },
+      expire: async () => 1,
+    };
+    const clock = makeClock(T0 + 3_000);
+    const limiter = new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      store: new RedisMinuteCounterStore(client),
+      clock: clock.now,
+      smoothBackground: true,
+    });
+    const token = await limiter.tryAcquire('background');
+    const secondKey = limiter.secondKeyFor(token.epochSecond!);
+    values.delete(secondKey);
+    await limiter.release(token);
+    expect(values.has(secondKey)).toBe(false);
+  });
+
+  it('in memory, release after expiry is a no-op', async () => {
+    const clock = makeClock(T0 + 3_000);
+    const store = new InMemoryMinuteCounterStore({ clock: clock.now });
+    const limiter = new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      store,
+      clock: clock.now,
+      smoothBackground: true,
+    });
+    const token = await limiter.tryAcquire('background');
+    clock.set(T0 + 3_000 + 6_000);
+    await limiter.release(token);
+    expect(await store.read(limiter.secondKeyFor(token.epochSecond!))).toBe(0);
+    expect(await store.read(limiter.keyFor(Math.floor(T0 / MINUTE)))).toBe(0);
   });
 });

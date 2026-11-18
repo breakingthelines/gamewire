@@ -1120,29 +1120,33 @@ export class ApiFootballIngestionLoop {
       // `fixtures-next-7d` branch, which upserts a canonical SCHEDULED game +
       // the provider_game_mappings crosswalk per fixture (idempotent on
       // `(provider, provider_game_id)`). Per-league resourceIds keep cache
-      // keys + crosswalk scopes clean. `allSettled` isolates one league's
-      // failure (quota/provider error) from the rest of the sweep. The fixture
-      // list includes LIVE games (`isDiscoverableFixture`), so this also
-      // re-adopts in-play matches after a restart.
+      // keys + crosswalk scopes clean. One league's failure (quota/provider
+      // error) never stops the rest of the sweep. The fixture list includes
+      // LIVE games (`isDiscoverableFixture`), so this also re-adopts in-play
+      // matches after a restart.
+      //
+      // Bounded fan-out: the sweep used to fire every league at once through
+      // `Promise.allSettled` (about 38 calls in the same millisecond at boot),
+      // and the provider refused 18 of them as "too many requests". At most
+      // MAX_PROVIDER_FANOUT run at once, and near-live is also held by the
+      // limiter's one-second bucket.
       const paths = apiFootballFixtureSyncPaths();
-      await Promise.allSettled(
-        LIVE_INGESTION_COMPETITIONS.map(async (competition, index) => {
-          const path = paths[index];
-          if (path === undefined) {
-            return;
-          }
-          const result = await this.fetchWorkload({
-            workload: 'fixtures-next-7d',
-            resourceId: apiFootballCompetitionKey(competition),
-            path,
-            priority: LOOP_WORKLOAD_PRIORITY['fixtures-next-7d'],
-          });
-          upsertFixtures(
-            fixtureLifecycleFromFixtureList(result.data, this.#clock()),
-            'fixtures-next-7d'
-          );
-        })
-      );
+      const sweep = LIVE_INGESTION_COMPETITIONS.flatMap((competition, index) => {
+        const path = paths[index];
+        return path === undefined ? [] : [{ competition, path }];
+      });
+      await mapWithConcurrency(sweep, MAX_PROVIDER_FANOUT, async ({ competition, path }) => {
+        const result = await this.fetchWorkload({
+          workload: 'fixtures-next-7d',
+          resourceId: apiFootballCompetitionKey(competition),
+          path,
+          priority: LOOP_WORKLOAD_PRIORITY['fixtures-next-7d'],
+        });
+        upsertFixtures(
+          fixtureLifecycleFromFixtureList(result.data, this.#clock()),
+          'fixtures-next-7d'
+        );
+      });
       // Drop settled fixtures so the in-memory set stays bounded over long
       // uptimes instead of growing forever.
       pruneSettledFixtures();
@@ -1302,16 +1306,14 @@ export class ApiFootballIngestionLoop {
     const teamIds = options.teamIds ?? [];
     if (teamIds.length > 0) {
       enqueueTick('team-metadata', async () => {
-        await Promise.allSettled(
-          teamIds.map((id) =>
-            this.fetchWorkload({
-              workload: 'team-metadata',
-              resourceId: id,
-              path: `/teams?id=${encodeURIComponent(id)}`,
-              priority: LOOP_WORKLOAD_PRIORITY['team-metadata'],
-            })
-          )
-        );
+        await mapWithConcurrency(teamIds, MAX_PROVIDER_FANOUT, async (id) => {
+          await this.fetchWorkload({
+            workload: 'team-metadata',
+            resourceId: id,
+            path: `/teams?id=${encodeURIComponent(id)}`,
+            priority: LOOP_WORKLOAD_PRIORITY['team-metadata'],
+          });
+        });
       });
     }
 
@@ -1479,10 +1481,13 @@ const KICKOFF_GRACE_MS = 5 * 60 * 1_000; // adopt into the live set 5m before KO
 const MAX_LIVE_WINDOW_MS = 3.5 * 60 * 60 * 1_000; // stop live-polling an un-flipped fixture 3.5h after KO (covers ET+pens; bounds no-shows)
 const POST_FINAL_WINDOW_MS = 25 * 60 * 1_000; // keep polling final/lineups for 25m after FT, then settle
 
-// Max simultaneous in-flight provider fetches per workload tick. Caps the
-// instantaneous burst so a busy slot (many concurrent kickoffs) spreads its
-// calls instead of firing them all at once and tripping the per-minute limit.
-const MAX_PROVIDER_FANOUT = 6;
+// Max simultaneous in-flight provider fetches per workload tick (fixture
+// ticks, the discovery sweep, team metadata). Caps the instantaneous burst so
+// a busy slot spreads its calls instead of firing them all at once: the
+// provider refuses about 20 calls inside one second as "too many requests".
+// A fixture tick's per-fixture sidecars (two stats calls, two squad lists) run
+// inside one slot, so at most 12 are in flight.
+export const MAX_PROVIDER_FANOUT = 6;
 
 type FixturePhase = 'live' | 'preKO' | 'postFinal' | 'upcoming' | 'settled';
 

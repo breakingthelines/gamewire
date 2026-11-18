@@ -2,10 +2,12 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { InMemoryProviderCache, type ProviderCache } from './cache.js';
 import type { GamewireWorkerConfig } from './config.js';
+import { LIVE_INGESTION_COMPETITIONS } from '../workflows/competitions.js';
 import {
   ApiFootballIngestionLoop,
   LAST_GOOD_TTL_SECONDS,
   LOOP_WORKLOAD_PRIORITY,
+  MAX_PROVIDER_FANOUT,
   defaultTickDeadlineMs,
   type IngestionFetchOptions,
 } from './ingestion.js';
@@ -924,5 +926,137 @@ describe('shared provider limiter on Redis', () => {
     expect(hit.status).toBe('cached');
     expect(hit.limiterMs).toBeUndefined();
     expect(sent).toHaveLength(1);
+  });
+});
+
+describe('discovery sweep fan-out', () => {
+  // At boot the sweep used to fire every league at once (about 38 calls in one
+  // millisecond) and the provider refused 18 of them as "too many requests".
+  const leagueOf = (url: string) => new URL(url).searchParams.get('league') ?? '';
+
+  const sweepHarness = (input: { failLeague?: string; smoothBackground?: boolean } = {}) => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const leagues: string[] = [];
+    const startedAt: number[] = [];
+    const clock = makeClock(T0 + 30_000);
+    const fetchFn = vi.fn(async (input: string | URL) => {
+      const league = leagueOf(String(input));
+      leagues.push(league);
+      startedAt.push(clock.now());
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      try {
+        // Hold the call open across a few turns so overlapping calls overlap.
+        for (let i = 0; i < 3; i += 1) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+        if (league === input_.failLeague) {
+          throw new Error('socket hang up');
+        }
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (name: string) =>
+              name.toLowerCase() === 'content-type' ? 'application/json' : null,
+          },
+          json: async () => ({
+            response: [{ fixture: { id: Number(league) * 1_000 + 1, status: { short: '1H' } } }],
+          }),
+        };
+      } finally {
+        inFlight -= 1;
+      }
+    }) as unknown as ReturnType<typeof fetchMock>;
+    const input_ = input;
+    const store = new InMemoryMinuteCounterStore({ clock: clock.now });
+    const limiter = new ProviderMinuteLimiter({
+      providerId: 'api-football',
+      caps: { live: 800, 'near-live': 650, background: 450 },
+      store,
+      clock: clock.now,
+      smoothBackground: input.smoothBackground,
+    });
+    const logs: Record<string, unknown>[] = [];
+    const sleeps: number[] = [];
+    const loop = new ApiFootballIngestionLoop({
+      config,
+      cache: new InMemoryProviderCache({ clock: clock.now }),
+      quota: new ProviderQuotaTracker({
+        provider: 'api-football',
+        hardCap: 1_000,
+        softCap: 900,
+        clock: () => new Date(clock.now()),
+      }),
+      minuteLimiter: limiter,
+      fetchFn,
+      clock: clock.now,
+      sleep: async (ms: number) => {
+        sleeps.push(ms);
+        clock.advance(ms);
+      },
+      logger: (entry) => logs.push(entry),
+    });
+    const runBootSweep = async () => {
+      const stop = loop.start({
+        runImmediately: false,
+        intervals: { 'fixtures-next-7d': 3_600_000 },
+        schedule: () => 'h',
+        cancel: () => undefined,
+      });
+      for (let i = 0; i < 2_000 && leagues.length < LIVE_INGESTION_COMPETITIONS.length; i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      for (let i = 0; i < 50; i += 1) {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      stop();
+    };
+    return {
+      runBootSweep,
+      leagues,
+      startedAt,
+      logs,
+      sleeps,
+      maxInFlight: () => maxInFlight,
+      inFlight: () => inFlight,
+    };
+  };
+
+  it('keeps at most MAX_PROVIDER_FANOUT calls in flight and still fetches every league', async () => {
+    expect(LIVE_INGESTION_COMPETITIONS.length).toBeGreaterThan(MAX_PROVIDER_FANOUT * 2);
+    const h = sweepHarness();
+    await h.runBootSweep();
+    expect(h.maxInFlight()).toBe(MAX_PROVIDER_FANOUT);
+    expect(h.inFlight()).toBe(0);
+    expect([...h.leagues].sort()).toEqual(
+      LIVE_INGESTION_COMPETITIONS.map((c) => String(c.apiFootballLeagueId)).sort()
+    );
+  });
+
+  it('one league failing does not stop the rest, which are still discovered', async () => {
+    const failLeague = String(LIVE_INGESTION_COMPETITIONS[2]!.apiFootballLeagueId);
+    const h = sweepHarness({ failLeague });
+    await h.runBootSweep();
+    expect(h.leagues).toHaveLength(LIVE_INGESTION_COMPETITIONS.length);
+    const discovered = h.logs.filter((l) => l.event === 'ingestion_fixture_ids_discovered');
+    const total = Math.max(...discovered.map((l) => Number(l.total)));
+    expect(total).toBe(LIVE_INGESTION_COMPETITIONS.length - 1);
+  });
+
+  it('with smoothing on, no second carries more than the near-live second cap', async () => {
+    const h = sweepHarness({ smoothBackground: true });
+    await h.runBootSweep();
+    expect(h.leagues).toHaveLength(LIVE_INGESTION_COMPETITIONS.length);
+    const perSecond = new Map<number, number>();
+    for (const at of h.startedAt) {
+      const second = Math.floor(at / 1_000);
+      perSecond.set(second, (perSecond.get(second) ?? 0) + 1);
+    }
+    // ceil(650 / 60) = 11, well under the ~20 the provider refuses.
+    expect(Math.max(...perSecond.values())).toBeLessThanOrEqual(11);
+    expect(perSecond.size).toBeGreaterThan(1);
+    expect(h.logs.some((l) => l.event === 'provider_rate_limited')).toBe(false);
   });
 });
