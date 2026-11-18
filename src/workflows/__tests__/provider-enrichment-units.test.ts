@@ -860,6 +860,31 @@ describe('player-sidelined', () => {
     expect(h.urls).toHaveLength(0);
   });
 
+  it('keeps markers and the injury digest in the state store, so a new process resumes', async () => {
+    const stateStore = new InMemoryProviderCache();
+    const respond = (req: RequestInfo, now: number) =>
+      req.path === '/injuries'
+        ? injuriesEnvelope(88, 2026, ids(100, 25), now - 5 * DAY)
+        : undefined;
+    const before = harness({ respond, stateStore });
+    await before.run('injuries-league', { leagueIds: [88] });
+    const partial = await before.run('player-sidelined', { limit: 1 });
+    expect(partial.status).toBe('incomplete');
+    expect(before.cacheSet).not.toHaveBeenCalled();
+    expect(await stateStore.get(injuryDigestKey(88, 2026))).toBeDefined();
+    expect(
+      await stateStore.get(unitMarkerKey('injuries-league', 'league-88-season-2026'))
+    ).toBeDefined();
+
+    // A fresh harness is a fresh process: empty ingestion cache, same Redis.
+    const after = harness({ respond, stateStore });
+    const injuries = await after.run('injuries-league', { leagueIds: [88] });
+    expect(injuries.targets[0]?.status).toBe('fresh');
+    const rest = await after.run('player-sidelined');
+    expect(rest.status).toBe('completed');
+    expect(after.paths()).toEqual([`/sidelined?players=${ids(120, 5).join('-')}`]);
+  });
+
   it('skips when nothing is in scope', async () => {
     const h = harness();
     const out = await h.run('player-sidelined');
