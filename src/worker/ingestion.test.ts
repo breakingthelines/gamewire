@@ -162,6 +162,37 @@ describe('ApiFootballIngestionLoop.fetchWorkload', () => {
     expect(onFixtureFetched).not.toHaveBeenCalled();
   });
 
+  it('tells onFixtureFetched whether the payload came from the cache', async () => {
+    // The events bridge marks a /fixtures/events list complete only when it
+    // was fetched fresh; a 6h cache hit can be a stale partial list.
+    const fetchFn = buildFetchMock({ response: [] });
+    const onFixtureFetched = vi.fn();
+    const loop = new ApiFootballIngestionLoop({
+      config: baseConfig,
+      fetchFn,
+      logger: quietLogger,
+      onFixtureFetched,
+    });
+
+    await loop.fetchWorkload({
+      priority: 'near-live',
+      workload: 'events-post-final',
+      resourceId: '77',
+    });
+    await loop.fetchWorkload({
+      priority: 'near-live',
+      workload: 'events-post-final',
+      resourceId: '77',
+    });
+
+    expect(onFixtureFetched).toHaveBeenCalledTimes(2);
+    expect(onFixtureFetched.mock.calls[0]?.[0]).toMatchObject({
+      resourceId: '77',
+      cacheHit: false,
+    });
+    expect(onFixtureFetched.mock.calls[1]?.[0]).toMatchObject({ resourceId: '77', cacheHit: true });
+  });
+
   it("never notifies onFixtureFetched for the 'competition-standings' workload", async () => {
     // season-backfill and daily-anchor ingest standings themselves; the
     // history mode relies on its two workloads (this one and

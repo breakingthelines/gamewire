@@ -75,6 +75,12 @@ describe('StatsBomb Open adapter', () => {
       expect(firstEvent.kind).toBeDefined();
       expect(firstEvent.payload.case).toBe('action');
     });
+
+    it('never asks game-service to retract absent occurrences', () => {
+      // The backfill can send a filtered or partial event set, so it is not a
+      // complete snapshot.
+      expect(fromStatsBombOpen(events, { gameId }).completeSnapshot).toBe(false);
+    });
   });
 
   describe('coordinate normalisation', () => {

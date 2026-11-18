@@ -85,6 +85,8 @@ export type OnFixtureFetched = (input: {
   readonly workload: IngestionWorkload;
   readonly resourceId: string;
   readonly data: unknown;
+  /** `data` came from the ingestion cache; see `OnFixtureFetchedCallback`. */
+  readonly cacheHit?: boolean;
 }) => Promise<void> | void;
 
 export interface MatchConcludedBridgeLogEntry {
@@ -191,7 +193,7 @@ export const createMatchConcludedBridge = (
   const providerId = options.providerId;
   const gameLookupRetryDelaysMs = options.gameLookupRetryDelaysMs ?? GAME_LOOKUP_RETRY_DELAYS_MS;
 
-  return async ({ workload, resourceId, data }) => {
+  return async ({ workload, resourceId, data, cacheHit }) => {
     if (FIXTURE_LIST_WORKLOADS.has(workload)) {
       await ingestFixtureList({
         workload,
@@ -212,6 +214,7 @@ export const createMatchConcludedBridge = (
         workload,
         resourceId,
         data,
+        cacheHit: cacheHit === true,
         providerId,
         gameService,
         identity,
@@ -440,6 +443,7 @@ interface ProviderResourceBridgeInput {
   readonly workload: IngestionWorkload;
   readonly resourceId: string;
   readonly data: unknown;
+  readonly cacheHit?: boolean;
   readonly providerId: string;
   readonly gameService: FootballGameBridgeClient;
   readonly identity: FootballIdentityLookupClient;
@@ -718,6 +722,13 @@ const ingestEvents = async (input: ProviderResourceBridgeInput): Promise<void> =
     // arrive with their `extra` stoppage split (90+8') so the minute heuristic
     // resolves the period correctly without a clamp. Omitting status leaves the
     // period to that heuristic, which is right for finished fixtures.
+    //
+    // Complete only when fetched fresh. `events-post-final` caches for 6h and
+    // daily-anchor can fetch it for a match still in play, so a cache hit can
+    // be a stale partial list; sent as complete, two such reads in a row
+    // would retract events that happened after the cached fetch. A cached
+    // list still upserts what it holds.
+    completeSnapshot: input.cacheHit !== true,
   });
   if (request.occurrences.length === 0) {
     input.log({

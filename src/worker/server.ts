@@ -37,6 +37,7 @@ import {
   type BunRedisStreamPublisher,
 } from './match-concluded-publisher.js';
 import { RedisEmittedFixtureStore } from './redis-emitted-fixture-store.js';
+import { describeEventsRedis, SOURCE_SERVICE_URL } from '@breakingthelines/protos/sdk/eventbus';
 import {
   STEADY_STATE_COMPETITIONS,
   collectVerifiedFixtureIds,
@@ -161,28 +162,30 @@ if (config.redisUrl) {
           'match-concluded publisher NOT started'
       );
     } else {
-      // The fact bus lives on GAMEWIRE_EVENTS_REDIS_DB when it is set: the
-      // database every BTL service's streams share (0 in prod), where
-      // game-service's settle consumer reads. Unset, the stream stays on the
-      // cache database.
-      let streamRedis: BunRedisStreamPublisher = bunRedis;
-      if (config.eventsRedisUrl) {
-        if (!bunGlobal?.RedisClient) {
-          throw new Error('GAMEWIRE_EVENTS_REDIS_DB set but Bun.RedisClient is unavailable');
-        }
-        const eventsRedis = new bunGlobal.RedisClient(config.eventsRedisUrl);
-        streamRedis = eventsRedis;
-        closeEventsRedis = () => eventsRedis.close();
+      // The fact bus lives on the shared events database (BTL_EVENTS_REDIS_DB,
+      // 0 in prod), where game-service's settle consumer reads. It always gets
+      // its own connection; the cache database stays on Bun.redis.
+      const eventsRedisConfig = config.eventsRedis;
+      if (!eventsRedisConfig) {
+        throw new Error('events redis unresolved although GAMEWIRE_REDIS_URL is set');
       }
-      const streamDb = config.eventsRedisUrl
-        ? new URL(config.eventsRedisUrl).pathname.slice(1)
-        : 'cache';
+      if (!bunGlobal?.RedisClient) {
+        throw new Error('Bun.RedisClient is unavailable for the events bus');
+      }
+      const busLine = `[gamewire-worker] ${describeEventsRedis(eventsRedisConfig)}`;
+      if (eventsRedisConfig.source === SOURCE_SERVICE_URL) {
+        console.warn(busLine);
+      } else {
+        console.log(busLine);
+      }
+      const eventsRedis = new bunGlobal.RedisClient(eventsRedisConfig.url);
+      closeEventsRedis = () => eventsRedis.close();
 
-      // One `XADD btl:facts:game.match.concluded MAXLEN ~ 10000 * data ...
-      // event_id ... fact_type ...` per terminal fixture. The bridge below
-      // pipes fixture-detail ingestion results into `observe()` so terminal
-      // fixtures emit one fact each; event and lineup payloads use the same
-      // bridge to call game-service ingest RPCs.
+      // One fact per terminal fixture on btl:facts:game.match.concluded
+      // (MAXLEN ~ 10000), written by the protos SDK's publishFact. The bridge
+      // below pipes fixture-detail ingestion results into `observe()` so
+      // terminal fixtures emit one fact each; event and lineup payloads use
+      // the same bridge to call game-service ingest RPCs.
       //
       // The emit-once gate is backed by Redis (`SET NX EX 30d` under
       // `btl:fact:emitted:`) so a worker restart between two terminal
@@ -192,12 +195,12 @@ if (config.redisUrl) {
       // re-emits the last 30 days of concluded fixtures.
       const emittedStore = new RedisEmittedFixtureStore({ client: bunRedis });
       matchConcludedPublisher = new MatchConcludedPublisher({
-        stream: createBunMatchConcludedStreamClient(streamRedis),
+        stream: createBunMatchConcludedStreamClient(eventsRedis),
         emitted: emittedStore,
       });
       console.log(
         '[gamewire-worker] match-concluded publisher ready ' +
-          `(stream=${MATCH_CONCLUDED_STREAM_NAME} stream-db=${streamDb} emitted-store=${emittedStore.backend})`
+          `(stream=${MATCH_CONCLUDED_STREAM_NAME} stream-db=${eventsRedisConfig.db} emitted-store=${emittedStore.backend})`
       );
     }
   } catch (err) {

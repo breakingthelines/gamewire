@@ -12,6 +12,17 @@ import {
   type ProviderQuotaSource,
 } from './quota.js';
 import { DEFAULT_PROVIDER_REQUEST_TIMEOUT_MS } from './provider-http.js';
+import {
+  type ResolvedEventsRedis,
+  resolveEventsRedis,
+} from '@breakingthelines/protos/sdk/eventbus';
+
+/**
+ * gamewire's pre-`BTL_EVENTS_REDIS_DB` setting for the events database. Still
+ * read as the fallback (and must equal `BTL_EVENTS_REDIS_DB` when both are
+ * set) until infrastructure removes it.
+ */
+export const GAMEWIRE_LEGACY_EVENTS_DB_VAR = 'GAMEWIRE_EVENTS_REDIS_DB';
 
 export type GamewireWorkerLogLevel = 'debug' | 'info' | 'warn' | 'error';
 export type GamewireProviderMode = 'replay' | 'live';
@@ -42,14 +53,14 @@ export interface GamewireWorkerConfig {
   /** Redis key prefix used by gamewire-worker (defaults to "gamewire"). */
   redisNamespace: string;
   /**
-   * Redis URL for the shared event streams (the `btl:facts:*` fact bus):
-   * `redisUrl` with its database swapped for `GAMEWIRE_EVENTS_REDIS_DB`.
-   * Every BTL service's streams share one database (0 in prod); the cache,
-   * quota counters and emit-once keys stay on `redisUrl`'s database.
-   * Undefined when the variable or `redisUrl` is unset: the streams then
-   * use `redisUrl` too.
+   * The shared events Redis (the `btl:facts:*` fact bus), resolved by the
+   * protos SDK from `redisUrl`'s credentials: database `BTL_EVENTS_REDIS_DB`,
+   * else `GAMEWIRE_EVENTS_REDIS_DB`, else `redisUrl`'s own database; host
+   * `BTL_EVENTS_REDIS_ADDR` when set. Every BTL service's streams share one
+   * database (0 in prod); the cache, quota counters and emit-once keys stay
+   * on `redisUrl`. Undefined when `redisUrl` is unset (no bus).
    */
-  eventsRedisUrl?: string;
+  eventsRedis?: ResolvedEventsRedis;
   /** Hard daily provider call cap. Default 140,000 (10k headroom under the 150k Mega plan). */
   providerHardCap: number;
   /** Soft daily cap that flips the worker into cached-only mode. Default 130,000. */
@@ -256,33 +267,6 @@ const parseProviderMode = (value: string | undefined): GamewireProviderMode => {
   }
 };
 
-/**
- * Returns `url` with its Redis database (the path) set to `db`. Bun's
- * RedisClient selects the database from the URL path.
- */
-export const withRedisDb = (url: string, db: number): string => {
-  const parsed = new URL(url);
-  parsed.pathname = `/${db}`;
-  return parsed.toString();
-};
-
-const resolveEventsRedisUrl = (
-  redisUrl: string | undefined,
-  rawDb: string | undefined
-): string | undefined => {
-  const raw = rawDb?.trim();
-  if (!raw) {
-    return undefined;
-  }
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`Invalid gamewire events redis db: ${rawDb}`);
-  }
-  if (!redisUrl) {
-    return undefined;
-  }
-  return withRedisDb(redisUrl, Number.parseInt(raw, 10));
-};
-
 const resolveProviderApiKey = (env: GamewireWorkerEnv): string | undefined =>
   env.API_FOOTBALL_KEY ?? env.APISPORTS_KEY ?? env.API_SPORTS_KEY ?? env.GAMEWIRE_PROVIDER_API_KEY;
 
@@ -414,7 +398,13 @@ export const loadConfig = (env: GamewireWorkerEnv = process.env): GamewireWorker
     logLevel: parseLogLevel(env.LOG_LEVEL),
     redisUrl,
     redisNamespace: env.GAMEWIRE_REDIS_NAMESPACE ?? 'gamewire',
-    eventsRedisUrl: resolveEventsRedisUrl(redisUrl, env.GAMEWIRE_EVENTS_REDIS_DB),
+    // Throws when BTL_EVENTS_REDIS_DB and GAMEWIRE_EVENTS_REDIS_DB disagree or
+    // either is not a database number, so the worker refuses to start.
+    eventsRedis: resolveEventsRedis({
+      serviceRedisUrl: redisUrl,
+      legacyDbVar: GAMEWIRE_LEGACY_EVENTS_DB_VAR,
+      env,
+    }),
     providerHardCap: hardCap,
     providerSoftCap: softCap,
     providerPlanCeiling: planCeiling,
