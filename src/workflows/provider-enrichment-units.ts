@@ -749,7 +749,7 @@ const planSidelined = async (
     input.playerIds && input.playerIds.length > 0
       ? sortIds(input.playerIds)
       : await sidelinedScopeFromDigests(
-          deps.ingestion.cache,
+          deps.stateStore ?? deps.ingestion.cache,
           resolveInjuriesTargets({ ...input, mode: 'nightly' }, deps.competitions),
           nowMs
         );
@@ -761,7 +761,7 @@ const planSidelined = async (
       ? ids.map(() => undefined)
       : await Promise.all(
           ids.map((id) =>
-            deps.ingestion.cache.get<UnitMarker>(
+            (deps.stateStore ?? deps.ingestion.cache).get<UnitMarker>(
               unitMarkerKey('player-sidelined', sidelinedMemberKey(id))
             )
           )

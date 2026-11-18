@@ -58,6 +58,7 @@ import {
   apiFootballPlayerSeasonStatsPath,
   decodePlayerSeasonStatsPage,
 } from '../adapters/api-football/enrichment-decoders.js';
+import type { ProviderCache } from '../worker/cache.js';
 import type { ProviderEnrichmentIngestClient } from '../worker/clients/game-service.js';
 import { clampCoachPhotoLimit, runCoachPhotos } from './coach-photos.js';
 import type { IngestionFetchResult } from '../worker/ingestion.js';
@@ -140,6 +141,15 @@ const PROVIDER_RATE_LIMIT_MARGIN_MS = 1_000;
  * held target as `in-progress` instead of fetching the same pages again.
  */
 const PROCESS_IN_FLIGHT_TARGETS = new Set<string>();
+
+/**
+ * Where enrichment keeps state that must outlive the pod: page cursors, unit
+ * markers and injury digests. The workflow state store is Redis in
+ * production; without one (tests, local runs) it falls back to the ingestion
+ * cache, which is process memory.
+ */
+export const enrichmentStateStore = (deps: WorkflowDeps): ProviderCache =>
+  deps.stateStore ?? deps.ingestion.cache;
 
 export const enrichmentTargetKey = (
   dataset: ProviderEnrichmentDataset,
@@ -339,7 +349,10 @@ export const providerEnrichmentWorkflow = async (
     return finish('skipped', { reason: 'no league-seasons to fetch' });
   }
 
-  const cache = deps.ingestion.cache;
+  // Page cursors live in the workflow state store (Redis in production) so a
+  // pod restart or rollout resumes the league-season instead of starting it
+  // again. The ingestion cache is process memory.
+  const cache = enrichmentStateStore(deps);
   const windowSeconds = ENRICHMENT_CURSOR_WINDOW_SECONDS[input.mode];
   const readCursor = async (target: Target): Promise<EnrichmentCursor | undefined> => {
     if (input.reset) {
@@ -798,7 +811,10 @@ const runUnitDataset = async (
     });
   }
 
-  const cache = deps.ingestion.cache;
+  // Unit markers, injury digests and head-to-head markers live in the workflow
+  // state store (Redis in production), so a restarted pod skips the units an
+  // earlier run already finished.
+  const cache = enrichmentStateStore(deps);
   const windowSeconds = UNIT_MARKER_WINDOW_SECONDS[dataset][input.mode];
   const readMarker = async (unit: EnrichmentUnit): Promise<UnitMarker | undefined> => {
     if (input.reset) {

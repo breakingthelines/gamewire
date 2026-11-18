@@ -531,6 +531,42 @@ describe('per-run call limit and resume', () => {
   });
 });
 
+describe('state store (survives a pod restart)', () => {
+  it('writes page cursors to the state store, not the ingestion cache', async () => {
+    const h = harness({ totals: { '88:2024': 3 } });
+    const state = new InMemoryProviderCache();
+    const stateSet = vi.spyOn(state, 'set');
+    await providerEnrichmentWorkflow(
+      { dataset: 'player-season-stats', mode: 'full', leagueIds: [88], seasons: [2024] },
+      { ...h.deps, stateStore: state }
+    );
+    expect(stateSet.mock.calls.map((c) => c[0])).toContain(
+      enrichmentCursorKey('player-season-stats', 88, 2024)
+    );
+    expect(h.cacheSet).not.toHaveBeenCalled();
+  });
+
+  it('resumes from the cursor in a new process that shares the state store', async () => {
+    const state = new InMemoryProviderCache();
+    const input = {
+      dataset: 'player-season-stats',
+      mode: 'full',
+      leagueIds: [88],
+      seasons: [2024],
+      limit: 5,
+    } as const;
+    const before = harness({ totals: { '88:2024': 8 } });
+    const first = await providerEnrichmentWorkflow(input, { ...before.deps, stateStore: state });
+    expect(first.callsUsed).toBe(5);
+
+    // A fresh harness is a fresh process: new ingestion cache, same Redis.
+    const after = harness({ totals: { '88:2024': 8 } });
+    const second = await providerEnrichmentWorkflow(input, { ...after.deps, stateStore: state });
+    expect(second.status).toBe('completed');
+    expect(after.urls.map((u) => parseUrl(u).page)).toEqual([6, 7, 8]);
+  });
+});
+
 describe('enrichment minute ceiling', () => {
   it('holds the job to its own per-minute ceiling by waiting', async () => {
     const h = harness({
