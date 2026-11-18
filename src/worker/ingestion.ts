@@ -324,6 +324,12 @@ export type OnFixtureFetchedCallback = (input: {
   readonly workload: IngestionWorkload;
   readonly resourceId: string;
   readonly data: unknown;
+  /**
+   * `data` came from the cache, not a provider call made for this fetch. A
+   * cached payload can be hours old (`events-post-final` caches for 6h), so a
+   * bridge must not treat it as the provider's current state.
+   */
+  readonly cacheHit?: boolean;
 }) => Promise<void> | void;
 
 export interface IngestionLoopOptions {
@@ -516,7 +522,7 @@ export class ApiFootballIngestionLoop {
         workload,
         cacheKey,
       });
-      await this.#notifyFixtureFetched(workload, options.resourceId, cached);
+      await this.#notifyFixtureFetched(workload, options.resourceId, cached, true);
       return {
         status: 'cached',
         workload,
@@ -547,7 +553,7 @@ export class ApiFootballIngestionLoop {
         this.#metrics.recordOutcome('cached');
         const snapshot = await this.#quota.snapshot();
         this.#recordQuota(snapshot);
-        await this.#notifyFixtureFetched(workload, options.resourceId, racedHit);
+        await this.#notifyFixtureFetched(workload, options.resourceId, racedHit, true);
         return {
           status: 'cached',
           workload,
@@ -717,7 +723,7 @@ export class ApiFootballIngestionLoop {
         cachedOnlyMode: reservation.snapshot.cachedOnlyMode,
       });
 
-      await this.#notifyFixtureFetched(workload, options.resourceId, json);
+      await this.#notifyFixtureFetched(workload, options.resourceId, json, false);
 
       return {
         status: 'fetched',
@@ -1353,7 +1359,8 @@ export class ApiFootballIngestionLoop {
   async #notifyFixtureFetched(
     workload: IngestionWorkload,
     resourceId: string,
-    data: unknown
+    data: unknown,
+    cacheHit: boolean
   ): Promise<void> {
     if (!this.#onFixtureFetched) {
       return;
@@ -1372,7 +1379,7 @@ export class ApiFootballIngestionLoop {
       // and the fetch returns.
       const timedOut = Symbol('bridge-timeout');
       const outcome = await Promise.race([
-        Promise.resolve(this.#onFixtureFetched({ workload, resourceId, data })),
+        Promise.resolve(this.#onFixtureFetched({ workload, resourceId, data, cacheHit })),
         new Promise<typeof timedOut>((resolve) => {
           timer = setTimeout(() => resolve(timedOut), this.#bridgeTimeoutMs);
         }),

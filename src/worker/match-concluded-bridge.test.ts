@@ -662,6 +662,64 @@ describe('createMatchConcludedBridge', () => {
     expect(logs.some((entry) => entry.event === 'bridge_events_ingested')).toBe(true);
   });
 
+  it('sends a cached /fixtures/events list as a partial snapshot', async () => {
+    // events-post-final caches for 6h, and daily-anchor can fetch it while a
+    // match is still in play. A cache hit can therefore be a stale partial
+    // list: it still upserts what it holds, but must not let game-service
+    // retract events that happened after the cached fetch.
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1538961' },
+    });
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: () => {},
+    });
+
+    await bridge({
+      workload: 'events-post-final',
+      resourceId: '1538961',
+      data: buildEventResponse(1538961),
+      cacheHit: true,
+    });
+
+    expect(gameService.occurrenceCalls).toHaveLength(1);
+    expect(gameService.occurrenceCalls[0]?.occurrences).toHaveLength(1);
+    expect(gameService.occurrenceCalls[0]?.completeSnapshot).toBe(false);
+  });
+
+  it.each([
+    ['an empty /fixtures/events response', { response: [] }],
+    [
+      'a /fixtures/events response whose events all fail the shape filter',
+      { response: [{ time: { elapsed: 10 }, team: { id: 49 } }, { type: 'Goal', detail: 'x' }, 7] },
+    ],
+  ])('never sends %s to game-service', async (_label, data) => {
+    // An empty complete snapshot would mark every stored occurrence of the
+    // game absent, and two of them would retract a small game's whole
+    // timeline. A pre-kickoff `[]` really is cached for 6h.
+    const { publisher } = buildPublisher();
+    const gameService = fakeGameService({
+      response: { found: true, gameId: 'btl_football_game_g1538961' },
+    });
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity: inertIdentity(),
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+    });
+
+    await bridge({ workload: 'events-post-final', resourceId: '1538961', data });
+
+    expect(gameService.occurrenceCalls).toHaveLength(0);
+    expect(logs.some((entry) => entry.event === 'bridge_events_missing')).toBe(true);
+  });
+
   it('lifts the embedded events[] off a fixture-detail-live payload into game_occurrences', async () => {
     // Wave 6.29a regression guard. The api-football live fixture-detail
     // payload carries the accumulating events array inline under

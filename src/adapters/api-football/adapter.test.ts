@@ -546,6 +546,31 @@ describe('API-Football adapter', () => {
       resourceId: '1538961',
       gameId: 'btl_football_game_g1538961',
       completeSnapshot: false,
+      envelope: {
+        response: [
+          {
+            time: { elapsed: 27, extra: null },
+            team: { id: 49, name: 'Chelsea' },
+            player: { id: 152982, name: 'Cole Palmer' },
+            assist: { id: null, name: null },
+            type: 'Goal',
+            detail: 'Normal Goal',
+            comments: null,
+          },
+        ],
+      },
+    });
+
+    expect(request.occurrences).toHaveLength(1);
+    expect(request.completeSnapshot).toBe(false);
+  });
+
+  it('never marks an empty events list as a complete snapshot', () => {
+    // An empty complete snapshot would mark every stored occurrence absent.
+    const request = apiFootballIngestOccurrencesRequestFromEvents({
+      replayId: 'live:events-post-final:1538961',
+      resourceId: '1538961',
+      gameId: 'btl_football_game_g1538961',
       envelope: { response: [] },
     });
 

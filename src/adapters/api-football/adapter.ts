@@ -393,7 +393,8 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
   // `/fixtures?id` events array and `/fixtures/events`). game-service then
   // retracts stored occurrences of this provider that are absent from it
   // (a VAR-cancelled goal, or the trailing id left by a positional shift).
-  // Default true; pass false only for a partial list.
+  // Default true; pass false only for a partial list. Never set on an empty
+  // list: an empty snapshot would mark every stored occurrence absent.
   readonly completeSnapshot?: boolean;
 }): IngestGameOccurrencesRequest {
   const providerId = options.provider ?? API_FOOTBALL_PROVIDER_ID;
@@ -420,7 +421,7 @@ export function apiFootballIngestOccurrencesRequestFromEvents(options: {
     ),
     gameId: options.gameId,
     occurrences,
-    completeSnapshot: options.completeSnapshot ?? true,
+    completeSnapshot: occurrences.length > 0 && (options.completeSnapshot ?? true),
   });
 }
 
