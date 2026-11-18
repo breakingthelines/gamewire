@@ -34,6 +34,8 @@ export {
   InMemoryMinuteCounterStore,
   ProviderMinuteLimiter,
   RedisMinuteCounterStore,
+  type MinuteAcquireCounts,
+  type MinuteAcquireRequest,
   type MinuteAcquireResult,
   type MinuteCounterStore,
   type ProviderMinuteCaps,

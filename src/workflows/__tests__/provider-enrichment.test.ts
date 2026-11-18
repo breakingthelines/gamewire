@@ -323,6 +323,28 @@ describe('full mode (history backfill)', () => {
     ]);
   });
 
+  it('logs each page with its limiter, fetch, ingest and cursor time in milliseconds', async () => {
+    const h = harness({
+      totals: { '88:2024': 2 },
+      // A slow game-service write, so the time lands on ingestMs.
+      ingest: async (request) => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { acceptedCount: request.rows.length } as IngestBatchResponse;
+      },
+    });
+    await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });
+    const pages = h.logs.filter((l) => l.event === 'provider_enrichment.page');
+    expect(pages).toHaveLength(2);
+    for (const page of pages) {
+      for (const field of ['limiterMs', 'fetchMs', 'ingestMs', 'cursorMs'] as const) {
+        expect(Number.isInteger(page[field])).toBe(true);
+        expect(page[field]).toBeGreaterThanOrEqual(0);
+      }
+      expect(page.ingestMs).toBeGreaterThanOrEqual(25);
+      expect(page.fetchMs).toBeLessThan(page.ingestMs!);
+    }
+  });
+
   it('writes one ingest call per page with provider ids and the requested season', async () => {
     const h = harness({ totals: { '88:2024': 2 } });
     await h.run({ mode: 'full', leagueIds: [88], seasons: [2024] });

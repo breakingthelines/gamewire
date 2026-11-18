@@ -29,6 +29,8 @@
  *   calls inside one second drew "too many requests" in prod), so a minute
  *   count alone does not keep background clear of it. Live and near-live are
  *   never held by the second bucket; background yields to them.
+ * - On Redis a token is one `EVAL` of {@link MINUTE_ACQUIRE_SCRIPT}: one round
+ *   trip, atomic, with every key taken from one clock reading.
  *
  * The limiter only answers "may this call leave now". What a denied caller does
  * (serve the last good payload, or wait for the next minute and retry once) is
@@ -66,7 +68,74 @@ export interface MinuteCounterStore {
   increment(key: string, by: number, ttlSeconds: number): Promise<number>;
   /** Read the current total for `key` (0 when absent). */
   read(key: string): Promise<number>;
+  /**
+   * Take one token in a single step: read the previous minute, count the call
+   * into the minute bucket and, when asked, the second bucket, and refund both
+   * when a cap refuses it. A store without it gets {@link acquireWithCounters},
+   * which makes the same calls one at a time.
+   */
+  acquire?(request: MinuteAcquireRequest): Promise<MinuteAcquireCounts>;
   readonly backend: 'redis' | 'memory';
+}
+
+/** One {@link ProviderMinuteLimiter.tryAcquire}, with every key fixed from one clock reading. */
+export interface MinuteAcquireRequest {
+  readonly previousMinuteKey: string;
+  readonly minuteKey: string;
+  readonly minuteTtlSeconds: number;
+  /** Fraction of the current minute already gone, in [0, 1). */
+  readonly elapsed: number;
+  /** The class ceiling on the sliding-window estimate. */
+  readonly ceiling: number;
+  /** Count into a one-second bucket too (smoothing on). */
+  readonly second?: {
+    readonly key: string;
+    readonly ttlSeconds: number;
+    readonly cap: number;
+    /** Refuse above `cap`. Only background is held; other classes are counted. */
+    readonly enforce: boolean;
+  };
+}
+
+export interface MinuteAcquireCounts {
+  readonly outcome: 'allowed' | 'minute_cap' | 'second_cap';
+  /** The previous minute's count. */
+  readonly previous: number;
+  /** The minute count after this call's increment, before any refund. */
+  readonly current: number;
+  /** The second count after this call's increment, when the second bucket was counted. */
+  readonly inSecond?: number;
+}
+
+/** Sliding-window estimate: the previous minute decays as the current one fills. */
+const slidingEstimate = (previous: number, current: number, elapsed: number): number =>
+  previous * (1 - elapsed) + current;
+
+/**
+ * {@link MinuteCounterStore.acquire} from `read` and `increment`, one call at
+ * a time. Used by the in-memory store and by any store without its own.
+ */
+export async function acquireWithCounters(
+  store: Pick<MinuteCounterStore, 'read' | 'increment'>,
+  request: MinuteAcquireRequest
+): Promise<MinuteAcquireCounts> {
+  const previous = await store.read(request.previousMinuteKey);
+  const current = await store.increment(request.minuteKey, 1, request.minuteTtlSeconds);
+  if (slidingEstimate(previous, current, request.elapsed) > request.ceiling) {
+    await store.increment(request.minuteKey, -1, request.minuteTtlSeconds);
+    return { outcome: 'minute_cap', previous, current };
+  }
+  const second = request.second;
+  if (!second) {
+    return { outcome: 'allowed', previous, current };
+  }
+  const inSecond = await store.increment(second.key, 1, second.ttlSeconds);
+  if (second.enforce && inSecond > second.cap) {
+    await store.increment(request.minuteKey, -1, request.minuteTtlSeconds);
+    await store.increment(second.key, -1, second.ttlSeconds);
+    return { outcome: 'second_cap', previous, current, inSecond };
+  }
+  return { outcome: 'allowed', previous, current, inSecond };
 }
 
 export interface InMemoryMinuteCounterStoreOptions {
@@ -99,6 +168,10 @@ export class InMemoryMinuteCounterStore implements MinuteCounterStore {
     return entry.count;
   }
 
+  acquire(request: MinuteAcquireRequest): Promise<MinuteAcquireCounts> {
+    return acquireWithCounters(this, request);
+  }
+
   size(): number {
     return this.#entries.size;
   }
@@ -113,11 +186,81 @@ export class InMemoryMinuteCounterStore implements MinuteCounterStore {
   }
 }
 
-/** Same minimal client surface as {@link RedisQuotaClient}. */
+/** Same minimal client surface as {@link RedisQuotaClient}, plus `EVAL`. */
 export interface RedisMinuteCounterClient {
   get(key: string): Promise<string | null>;
   incrBy(key: string, by: number): Promise<number>;
   expire(key: string, ttlSeconds: number): Promise<number>;
+  /** `EVAL script numkeys key... arg...`. Without it the store sends one command per step. */
+  eval?(script: string, keys: readonly string[], args: readonly string[]): Promise<unknown>;
+}
+
+/**
+ * {@link acquireWithCounters} as one Lua script, so a token costs one Redis
+ * round trip instead of five. Every step a caller waited on before (a 5 s
+ * blocking read on the same connection once made each of them cost 5 s, and
+ * a provider-enrichment page 50 s) now happens inside one atomic call.
+ *
+ * KEYS: previous minute, current minute, second (only when ARGV[4] > 0).
+ * ARGV: elapsed fraction, ceiling, minute TTL, second cap (0 = no second
+ * bucket), second TTL, enforce the second cap (1/0).
+ * Reply: { outcome (0 allowed, 1 minute_cap, 2 second_cap), previous,
+ * current, inSecond (-1 when not counted) }. `elapsed` is passed as the
+ * shortest decimal that round-trips, so Lua's double arithmetic matches the
+ * JavaScript estimate exactly.
+ */
+export const MINUTE_ACQUIRE_SCRIPT = `
+local previous = tonumber(redis.call('GET', KEYS[1]) or '0') or 0
+if previous < 0 then previous = 0 end
+local current = redis.call('INCRBY', KEYS[2], 1)
+redis.call('EXPIRE', KEYS[2], ARGV[3])
+if current < 0 then current = 0 end
+if previous * (1 - tonumber(ARGV[1])) + current > tonumber(ARGV[2]) then
+  redis.call('INCRBY', KEYS[2], -1)
+  return {1, previous, current, -1}
+end
+local secondCap = tonumber(ARGV[4])
+if secondCap <= 0 then
+  return {0, previous, current, -1}
+end
+local inSecond = redis.call('INCRBY', KEYS[3], 1)
+redis.call('EXPIRE', KEYS[3], ARGV[5])
+if inSecond < 0 then inSecond = 0 end
+if ARGV[6] == '1' and inSecond > secondCap then
+  redis.call('INCRBY', KEYS[2], -1)
+  redis.call('INCRBY', KEYS[3], -1)
+  return {2, previous, current, inSecond}
+end
+return {0, previous, current, inSecond}
+`;
+
+const ACQUIRE_OUTCOMES: readonly MinuteAcquireCounts['outcome'][] = [
+  'allowed',
+  'minute_cap',
+  'second_cap',
+];
+
+/** Decode the {@link MINUTE_ACQUIRE_SCRIPT} reply. Throws on anything else. */
+export function parseMinuteAcquireReply(raw: unknown): MinuteAcquireCounts {
+  if (!Array.isArray(raw) || raw.length !== 4) {
+    throw new Error(`minute limiter: unexpected EVAL reply ${JSON.stringify(raw)}`);
+  }
+  const [code, previous, current, inSecond] = raw.map((value) => Number(value));
+  const outcome = ACQUIRE_OUTCOMES[code ?? -1];
+  if (
+    outcome === undefined ||
+    !Number.isFinite(previous) ||
+    !Number.isFinite(current) ||
+    !Number.isFinite(inSecond)
+  ) {
+    throw new Error(`minute limiter: unexpected EVAL reply ${JSON.stringify(raw)}`);
+  }
+  return {
+    outcome,
+    previous: previous!,
+    current: current!,
+    ...(inSecond! >= 0 ? { inSecond: inSecond! } : {}),
+  };
 }
 
 export class RedisMinuteCounterStore implements MinuteCounterStore {
@@ -143,6 +286,25 @@ export class RedisMinuteCounterStore implements MinuteCounterStore {
     }
     const parsed = Number.parseInt(raw, 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  }
+
+  async acquire(request: MinuteAcquireRequest): Promise<MinuteAcquireCounts> {
+    if (!this.#client.eval) {
+      return acquireWithCounters(this, request);
+    }
+    const second = request.second;
+    const keys = second
+      ? [request.previousMinuteKey, request.minuteKey, second.key]
+      : [request.previousMinuteKey, request.minuteKey];
+    const raw = await this.#client.eval(MINUTE_ACQUIRE_SCRIPT, keys, [
+      String(request.elapsed),
+      String(request.ceiling),
+      String(request.minuteTtlSeconds),
+      String(second?.cap ?? 0),
+      String(second?.ttlSeconds ?? 0),
+      second?.enforce ? '1' : '0',
+    ]);
+    return parseMinuteAcquireReply(raw);
   }
 }
 
@@ -261,12 +423,32 @@ export class ProviderMinuteLimiter {
       };
     }
 
+    const epochSecond = Math.floor(nowMs / 1_000);
+    const request: MinuteAcquireRequest = {
+      previousMinuteKey: this.keyFor(epochMinute - 1),
+      minuteKey: this.keyFor(epochMinute),
+      minuteTtlSeconds: BUCKET_TTL_SECONDS,
+      elapsed,
+      ceiling,
+      ...(this.#secondCap === undefined
+        ? {}
+        : {
+            second: {
+              key: this.secondKeyFor(epochSecond),
+              ttlSeconds: SECOND_BUCKET_TTL_SECONDS,
+              cap: this.#secondCap,
+              enforce: priority === 'background',
+            },
+          }),
+    };
+
     try {
-      const previous = await this.#store.read(this.keyFor(epochMinute - 1));
-      const current = await this.#store.increment(this.keyFor(epochMinute), 1, BUCKET_TTL_SECONDS);
-      const estimate = previous * (1 - elapsed) + current;
-      if (estimate > ceiling) {
-        await this.#store.increment(this.keyFor(epochMinute), -1, BUCKET_TTL_SECONDS);
+      const counts = this.#store.acquire
+        ? await this.#store.acquire(request)
+        : await acquireWithCounters(this.#store, request);
+      const { previous, current } = counts;
+      const estimate = slidingEstimate(previous, current, elapsed);
+      if (counts.outcome === 'minute_cap') {
         return {
           ...base,
           allowed: false,
@@ -275,18 +457,10 @@ export class ProviderMinuteLimiter {
           retryAfterMs: retryAfterMs(previous, current - 1, ceiling, elapsed, msUntilNextMinute),
         };
       }
-      if (this.#secondCap === undefined) {
+      if (request.second === undefined) {
         return { ...base, allowed: true, estimate };
       }
-      const epochSecond = Math.floor(nowMs / 1_000);
-      const inSecond = await this.#store.increment(
-        this.secondKeyFor(epochSecond),
-        1,
-        SECOND_BUCKET_TTL_SECONDS
-      );
-      if (priority === 'background' && inSecond > this.#secondCap) {
-        await this.#store.increment(this.keyFor(epochMinute), -1, BUCKET_TTL_SECONDS);
-        await this.#store.increment(this.secondKeyFor(epochSecond), -1, SECOND_BUCKET_TTL_SECONDS);
+      if (counts.outcome === 'second_cap') {
         return {
           ...base,
           allowed: false,
@@ -418,5 +592,8 @@ export const createRedisMinuteCounterClient = (
   },
   async expire(key, ttlSeconds) {
     return Number(await sender.send('EXPIRE', [key, String(ttlSeconds)]));
+  },
+  async eval(script, keys, args) {
+    return sender.send('EVAL', [script, String(keys.length), ...keys, ...args]);
   },
 });
