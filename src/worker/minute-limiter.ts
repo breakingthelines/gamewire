@@ -23,12 +23,14 @@
  *   calls) have used the headroom.
  * - If the counter store fails, `live` and `near-live` are allowed (fail open)
  *   and `background` is refused (fail closed).
- * - With `smoothBackground`, every class also counts into a one-second bucket,
- *   and `background` is refused once that second holds `ceil(background / 60)`
- *   calls. The provider refuses bursts well under its 900 a minute (about 20
- *   calls inside one second drew "too many requests" in prod), so a minute
- *   count alone does not keep background clear of it. Live and near-live are
- *   never held by the second bucket; background yields to them.
+ * - With `smoothBackground`, every class also counts into a one-second bucket.
+ *   `background` is refused once that second holds `ceil(background / 60)`
+ *   calls (8 by default) and `near-live` once it holds `ceil(near-live / 60)`
+ *   (11). The provider refuses bursts well under its 900 a minute (about 20
+ *   calls inside one second drew "too many requests" in prod; a boot discovery
+ *   sweep of ~38 near-live calls had 18 refused), so a minute count alone does
+ *   not keep a burst clear of it. Live is never held by the second bucket;
+ *   near-live yields to live, and background to both.
  * - On Redis a token is one `EVAL` of {@link MINUTE_ACQUIRE_SCRIPT}: one round
  *   trip, atomic, with every key taken from one clock reading.
  *
@@ -75,7 +77,20 @@ export interface MinuteCounterStore {
    * which makes the same calls one at a time.
    */
   acquire?(request: MinuteAcquireRequest): Promise<MinuteAcquireCounts>;
+  /**
+   * Take one call back out of each bucket that still holds one. A bucket that
+   * has expired is left alone, never recreated: a plain `INCRBY -1` on an
+   * expired second bucket used to leave a `-1` key with no TTL behind.
+   * A store without it gets {@link refundWithCounters}.
+   */
+  refund?(buckets: readonly MinuteBucketRef[]): Promise<void>;
   readonly backend: 'redis' | 'memory';
+}
+
+/** A minute or second bucket and the TTL it is written with. */
+export interface MinuteBucketRef {
+  readonly key: string;
+  readonly ttlSeconds: number;
 }
 
 /** One {@link ProviderMinuteLimiter.tryAcquire}, with every key fixed from one clock reading. */
@@ -136,6 +151,22 @@ export async function acquireWithCounters(
     return { outcome: 'second_cap', previous, current, inSecond };
   }
   return { outcome: 'allowed', previous, current, inSecond };
+}
+
+/**
+ * {@link MinuteCounterStore.refund} from `read` and `increment`: decrement
+ * only a bucket that still counts a call. Not atomic; the Redis store uses
+ * {@link MINUTE_REFUND_SCRIPT}.
+ */
+export async function refundWithCounters(
+  store: Pick<MinuteCounterStore, 'read' | 'increment'>,
+  buckets: readonly MinuteBucketRef[]
+): Promise<void> {
+  for (const bucket of buckets) {
+    if ((await store.read(bucket.key)) > 0) {
+      await store.increment(bucket.key, -1, bucket.ttlSeconds);
+    }
+  }
 }
 
 export interface InMemoryMinuteCounterStoreOptions {
@@ -234,6 +265,21 @@ end
 return {0, previous, current, inSecond}
 `;
 
+/**
+ * {@link MinuteCounterStore.refund} as one script: `DECR` each key that holds
+ * a positive count. `DECR` keeps the key's TTL; a missing (expired) key is
+ * not touched, so a late refund can never create a key without one.
+ */
+export const MINUTE_REFUND_SCRIPT = `
+for _, key in ipairs(KEYS) do
+  local value = tonumber(redis.call('GET', key) or '0') or 0
+  if value > 0 then
+    redis.call('DECR', key)
+  end
+end
+return 0
+`;
+
 const ACQUIRE_OUTCOMES: readonly MinuteAcquireCounts['outcome'][] = [
   'allowed',
   'minute_cap',
@@ -306,6 +352,17 @@ export class RedisMinuteCounterStore implements MinuteCounterStore {
     ]);
     return parseMinuteAcquireReply(raw);
   }
+
+  async refund(buckets: readonly MinuteBucketRef[]): Promise<void> {
+    if (!this.#client.eval) {
+      return refundWithCounters(this, buckets);
+    }
+    await this.#client.eval(
+      MINUTE_REFUND_SCRIPT,
+      buckets.map((bucket) => bucket.key),
+      []
+    );
+  }
 }
 
 export type MinuteDenyReason =
@@ -347,7 +404,9 @@ export interface ProviderMinuteLimiterOptions {
   readonly clock?: () => number;
   /**
    * Count every call in a one-second bucket and refuse `background` above
-   * `ceil(caps.background / 60)` calls in that second. Off by default.
+   * `ceil(caps.background / 60)` and `near-live` above
+   * `ceil(caps['near-live'] / 60)` calls in that second. Live is never held.
+   * Off by default.
    */
   readonly smoothBackground?: boolean;
 }
@@ -355,6 +414,10 @@ export interface ProviderMinuteLimiterOptions {
 /** One-second ceiling for background when smoothing is on. */
 export const backgroundSecondCap = (caps: ProviderMinuteCaps): number =>
   Math.max(1, Math.ceil(caps.background / 60));
+
+/** One-second ceiling for near-live when smoothing is on. */
+export const nearLiveSecondCap = (caps: ProviderMinuteCaps): number =>
+  Math.max(1, Math.ceil(caps['near-live'] / 60));
 
 const SECOND_BUCKET_TTL_SECONDS = 5;
 
@@ -366,6 +429,7 @@ export class ProviderMinuteLimiter {
   readonly #headerReserve: number;
   readonly #clock: () => number;
   readonly #secondCap: number | undefined;
+  readonly #nearLiveSecondCap: number | undefined;
   #remoteMinute: { epochMinute: number; remaining: number; limit?: number } | undefined;
 
   constructor(options: ProviderMinuteLimiterOptions) {
@@ -378,11 +442,17 @@ export class ProviderMinuteLimiter {
     this.#caps = caps;
     this.#headerReserve = options.headerReserve ?? DEFAULT_PROVIDER_MINUTE_HEADER_RESERVE;
     this.#secondCap = options.smoothBackground ? backgroundSecondCap(caps) : undefined;
+    this.#nearLiveSecondCap = options.smoothBackground ? nearLiveSecondCap(caps) : undefined;
   }
 
   /** Background calls allowed in one second, or undefined when smoothing is off. */
   get backgroundSecondCap(): number | undefined {
     return this.#secondCap;
+  }
+
+  /** Near-live calls allowed in one second, or undefined when smoothing is off. */
+  get nearLiveSecondCap(): number | undefined {
+    return this.#nearLiveSecondCap;
   }
 
   get caps(): ProviderMinuteCaps {
@@ -436,8 +506,11 @@ export class ProviderMinuteLimiter {
             second: {
               key: this.secondKeyFor(epochSecond),
               ttlSeconds: SECOND_BUCKET_TTL_SECONDS,
-              cap: this.#secondCap,
-              enforce: priority === 'background',
+              cap:
+                priority === 'near-live'
+                  ? (this.#nearLiveSecondCap ?? this.#secondCap)
+                  : this.#secondCap,
+              enforce: priority !== 'live',
             },
           }),
     };
@@ -490,15 +563,19 @@ export class ProviderMinuteLimiter {
     if (!acquired.allowed || acquired.failOpen) {
       return;
     }
+    const buckets: MinuteBucketRef[] = [
+      { key: this.keyFor(acquired.epochMinute), ttlSeconds: BUCKET_TTL_SECONDS },
+    ];
+    if (acquired.epochSecond !== undefined) {
+      buckets.push({
+        key: this.secondKeyFor(acquired.epochSecond),
+        ttlSeconds: SECOND_BUCKET_TTL_SECONDS,
+      });
+    }
     try {
-      await this.#store.increment(this.keyFor(acquired.epochMinute), -1, BUCKET_TTL_SECONDS);
-      if (acquired.epochSecond !== undefined) {
-        await this.#store.increment(
-          this.secondKeyFor(acquired.epochSecond),
-          -1,
-          SECOND_BUCKET_TTL_SECONDS
-        );
-      }
+      await (this.#store.refund
+        ? this.#store.refund(buckets)
+        : refundWithCounters(this.#store, buckets));
     } catch {
       // The bucket expires in 120s regardless.
     }
