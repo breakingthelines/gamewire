@@ -20,6 +20,12 @@
  * - the call fails: while the last answer was `on`, players go out as
  *   provider refs (never identity's answer) and game-service binds them by
  *   provider id on write; otherwise identity, as before.
+ * - an `off` or `shadow` answer after `on`: not trusted on its own. One pod
+ *   with a stale or odd view must not send pages back to identity's answer,
+ *   which may be the one a rebind moved away from. Players go out as
+ *   provider refs until a second non-`on` answer, at least
+ *   `downgradeConfirmMs` after the first (past game-service's 5 s control
+ *   cache), confirms it; an `on` answer in between cancels it.
  *
  * Every payload also carries the provider player id next to the entity id
  * (lineup slots, squad list players, timeline events, occurrence actors), so
@@ -49,8 +55,12 @@ export type PlayerSource =
   | { readonly kind: 'identity' }
   | {
       readonly kind: 'bindings';
-      /** `on`: game-service answered. `unavailable`: the call failed while ingest was on. */
-      readonly reason: 'on' | 'unavailable';
+      /**
+       * `on`: game-service answered. `unavailable`: the call failed while
+       * ingest was on. `confirming`: ingest was on and game-service now says
+       * otherwise, not yet confirmed.
+       */
+      readonly reason: 'on' | 'unavailable' | 'confirming';
       /** Canonical answers by provider player id; an absent id stays a provider ref. */
       readonly players: ReadonlyMap<string, ApiFootballResolvedEntity>;
     };
@@ -60,7 +70,7 @@ export const IDENTITY_PLAYER_SOURCE: PlayerSource = { kind: 'identity' };
 export interface PlayerBindingLogEntry {
   readonly event: 'bridge_player_bindings_error';
   readonly providerId: string;
-  readonly reason: 'on_unavailable' | 'unavailable';
+  readonly reason: 'on_unavailable' | 'unavailable' | 'downgrade_pending';
   readonly message: string;
 }
 
@@ -79,6 +89,11 @@ export interface PlayerBindingResolverOptions {
   readonly clock?: () => number;
   /** How long an `off`/`shadow` answer is reused. Default 60 s. */
   readonly modeTtlMs?: number;
+  /**
+   * How long after the first non-`on` answer following `on` a second one
+   * confirms the downgrade. Default 30 s.
+   */
+  readonly downgradeConfirmMs?: number;
 }
 
 /** The only provider game-service keeps player bindings for. */
@@ -86,6 +101,7 @@ export const PLAYER_BINDINGS_PROVIDER = 'api-football';
 /** game-service's per-call cap. */
 export const MAX_PLAYER_BINDING_IDS = 500;
 const DEFAULT_MODE_TTL_MS = 60_000;
+const DEFAULT_DOWNGRADE_CONFIRM_MS = 30_000;
 
 type KnownMode = 'unknown' | 'off' | 'shadow' | 'on' | 'unimplemented';
 
@@ -94,10 +110,14 @@ export const createPlayerBindingResolver = (
 ): PlayerBindingResolver => {
   const clock = options.clock ?? Date.now;
   const ttl = options.modeTtlMs ?? DEFAULT_MODE_TTL_MS;
+  const confirmMs = options.downgradeConfirmMs ?? DEFAULT_DOWNGRADE_CONFIRM_MS;
   const client = options.client;
   const resolve = client?.resolvePlayerBindings?.bind(client);
   let mode: KnownMode = 'unknown';
   let modeAt = 0;
+  // When the first non-`on` answer after `on` came; undefined when none is
+  // pending. While pending, mode stays `on`.
+  let downgradeSince: number | undefined;
 
   const remember = (next: KnownMode) => {
     mode = next;
@@ -126,6 +146,22 @@ export const createPlayerBindingResolver = (
             })
           );
           const answered = normaliseMode(response.ingestMode);
+          if (answered !== 'on' && mode === 'on') {
+            const now = clock();
+            if (downgradeSince === undefined) {
+              downgradeSince = now;
+              log?.({
+                event: 'bridge_player_bindings_error',
+                providerId: options.providerId,
+                reason: 'downgrade_pending',
+                message: `ingest was on and game-service answered ${answered}; provider refs until confirmed`,
+              });
+            }
+            if (now - downgradeSince < confirmMs) {
+              return { kind: 'bindings', reason: 'confirming', players: new Map() };
+            }
+          }
+          downgradeSince = undefined;
           remember(answered);
           if (answered !== 'on') {
             return IDENTITY_PLAYER_SOURCE;

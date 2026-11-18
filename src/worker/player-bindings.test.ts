@@ -172,10 +172,68 @@ describe('createPlayerBindingResolver', () => {
     expect(logs.map((entry) => entry.reason)).toEqual(['on_unavailable']);
   });
 
-  it('goes back to identity when ingest is switched off', async () => {
-    const gs = stubGameService([on({ '1460': ['btl_football_player_a'] }), modeOnly('off')]);
+  it.each(['off', 'shadow'])(
+    'goes back to identity only once a later %j answer confirms the switch from on',
+    async (next) => {
+      let now = 1_000_000;
+      const gs = stubGameService([on({ '1460': ['btl_football_player_a'] }), modeOnly(next)]);
+      const logs: PlayerBindingLogEntry[] = [];
+      const resolver = createPlayerBindingResolver({
+        client: gs.client,
+        providerId: 'api-football',
+        clock: () => now,
+      });
+      expect((await resolver.forPlayers(['1460'])).kind).toBe('bindings');
+      // The first non-on answer is not trusted: provider refs, never identity.
+      const first = await resolver.forPlayers(['1460'], (entry) => logs.push(entry));
+      expect(first.kind === 'bindings' && first.reason).toBe('confirming');
+      expect(players(first)).toEqual({});
+      now += 29_000;
+      const second = await resolver.forPlayers(['1460'], (entry) => logs.push(entry));
+      expect(second.kind === 'bindings' && second.reason).toBe('confirming');
+      expect(logs.map((entry) => entry.reason)).toEqual(['downgrade_pending']);
+      now += 1_000;
+      expect(await resolver.forPlayers(['1460'])).toEqual({ kind: 'identity' });
+      // Confirmed: the answer is now reused for the mode TTL.
+      expect(await resolver.forPlayers(['1460'])).toEqual({ kind: 'identity' });
+      expect(gs.calls).toHaveLength(4);
+    }
+  );
+
+  it('an on answer cancels a pending downgrade', async () => {
+    let now = 1_000_000;
+    const gs = stubGameService([
+      on({ '1460': ['btl_football_player_a'] }),
+      modeOnly('off'),
+      on({ '1460': ['btl_football_player_a'] }),
+      modeOnly('off'),
+    ]);
+    const resolver = createPlayerBindingResolver({
+      client: gs.client,
+      providerId: 'api-football',
+      clock: () => now,
+    });
+    await resolver.forPlayers(['1460']);
+    expect(await resolver.forPlayers(['1460'])).toMatchObject({ reason: 'confirming' });
+    now += 20_000;
+    expect(await resolver.forPlayers(['1460'])).toMatchObject({ reason: 'on' });
+    now += 20_000;
+    // A new downgrade starts its own window: 40 s after the first off is not enough.
+    expect(await resolver.forPlayers(['1460'])).toMatchObject({ reason: 'confirming' });
+  });
+
+  it('an error while a downgrade is pending still sends provider refs', async () => {
+    const gs = stubGameService([
+      on({ '1460': ['btl_football_player_a'] }),
+      modeOnly('off'),
+      new ConnectError('down', Code.Unavailable),
+    ]);
     const resolver = createPlayerBindingResolver({ client: gs.client, providerId: 'api-football' });
-    expect((await resolver.forPlayers(['1460'])).kind).toBe('bindings');
-    expect(await resolver.forPlayers(['1460'])).toEqual({ kind: 'identity' });
+    await resolver.forPlayers(['1460']);
+    await resolver.forPlayers(['1460']);
+    expect(await resolver.forPlayers(['1460'])).toMatchObject({
+      kind: 'bindings',
+      reason: 'unavailable',
+    });
   });
 });
