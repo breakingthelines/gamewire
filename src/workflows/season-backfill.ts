@@ -85,7 +85,7 @@ import type {
   SeasonBackfillTargetResult,
   WorkflowDeps,
 } from './types.js';
-import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
+import { runStopReason, WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 /**
  * Default per-run provider-call ceiling. Sized well under the 70k/day
@@ -201,6 +201,11 @@ export const seasonBackfillWorkflow = async (
   let halted = false;
 
   for (const target of targets) {
+    const stopped = runStopReason(deps.signal);
+    if (stopped && !aborted && !halted) {
+      halted = true;
+      log({ event: 'season_backfill.halted', workflow: 'season-backfill', reason: stopped });
+    }
     if (aborted || halted) {
       // Carry the untouched target into the result so the caller can see
       // what is still outstanding, without spending any calls on it.
@@ -530,6 +535,11 @@ const backfillTarget = async (args: BackfillTargetArgs): Promise<BackfillTargetO
     // the budget by at most two calls (events + lineups after detail),
     // which is a negligible, bounded slop on a soft throttle.
     if (budget.remaining <= 0 || mode === 'abort') {
+      break;
+    }
+    // The run registry asked the run to stop (cancel, max runtime, lease
+    // lost, shutdown): stop between fixtures, after the last checkpoint.
+    if (deps.signal?.aborted) {
       break;
     }
     // Soft cap or background daily cap: the day's provider budget belongs to

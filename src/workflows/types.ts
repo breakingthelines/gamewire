@@ -254,7 +254,18 @@ export interface WorkflowDeps {
    * dataset completes as `skipped`.
    */
   readonly coachPhotos?: CoachPhotoDeps;
+  /**
+   * Set by the run registry. Aborted when the run is cancelled, reaches its
+   * maximum runtime, loses its scope lease or the pod is shutting down. Long
+   * workflows check it between pages, units or fixtures and stop there with
+   * an `incomplete` (or equivalent) result, after their last checkpoint.
+   */
+  readonly signal?: AbortSignal;
 }
+
+/** Why a run was asked to stop, when its signal is aborted. */
+export const runStopReason = (signal: AbortSignal | undefined): string | undefined =>
+  signal?.aborted ? `run stopped: ${String(signal.reason ?? 'aborted')}` : undefined;
 
 /**
  * Runtime wiring for the provider-enrichment workflow, built in

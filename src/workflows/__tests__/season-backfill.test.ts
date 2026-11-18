@@ -452,6 +452,41 @@ describe('seasonBackfillWorkflow — pagination / resume via cursor', () => {
     expect(run2.calls.some((c) => c.path?.startsWith('/standings'))).toBe(false);
   });
 
+  it('stops between fixtures when the run signal aborts, with the cursor checkpointed', async () => {
+    const finalised = [1001, 1002, 1003];
+    const controller = new AbortController();
+    const run1 = new MockIngestion(cache);
+    run1.setSeasonFixtures(39, 2025, seasonEnvelope(finalised));
+    const real = run1.fetchWorkload.getMockImplementation()!;
+    run1.fetchWorkload.mockImplementation(async (options) => {
+      const result = await real(options);
+      if (options.resourceId.includes('1001')) {
+        // The registry asks the run to stop while fixture 1001 is in flight.
+        controller.abort('interrupted');
+      }
+      return result;
+    });
+    const out1 = await run(
+      run1,
+      [COMPETITION_A],
+      { targets: [{ competitionKey: 'comp-a', season: 2025 }] },
+      { signal: controller.signal }
+    );
+    expect(out1.status).toBe('incomplete');
+    // Fixture 1001 finished whole; the next fixture never started.
+    expect(out1.targets[0]?.fixturesProcessed).toBe(1);
+    expect(out1.targets[0]?.cursorIndex).toBe(1);
+    expect(run1.fixtureDetailCallsFor('1002')).toBe(0);
+
+    const run2 = new MockIngestion(cache);
+    run2.setSeasonFixtures(39, 2025, seasonEnvelope(finalised));
+    const out2 = await run(run2, [COMPETITION_A], {
+      targets: [{ competitionKey: 'comp-a', season: 2025 }],
+    });
+    expect(out2.status).toBe('complete');
+    expect(run2.fixtureDetailCallsFor('1001')).toBe(0);
+  });
+
   it('resumes across three runs and processes every fixture exactly once in total', async () => {
     const finalised = [10, 20, 30, 40];
     const detailTouchesPerFixture = new Map<string, number>();

@@ -369,6 +369,7 @@ interface HarnessOptions {
   readonly softCap?: number;
   readonly squadSize?: number;
   readonly stateStore?: InMemoryProviderCache;
+  readonly signal?: AbortSignal;
 }
 
 const harness = (options: HarnessOptions = {}) => {
@@ -540,6 +541,7 @@ const harness = (options: HarnessOptions = {}) => {
     clock: () => new Date(now),
     enrichment,
     stateStore: options.stateStore,
+    signal: options.signal,
   };
   const run = (dataset: ProviderEnrichmentDataset, input: Partial<ProviderEnrichmentInput> = {}) =>
     providerEnrichmentWorkflow(
@@ -883,6 +885,20 @@ describe('player-sidelined', () => {
     const rest = await after.run('player-sidelined');
     expect(rest.status).toBe('completed');
     expect(after.paths()).toEqual([`/sidelined?players=${ids(120, 5).join('-')}`]);
+  });
+
+  it('stops between units when the run signal aborts; the rest are not started', async () => {
+    const controller = new AbortController();
+    const h = harness({ signal: controller.signal });
+    const first = await h.run('team-transfers', { teamIds: ['1', '2', '3'] });
+    expect(first.status).toBe('completed');
+    const h2 = harness({ signal: controller.signal });
+    controller.abort('max-runtime');
+    const out = await h2.run('team-transfers', { teamIds: ['1', '2', '3'] });
+    expect(out.status).toBe('incomplete');
+    expect(out.reason).toBe('run stopped: max-runtime');
+    expect(out.callsUsed).toBe(0);
+    expect(out.targets.map((t) => t.status)).toEqual(['not-started', 'not-started', 'not-started']);
   });
 
   it('skips when nothing is in scope', async () => {

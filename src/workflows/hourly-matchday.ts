@@ -107,7 +107,7 @@ export const hourlyMatchdayWorkflow = async (
   let aborted = false;
 
   for (const competition of inWindowCompetitions) {
-    if (aborted) {
+    if (aborted || deps.signal?.aborted) {
       break;
     }
     const sweep = await sweepCompetition(competition, startedAt, deps);

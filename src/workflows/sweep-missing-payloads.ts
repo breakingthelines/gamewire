@@ -478,6 +478,11 @@ export const sweepMissingPayloadsWorkflow = async (
       aborted = true;
       break;
     }
+    // The run registry asked the run to stop: the rest is left for the next
+    // run, which the missing-payload query finds again.
+    if (deps.signal?.aborted) {
+      break;
+    }
     if (i > 0) {
       // Throttle inter-call cadence so a 500-fixture sweep stays comfortably
       // under api-football's per-minute cap. See DEFAULT_INTER_CALL_DELAY_MS

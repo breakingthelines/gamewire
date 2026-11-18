@@ -93,7 +93,7 @@ import type {
   WorkflowDeps,
   WorkflowLogEntry,
 } from './types.js';
-import { WORKFLOW_PROVIDER_PRIORITY } from './types.js';
+import { runStopReason, WORKFLOW_PROVIDER_PRIORITY } from './types.js';
 
 export const PROVIDER_ENRICHMENT_DATASETS: readonly ProviderEnrichmentDataset[] = [
   'player-season-stats',
@@ -487,6 +487,11 @@ export const providerEnrichmentWorkflow = async (
         }
         if (callsUsed >= limit) {
           stop = { status: 'incomplete', reason: `call limit ${limit} reached` };
+          break;
+        }
+        const stopped = runStopReason(deps.signal);
+        if (stopped) {
+          stop = { status: 'incomplete', reason: stopped };
           break;
         }
 
@@ -894,6 +899,11 @@ const runUnitDataset = async (
         stop = { status: 'incomplete', reason: `call limit ${limit} reached` };
         return { ok: false, stopped: true };
       }
+      const stopped = runStopReason(deps.signal);
+      if (stopped) {
+        stop = { status: 'incomplete', reason: stopped };
+        return { ok: false, stopped: true };
+      }
       if (!(await acquireJobToken())) {
         stop = { status: 'incomplete', reason: 'enrichment minute limiter stayed full' };
         return { ok: false, stopped: true };
@@ -1048,6 +1058,10 @@ const runUnitDataset = async (
 
   const results: ProviderEnrichmentTargetResult[] = [...gapResults];
   for (const unit of plan.units) {
+    const stopped = stop ? undefined : runStopReason(deps.signal);
+    if (stopped) {
+      stop = { status: 'incomplete', reason: stopped };
+    }
     if (stop || stopAfterUnit) {
       results.push(result(unit, 'not-started'));
       continue;

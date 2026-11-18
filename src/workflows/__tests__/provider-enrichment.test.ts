@@ -567,6 +567,34 @@ describe('state store (survives a pod restart)', () => {
   });
 });
 
+describe('run stop signal', () => {
+  it('stops before the next page and leaves the cursor for the next run', async () => {
+    const controller = new AbortController();
+    const h = harness({
+      totals: { '88:2024': 5 },
+      ingest: async (request) => {
+        controller.abort('cancelled');
+        return { acceptedCount: request.rows.length } as IngestBatchResponse;
+      },
+    });
+    const input = {
+      dataset: 'player-season-stats',
+      mode: 'full',
+      leagueIds: [88],
+      seasons: [2024],
+    } as const;
+    const out = await providerEnrichmentWorkflow(input, { ...h.deps, signal: controller.signal });
+    expect(out.status).toBe('incomplete');
+    expect(out.reason).toBe('run stopped: cancelled');
+    expect(out.callsUsed).toBe(1);
+    expect(out.targets[0]).toMatchObject({ status: 'partial', nextPage: 2 });
+
+    const resumed = await h.run(input);
+    expect(resumed.status).toBe('completed');
+    expect(h.urls.slice(1).map((u) => parseUrl(u).page)).toEqual([2, 3, 4, 5]);
+  });
+});
+
 describe('enrichment minute ceiling', () => {
   it('holds the job to its own per-minute ceiling by waiting', async () => {
     const h = harness({

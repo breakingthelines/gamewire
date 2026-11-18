@@ -206,6 +206,9 @@ export const providerFixtureResultsWorkflow = async (
   let halted = false;
 
   for (const target of targets) {
+    if (!halted && deps.signal?.aborted) {
+      halted = true;
+    }
     if (halted) {
       leagues.push({
         leagueId: target.leagueId,
