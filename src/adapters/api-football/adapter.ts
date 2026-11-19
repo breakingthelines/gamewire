@@ -1326,6 +1326,10 @@ function occurrenceFromEvent(
   const primaryPlayerId = actorEntityId(playerActor);
   const secondaryPlayerId = actorEntityId(assistActor);
   const teamId = actorEntityId(teamActor);
+  // Set even when the player id is empty (unresolved), so game-service can
+  // bind the payload by provider id (GW1).
+  const primaryProviderPlayerId = playerActor?.providerRef?.providerId ?? '';
+  const secondaryProviderPlayerId = assistActor?.providerRef?.providerId ?? '';
 
   return create(GameOccurrenceSchema, {
     id: `${options.providerId}:fixture:${options.providerFixtureId}:event:${options.sequence}`,
@@ -1352,6 +1356,8 @@ function occurrenceFromEvent(
             teamId,
             primaryPlayerId,
             secondaryPlayerId,
+            primaryProviderPlayerId,
+            secondaryProviderPlayerId,
           }),
         },
       }),
@@ -1518,6 +1524,9 @@ function lineupsPlayer(
     formationSlot: formationSlot(entry.player.grid, options.fallbackSlot),
     isStarter: options.isStarter,
     isCaptain: false,
+    // The provider id beside the entity id (GW1): game-service binds the slot
+    // by it, so a rebind-moved player stays moved whatever player_id says.
+    providerPlayerId: validProviderPlayerId(entry.player.id),
   });
 }
 
@@ -2450,6 +2459,15 @@ function actorFromProviderRef(
     resolvedEntity(kind, String(ref.id), ref.name, resolutions),
     kind === 'team' ? teamSnapshot(ref) : providerEntitySnapshot({ label: ref.name })
   );
+}
+
+/**
+ * The bare provider player id a payload carries next to the entity id, or ""
+ * for a missing, zero or non-finite id (the same ids `actorFromProviderRef`
+ * drops).
+ */
+function validProviderPlayerId(id: unknown): string {
+  return typeof id === 'number' && Number.isFinite(id) && id !== 0 ? String(id) : '';
 }
 
 function actorEntityId(actor: ReturnType<typeof actorFromProviderRef> | undefined): string {

@@ -24,7 +24,12 @@ import {
   type IngestPlayerMatchStatsRequest,
   type IngestProviderFixtureResultsRequest,
   type IngestTeamMatchStatsRequest,
+  type ResolvePlayerBindingsRequest,
+  type ResolvePlayerBindingsResponse,
+  ResolvePlayerBindingsResponseSchema,
+  ResolvedPlayerBindingSchema,
 } from '@breakingthelines/protos/btl/game/v1/game_service_pb';
+import { EntityType } from '@breakingthelines/protos/btl/identity/v1/identity_pb';
 import {
   type LookupRequest,
   type LookupResponse,
@@ -334,6 +339,10 @@ const fakeGameService = (options: {
   readonly response?: Partial<LookupGameByFixtureResponse>;
   readonly responses?: readonly Partial<LookupGameByFixtureResponse>[];
   readonly error?: unknown;
+  /** GW1: when set, the client serves ResolvePlayerBindings with it. */
+  readonly resolvePlayerBindings?: (
+    request: ResolvePlayerBindingsRequest
+  ) => Promise<ResolvePlayerBindingsResponse>;
 }): FakeGameService => {
   const ingestCalls: IngestGamesRequest[] = [];
   const occurrenceCalls: IngestGameOccurrencesRequest[] = [];
@@ -446,6 +455,9 @@ const fakeGameService = (options: {
       return create(ListGamesMissingPayloadsResponseSchema, {});
     },
   };
+  if (options.resolvePlayerBindings) {
+    client.resolvePlayerBindings = options.resolvePlayerBindings;
+  }
   return {
     client,
     ingestCalls,
@@ -1670,5 +1682,207 @@ describe('ingestion onFixtureFetched (no-op default)', () => {
     // already covers fetch behaviour; this assertion documents the
     // null-callback path so callers know an undefined bridge is supported.
     expect(typeof createMatchConcludedBridge).toBe('function');
+  });
+});
+
+/**
+ * Identity stub that records every request and resolves a fixed map. GW1
+ * tests use it to prove players are not resolved through identity once
+ * game-service's ingest is on.
+ */
+const recordingIdentity = (entities: Record<string, string>) => {
+  const requests: ResolveRequest[] = [];
+  const identity = resolvingIdentity(entities);
+  return {
+    requests,
+    identity: {
+      ...identity,
+      async resolve(request: ResolveRequest): Promise<ResolveResponse> {
+        requests.push(request);
+        return identity.resolve(request);
+      },
+    } satisfies FootballIdentityLookupClient,
+  };
+};
+
+const bindingsAnswer = (
+  ingestMode: string,
+  bindings: Record<string, [entityId: string, label?: string]> = {}
+) =>
+  create(ResolvePlayerBindingsResponseSchema, {
+    ingestMode,
+    bindings: Object.entries(bindings).map(([providerPlayerId, [entityId, label]]) =>
+      create(ResolvedPlayerBindingSchema, { providerPlayerId, entityId, hasBinding: true, label })
+    ),
+  });
+
+describe('createMatchConcludedBridge: player bindings (GW1)', () => {
+  const GAME = { found: true, gameId: 'btl_football_game_g1538961' };
+  // identity still answers the ids the rebind moved away from.
+  const IDENTITY = {
+    '42': 'btl_football_team_arsenal',
+    '49': 'btl_football_team_chelsea',
+    '1460': 'btl_football_player_saka_stale',
+    '152982': 'btl_football_player_palmer',
+    '999': 'btl_football_player_assist_stale',
+  };
+
+  const runPages = async (
+    gameService: FakeGameService,
+    identity: FootballIdentityLookupClient,
+    logs: MatchConcludedBridgeLogEntry[] = []
+  ) => {
+    const { publisher } = buildPublisher();
+    const bridge = createMatchConcludedBridge({
+      publisher,
+      gameService: gameService.client,
+      identity,
+      providerId: 'api-football',
+      logger: (entry) => logs.push(entry),
+      clock: () => Date.parse('2026-05-21T12:00:00Z'),
+    });
+    await bridge({
+      workload: 'lineups-post-confirm',
+      resourceId: '1538961',
+      data: buildLineupResponse(),
+    });
+    await bridge({
+      workload: 'squad-list-fallback',
+      resourceId: '1538961:42',
+      data: buildSquadResponse(),
+    });
+    await bridge({
+      workload: 'events-post-final',
+      resourceId: '1538961',
+      data: buildEventResponse(1538961),
+    });
+    await bridge({
+      workload: 'player-match-stats',
+      resourceId: '1538961',
+      data: buildPlayersResponse(),
+    });
+  };
+
+  const timelineOf = (gameService: FakeGameService) => {
+    const payload = gameService.occurrenceCalls[0]?.occurrences[0]?.payload;
+    if (payload?.case !== 'timeline' || payload.value.sportTimeline.case !== 'football') {
+      throw new Error('expected a football timeline payload');
+    }
+    return payload.value.sportTimeline.value;
+  };
+
+  it('sends exactly what it sent before while game-service ingest is off', async () => {
+    const without = fakeGameService({ response: GAME });
+    await runPages(without, resolvingIdentity(IDENTITY));
+    const bindingCalls: ResolvePlayerBindingsRequest[] = [];
+    const off = fakeGameService({
+      response: GAME,
+      resolvePlayerBindings: async (request) => {
+        bindingCalls.push(request);
+        return bindingsAnswer('off');
+      },
+    });
+    await runPages(off, resolvingIdentity(IDENTITY));
+
+    expect(off.lineupCalls).toEqual(without.lineupCalls);
+    expect(off.squadListCalls).toEqual(without.squadListCalls);
+    expect(off.occurrenceCalls).toEqual(without.occurrenceCalls);
+    expect(off.playerStatsCalls).toEqual(without.playerStatsCalls);
+    // identity's answer, as before, with the provider id beside it.
+    const slot = off.lineupCalls[0]?.lineups[0]?.teamSheets[0]?.players[0];
+    expect(slot?.playerId).toBe('btl_football_player_saka_stale');
+    expect(slot?.providerPlayerId).toBe('1460');
+    // "off" is remembered: one call for four pages.
+    expect(bindingCalls).toHaveLength(1);
+  });
+
+  it('sends the same as before in shadow mode too', async () => {
+    const without = fakeGameService({ response: GAME });
+    await runPages(without, resolvingIdentity(IDENTITY));
+    const shadow = fakeGameService({
+      response: GAME,
+      resolvePlayerBindings: async () => bindingsAnswer('shadow'),
+    });
+    await runPages(shadow, resolvingIdentity(IDENTITY));
+    expect(shadow.lineupCalls).toEqual(without.lineupCalls);
+    expect(shadow.occurrenceCalls).toEqual(without.occurrenceCalls);
+  });
+
+  it('resolves players through the bindings, not identity, once ingest is on', async () => {
+    const bindings: Record<string, [string, string?]> = {
+      '1460': ['btl_football_player_saka_moved', 'B. Saka'],
+      '152982': ['provider:api-football:player:152982'],
+      '999': ['btl_football_player_assist_moved'],
+    };
+    const gameService = fakeGameService({
+      response: GAME,
+      resolvePlayerBindings: async (request) =>
+        bindingsAnswer(
+          'on',
+          Object.fromEntries(
+            request.providerPlayerIds.flatMap((id) => (bindings[id] ? [[id, bindings[id]]] : []))
+          )
+        ),
+    });
+    const identity = recordingIdentity(IDENTITY);
+    await runPages(gameService, identity.identity);
+
+    expect(identity.requests.filter((r) => r.entityType === EntityType.PLAYER)).toEqual([]);
+    // Teams still resolve through identity.
+    expect(identity.requests.some((r) => r.entityType === EntityType.TEAM)).toBe(true);
+
+    // The rebind-moved lineup stays moved.
+    const slot = gameService.lineupCalls[0]?.lineups[0]?.teamSheets[0]?.players[0];
+    expect(slot?.playerId).toBe('btl_football_player_saka_moved');
+    expect(slot?.playerName).toBe('B. Saka');
+    expect(slot?.providerPlayerId).toBe('1460');
+    expect(gameService.lineupCalls[0]?.lineups[0]?.teamSheets[0]?.teamId).toBe(
+      'btl_football_team_arsenal'
+    );
+
+    const squadPlayer = gameService.squadListCalls[0]?.squadLists[0]?.teams[0]?.players[0];
+    expect(squadPlayer?.playerId).toBe('btl_football_player_saka_moved');
+    expect(squadPlayer?.providerPlayerId).toBe('1460');
+
+    // An id bound to no player stays a provider ref, even though identity
+    // would answer it; the assist takes the binding's player.
+    const timeline = timelineOf(gameService);
+    expect(timeline.primaryPlayerId).toBe('');
+    expect(timeline.primaryProviderPlayerId).toBe('152982');
+    expect(timeline.secondaryPlayerId).toBe('btl_football_player_assist_moved');
+    expect(timeline.secondaryProviderPlayerId).toBe('999');
+
+    const line = gameService.playerStatsCalls[0]?.playerStats[0];
+    expect(line?.player?.id).toBe('btl_football_player_saka_moved');
+    expect(line?.playerResolution?.providerRef?.providerId).toBe('1460');
+  });
+
+  it('sends provider refs, never identity, when the bindings call fails after ingest was on', async () => {
+    let calls = 0;
+    const gameService = fakeGameService({
+      response: GAME,
+      resolvePlayerBindings: async () => {
+        calls += 1;
+        if (calls === 1) {
+          return bindingsAnswer('on', { '1460': ['btl_football_player_saka_moved'] });
+        }
+        throw new Error('game-service unavailable');
+      },
+    });
+    const identity = recordingIdentity(IDENTITY);
+    const logs: MatchConcludedBridgeLogEntry[] = [];
+    await runPages(gameService, identity.identity, logs);
+
+    expect(identity.requests.filter((r) => r.entityType === EntityType.PLAYER)).toEqual([]);
+    expect(gameService.lineupCalls[0]?.lineups[0]?.teamSheets[0]?.players[0]?.playerId).toBe(
+      'btl_football_player_saka_moved'
+    );
+    // The squad list came after the failure: a provider ref with its id.
+    const squadPlayer = gameService.squadListCalls[0]?.squadLists[0]?.teams[0]?.players[0];
+    expect(squadPlayer?.playerId).toBe('provider:api-football:player:1460');
+    expect(squadPlayer?.providerPlayerId).toBe('1460');
+    expect(
+      logs.filter((entry) => entry.event === 'bridge_player_bindings_error').map((e) => e.reason)
+    ).toEqual(['on_unavailable', 'on_unavailable', 'on_unavailable']);
   });
 });
